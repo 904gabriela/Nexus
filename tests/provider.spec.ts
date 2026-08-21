@@ -12,6 +12,7 @@ import {
   field,
   fieldIn,
   goto,
+  reloadApp,
   resetDatabase,
   seedFixtures,
   sendMessage,
@@ -250,8 +251,9 @@ test('a stream that dies mid-reply keeps the text that arrived', async ({ page }
   await expect(page.locator('[aria-label="Generating"]')).toHaveCount(0, { timeout: 30_000 });
 
   // And it is persisted, not just painted.
-  await page.reload();
-  await boot(page);
+  // reloadApp keeps the current route; boot() would navigate to the dashboard
+  // and the assertion would be about the wrong screen.
+  await reloadApp(page);
   await expect(page.getByText('The door creaks open.')).toBeVisible();
 });
 

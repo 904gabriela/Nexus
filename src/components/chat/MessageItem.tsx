@@ -10,6 +10,8 @@ export interface MessageItemProps {
   message: Message;
   characters: Character[];
   persona: Persona | null;
+  /** All personas, so an older message can resolve its own author. */
+  personas: Persona[];
   story: Story | null;
   alternatives: MessageAlternative[];
   content: string;
@@ -39,6 +41,7 @@ export const MessageItem = memo(function MessageItem({
   message,
   characters,
   persona,
+  personas,
   story,
   alternatives,
   content,
@@ -54,7 +57,13 @@ export const MessageItem = memo(function MessageItem({
   showTimestamps,
   highlighted,
 }: MessageItemProps) {
-  const { name, character } = speakerFor(message, characters, persona, story);
+  const { name, character, persona: author } = speakerFor(
+    message,
+    characters,
+    persona,
+    story,
+    personas,
+  );
   const isUser = message.role === 'user';
 
   const longPress = useLongPress(() => {
@@ -96,8 +105,8 @@ export const MessageItem = memo(function MessageItem({
       )}
       {isUser && (
         <Avatar
-          mediaId={persona?.avatarMediaId ?? null}
-          fallbackUrl={persona?.avatarUrl}
+          mediaId={author?.avatarMediaId ?? null}
+          fallbackUrl={author?.avatarUrl}
           name={name}
           size={34}
         />

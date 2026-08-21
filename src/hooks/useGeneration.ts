@@ -551,22 +551,42 @@ export function useGeneration() {
 
 export type UseGeneration = ReturnType<typeof useGeneration>;
 
+/**
+ * Who said this message.
+ *
+ * A user message is attributed to the persona that wrote it, not the one
+ * selected now — switching persona mid-story must not retroactively relabel
+ * everything you already said. `personas` lets an older message resolve its own
+ * author; the active persona is only the fallback for messages saved before
+ * personaId existed.
+ */
 export function speakerFor(
   message: Message,
   characters: Character[],
   persona: Persona | null,
   story: Story | null,
-): { name: string; character: Character | null } {
+  personas: Persona[] = [],
+): { name: string; character: Character | null; persona: Persona | null } {
   if (message.role === 'user') {
-    return { name: persona?.displayName || persona?.name || 'You', character: null };
+    const author =
+      (message.personaId ? personas.find((p) => p.id === message.personaId) : null) ?? persona;
+    return {
+      name: author?.displayName || author?.name || 'You',
+      character: null,
+      persona: author ?? null,
+    };
   }
-  if (message.role === 'system') return { name: 'System', character: null };
+  if (message.role === 'system') return { name: 'System', character: null, persona: null };
   const character =
     characters.find((c) => c.id === message.characterId) ??
     characters.find((c) => c.id === story?.characters.find((l) => l.primary)?.characterId) ??
     characters[0] ??
     null;
-  return { name: character?.displayName || character?.name || 'Assistant', character };
+  return {
+    name: character?.displayName || character?.name || 'Assistant',
+    character,
+    persona: null,
+  };
 }
 
 export function chatDisplayTitle(chat: Chat | null, story: Story | null): string {

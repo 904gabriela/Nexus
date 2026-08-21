@@ -76,6 +76,7 @@ export function ChatPage({
   const [summarising, setSummarising] = useState(false);
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [speakerPicker, setSpeakerPicker] = useState(false);
+  const [personaPicker, setPersonaPicker] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameText, setRenameText] = useState('');
   const [attachSheet, setAttachSheet] = useState(false);
@@ -484,6 +485,7 @@ export function ChatPage({
                 message={message}
                 characters={gen.characters}
                 persona={gen.persona}
+                personas={state.personas}
                 story={gen.story}
                 alternatives={alternativesFor(message.id)}
                 content={gen.contentOf(message)}
@@ -546,7 +548,7 @@ export function ChatPage({
               onClick={async () => {
                 const chosen = timeline.filter((m) => selected.has(m.id));
                 const ok = await copyText(
-                  chatToTranscript(chosen, (m) => speakerFor(m, gen.characters, gen.persona, gen.story).name),
+                  chatToTranscript(chosen, (m) => speakerFor(m, gen.characters, gen.persona, gen.story, state.personas).name),
                 );
                 actions.toast({ kind: ok ? 'success' : 'error', title: ok ? 'Copied' : 'Copy failed' });
               }}
@@ -851,6 +853,16 @@ export function ChatPage({
             separatorBefore: true,
           },
           {
+            key: 'persona',
+            label: 'Change your persona',
+            icon: 'user',
+            disabled: state.personas.length < 1,
+            description: gen.persona
+              ? `Writing as ${gen.persona.displayName || gen.persona.name}. Applies to new messages only.`
+              : 'No persona set for this chat.',
+            onSelect: () => setPersonaPicker(true),
+          },
+          {
             key: 'story-summary',
             label: 'Story summary',
             description: gen.summary?.rollingSummary
@@ -936,7 +948,7 @@ export function ChatPage({
             onSelect: () => {
               downloadFile(
                 `transcript-${activeChat.title || 'chat'}.txt`,
-                chatToTranscript(timeline, (m) => speakerFor(m, gen.characters, gen.persona, gen.story).name),
+                chatToTranscript(timeline, (m) => speakerFor(m, gen.characters, gen.persona, gen.story, state.personas).name),
                 'text/plain',
               );
             },
@@ -967,7 +979,7 @@ export function ChatPage({
       <ActionSheet
         open={!!menuFor}
         onClose={() => setMenuFor(null)}
-        title={menuFor ? speakerFor(menuFor, gen.characters, gen.persona, gen.story).name : ''}
+        title={menuFor ? speakerFor(menuFor, gen.characters, gen.persona, gen.story, state.personas).name : ''}
         actions={
           menuFor
             ? [
@@ -1082,6 +1094,37 @@ export function ChatPage({
               ]
             : []
         }
+      />
+
+      {/*
+        Changing the persona rewrites the chat's personaId only. Messages keep
+        the personaId stamped when they were sent, so switching mid-story does
+        not retroactively re-attribute anything you already wrote.
+      */}
+      <ActionSheet
+        open={personaPicker}
+        onClose={() => setPersonaPicker(false)}
+        title="Write as…"
+        actions={state.personas.map((persona) => ({
+          key: persona.id,
+          label: persona.name || 'Unnamed',
+          description:
+            gen.persona?.id === persona.id
+              ? 'Currently writing as this persona.'
+              : truncate(persona.personality || persona.appearance, 70),
+          icon: 'user',
+          disabled: gen.persona?.id === persona.id,
+          onSelect: () => {
+            void (async () => {
+              await actions.saveChat({ ...activeChat, personaId: persona.id });
+              actions.toast({
+                kind: 'success',
+                title: `Now writing as ${persona.name}`,
+                detail: 'Messages you already sent keep their original persona.',
+              });
+            })();
+          },
+        }))}
       />
 
       <ActionSheet
