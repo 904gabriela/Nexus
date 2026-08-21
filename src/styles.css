@@ -1886,6 +1886,112 @@ mark {
   color: var(--text-faint);
 }
 
+/* ---------------------------------------------------- story timeline */
+
+.story-timeline {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  position: relative;
+}
+
+/* The spine, drawn behind the dots. */
+.story-timeline::before {
+  content: '';
+  position: absolute;
+  left: 13px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: var(--border);
+}
+
+.timeline-entry {
+  display: flex;
+  gap: 11px;
+  width: 100%;
+  align-items: flex-start;
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 9px 4px;
+  min-height: var(--tap);
+  border-radius: var(--radius-sm);
+  color: inherit;
+  cursor: pointer;
+}
+
+.timeline-entry:hover {
+  background: var(--bg-hover);
+}
+
+.timeline-dot {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-elevated);
+  border: 2px solid var(--border-strong);
+  color: var(--text-dim);
+}
+
+.timeline-dot-checkpoint {
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+.timeline-dot-fork {
+  border-color: var(--success);
+  color: var(--success);
+}
+.timeline-dot-important {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.timeline-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.timeline-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.timeline-excerpt {
+  margin-top: 3px;
+  font-size: calc(12.5px * var(--font-scale));
+  color: var(--text-dim);
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+  line-height: 1.45;
+}
+
+/* Ring the message a timeline jump landed on, then fade back out. */
+.msg-highlighted .bubble {
+  animation: jump-flash 2.6s ease;
+}
+
+@keyframes jump-flash {
+  0%,
+  60% {
+    box-shadow: 0 0 0 2px var(--accent);
+  }
+  100% {
+    box-shadow: 0 0 0 2px transparent;
+  }
+}
+
 /* ------------------------------------------------- touch target sizing */
 
 /*

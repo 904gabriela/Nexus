@@ -13,6 +13,7 @@ import { BranchPanel, CheckpointPanel } from '../components/chat/BranchPanel';
 import { ImageGenPanel } from '../components/chat/ImageGenPanel';
 import { AiSummarySheet } from '../components/chat/AiSummarySheet';
 import { StorySummarySheet } from '../components/chat/StorySummarySheet';
+import { StoryTimeline, type JumpTarget } from '../components/chat/StoryTimeline';
 import { MemoryEditor } from './Memories';
 import { Icon } from '../components/ui/Icon';
 import { ActionSheet, Sheet } from '../components/ui/Sheet';
@@ -45,6 +46,8 @@ export function ChatPage({
   const cameraInput = useRef<HTMLInputElement>(null);
   const filesInput = useRef<HTMLInputElement>(null);
   const atBottomRef = useRef(true);
+  /** Mirrors pendingJump for effects that must not re-run when it changes. */
+  const pendingJumpRef = useRef<JumpTarget | null>(null);
 
   const [draft, setDraft] = useState('');
   const [pending, setPending] = useState<Attachment[]>([]);
@@ -77,6 +80,9 @@ export function ChatPage({
   const [aiSummary, setAiSummary] = useState(false);
   const [storySummary, setStorySummary] = useState(false);
   const [newChatFrom, setNewChatFrom] = useState<Message | null>(null);
+  const [showTimeline, setShowTimeline] = useState(false);
+  const [pendingJump, setPendingJump] = useState<JumpTarget | null>(null);
+  const [highlighted, setHighlighted] = useState<ID | null>(null);
 
   const textareaRef = useAutoResize(draft);
 
@@ -98,7 +104,9 @@ export function ChatPage({
   }, [timeline.length, gen.streamingText, scrollToBottom, gen.generating]);
 
   useEffect(() => {
-    // Jump to the end when a chat or branch is opened.
+    // Jump to the end when a chat or branch is opened — unless a timeline jump
+    // is steering the scroll, in which case it owns where we land.
+    if (pendingJumpRef.current) return;
     const timer = setTimeout(() => scrollToBottom('auto'), 60);
     return () => clearTimeout(timer);
   }, [state.activeChatId, activeChat?.activeBranchId, scrollToBottom]);
@@ -108,6 +116,72 @@ export function ChatPage({
     if (!node) return;
     atBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
   };
+
+  /* ------------------------------------------------- jumping to a message */
+
+  /**
+   * A timeline landmark may live in another chat or on another branch, so the
+   * jump runs in stages: navigate, switch branch, then scroll. Each stage
+   * re-runs this effect once the store catches up.
+   */
+  useEffect(() => {
+    if (!pendingJump || !activeChat) return;
+    if (activeChat.id !== pendingJump.chatId) return; // navigation still in flight
+    if (activeChat.activeBranchId !== pendingJump.branchId) {
+      void actions.switchBranch(pendingJump.branchId);
+      return;
+    }
+    const target = scrollRef.current?.querySelector<HTMLElement>(
+      `[data-message-id="${pendingJump.messageId}"]`,
+    );
+    if (!target) {
+      // The chat and branch are already correct, so a message that is not in
+      // this timeline at all has been deleted since the sheet was opened. Give
+      // up rather than leaving the jump armed forever — an armed jump keeps
+      // suppressing the scroll-to-bottom on every chat you open afterwards.
+      if (timeline.length && !timeline.some((m) => m.id === pendingJump.messageId)) {
+        pendingJumpRef.current = null;
+        setPendingJump(null);
+      }
+      return; // otherwise it simply has not rendered yet
+    }
+
+    atBottomRef.current = false;
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    setHighlighted(pendingJump.messageId);
+    pendingJumpRef.current = null;
+    setPendingJump(null);
+  }, [pendingJump, activeChat, timeline, actions]);
+
+  // Owned by its own effect: clearing pendingJump above re-runs that one, and a
+  // fade-out timer living there would cancel itself in the cleanup.
+  useEffect(() => {
+    if (!highlighted) return;
+    const timer = window.setTimeout(() => setHighlighted(null), 2600);
+    return () => window.clearTimeout(timer);
+  }, [highlighted]);
+
+  /**
+   * The timeline spans the whole story when there is one; a chat with no story
+   * is its own timeline. Declared here, above the `!activeChat` early return,
+   * because hooks may not sit behind a conditional.
+   */
+  const storyChats = useMemo(() => {
+    if (!activeChat) return [];
+    return activeChat.storyId
+      ? state.chats.filter((c) => c.storyId === activeChat.storyId)
+      : [activeChat];
+  }, [state.chats, activeChat]);
+
+  const jumpToMessage = useCallback(
+    (target: JumpTarget) => {
+      setShowTimeline(false);
+      pendingJumpRef.current = target;
+      setPendingJump(target);
+      if (target.chatId !== state.activeChatId) navigate('chat', target.chatId);
+    },
+    [state.activeChatId, navigate],
+  );
 
   /* ------------------------------------------------------- attachments */
 
@@ -393,6 +467,7 @@ export function ChatPage({
                 streamingText={gen.streamingText}
                 selecting={selecting}
                 selected={selected.has(message.id)}
+                highlighted={highlighted === message.id}
                 onToggleSelect={(id) =>
                   setSelected((current) => {
                     const next = new Set(current);
@@ -674,6 +749,16 @@ export function ChatPage({
         messages={state.messages}
       />
 
+      <StoryTimeline
+        open={showTimeline}
+        onClose={() => setShowTimeline(false)}
+        story={gen.story}
+        chats={storyChats}
+        summary={gen.summary ?? null}
+        activeChatId={state.activeChatId}
+        onJump={jumpToMessage}
+      />
+
       <CheckpointPanel
         open={showCheckpoints}
         onClose={() => setShowCheckpoints(false)}
@@ -694,6 +779,19 @@ export function ChatPage({
             description: `${formatTokens(compiled.totalTokens)} / ${formatTokens(compiled.budget)} tokens`,
             icon: 'layers',
             onSelect: () => setShowContext(true),
+          },
+          {
+            key: 'timeline',
+            label: 'Story timeline',
+            // Deliberately avoids naming the other menu entries: the label and
+            // description together form this button's accessible name, and
+            // repeating "Checkpoints" or "Branches" here makes two menu items
+            // answer to the same name.
+            description: activeChat.storyId
+              ? 'Every landmark in this story, oldest first.'
+              : 'Every landmark in this chat, oldest first.',
+            icon: 'clock',
+            onSelect: () => setShowTimeline(true),
           },
           {
             key: 'branches',

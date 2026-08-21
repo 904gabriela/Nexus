@@ -211,6 +211,13 @@ for (const viewport of VIEWPORTS) {
       await collect('branch panel');
       await closeSheet(page);
 
+      // Story timeline.
+      await page.getByRole('button', { name: 'Chat menu' }).click();
+      await sheetAction(page, 'Story timeline');
+      await expect(page.getByTestId('story-timeline')).toBeVisible();
+      await collect('story timeline');
+      await closeSheet(page);
+
       // Context inspector.
       await page.getByRole('button', { name: /Context: .* Open inspector/ }).click();
       await expect(page.getByRole('button', { name: 'Close context inspector' })).toBeVisible();

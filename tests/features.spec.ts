@@ -11,7 +11,6 @@ import {
   bubble,
   captureDownload,
   countStore,
-  field,
   fieldIn,
   goto,
   makeCharacterCardPng,
@@ -692,4 +691,91 @@ test('backups carry image providers and story summaries, but never API keys', as
   expect(restoredImageProviders[0].apiKey).toBe('');
   expect(restoredSummaries).toHaveLength(1);
   expect(restoredSummaries[0].currentSummary).toBe('The party has reached Ashfell.');
+});
+
+/* =========================================================== STORY TIMELINE */
+
+test('the story timeline lists landmarks and jumps to the message', async ({ page }) => {
+  await seedFixtures(page);
+  await setupProvider(page);
+  await startChat(page);
+
+  await sendMessage(page, 'We set out for Ashfell at first light.');
+  await expect(page.getByText(/The tavern door creaks/)).toBeVisible({ timeout: 20_000 });
+  await sendMessage(page, 'The gate guard refused us entry.');
+  await expect(page.getByText(/A second, different response/)).toBeVisible({ timeout: 20_000 });
+
+  // Three landmarks of three different kinds.
+  await openMessageMenu(page, 'We set out for Ashfell at first light.');
+  await sheetAction(page, 'Save checkpoint here');
+  const cpDialog = page.getByRole('dialog').last();
+  await fieldIn(cpDialog, 'Checkpoint name').fill('Departure');
+  await cpDialog.getByRole('button', { name: 'Save checkpoint' }).click();
+  await expect(page.getByText(/Checkpoint saved/).first()).toBeVisible();
+
+  await openMessageMenu(page, 'The gate guard refused us entry.');
+  await sheetAction(page, 'Mark important');
+
+  await page.getByRole('button', { name: 'Chat menu' }).click();
+  await sheetAction(page, 'Story timeline');
+
+  const timeline = page.getByTestId('story-timeline');
+  await expect(timeline).toBeVisible();
+  const entries = page.getByTestId('timeline-entry');
+  // Chat start + checkpoint + important message, in story order.
+  await expect(entries).toHaveCount(3);
+  await expect(entries.nth(0)).toContainText('Chat started');
+  await expect(entries.nth(1)).toContainText('Checkpoint: Departure');
+  await expect(entries.nth(2)).toContainText('Important message');
+
+  // The filters narrow the spine rather than emptying it.
+  await page.getByRole('tab', { name: /Checkpoints/ }).click();
+  await expect(page.getByTestId('timeline-entry')).toHaveCount(1);
+  await page.getByRole('tab', { name: /Important/ }).click();
+  await expect(page.getByTestId('timeline-entry')).toHaveCount(1);
+  await page.getByRole('tab', { name: /^All/ }).click();
+  await expect(page.getByTestId('timeline-entry')).toHaveCount(3);
+
+  // Jumping closes the sheet and lands on the message itself.
+  await page.getByRole('button', { name: 'Jump to Checkpoint: Departure' }).click();
+  await expect(page.locator('.sheet')).toHaveCount(0);
+  const landed = page.locator('.msg-highlighted');
+  await expect(landed).toHaveCount(1);
+  await expect(landed).toContainText('We set out for Ashfell at first light.');
+});
+
+test('the story timeline spans other chats in the story and switches to them', async ({ page }) => {
+  await seedFixtures(page);
+  await setupProvider(page);
+  await startChat(page);
+  await sendMessage(page, 'The oath was sworn at the gate.');
+  await expect(page.getByText(/The tavern door creaks/)).toBeVisible({ timeout: 20_000 });
+
+  await openMessageMenu(page, 'The oath was sworn at the gate.');
+  await sheetAction(page, 'Save checkpoint here');
+  const cpDialog = page.getByRole('dialog').last();
+  await fieldIn(cpDialog, 'Checkpoint name').fill('The oath');
+  await cpDialog.getByRole('button', { name: 'Save checkpoint' }).click();
+  await expect(page.getByText(/Checkpoint saved/).first()).toBeVisible();
+
+  // A second chat in the same story, which becomes the active one.
+  await page.getByRole('button', { name: 'Chat menu' }).click();
+  await sheetAction(page, 'New chat in this story');
+  await expect(page.locator('.chat-composer')).toBeVisible();
+  await sendMessage(page, 'A different thread entirely.');
+
+  // The landmark from the first chat is still on the spine, marked as elsewhere.
+  await page.getByRole('button', { name: 'Chat menu' }).click();
+  await sheetAction(page, 'Story timeline');
+  const oath = page.getByRole('button', { name: 'Jump to Checkpoint: The oath' });
+  await expect(oath).toBeVisible();
+
+  // Jumping crosses into the other chat and lands on the right message.
+  await oath.click();
+  await expect(page.locator('.sheet')).toHaveCount(0);
+  const landed = page.locator('.msg-highlighted');
+  await expect(landed).toHaveCount(1, { timeout: 15_000 });
+  await expect(landed).toContainText('The oath was sworn at the gate.');
+  // And we really are in the other chat now.
+  await expect(page.getByText('A different thread entirely.')).toHaveCount(0);
 });

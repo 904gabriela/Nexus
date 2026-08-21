@@ -23,6 +23,8 @@ export interface MessageItemProps {
   onSetAlternative: (messageId: string, alternativeId: string | null) => void;
   onViewImage: (mediaId: string) => void;
   showTimestamps: boolean;
+  /** Briefly ringed after a timeline jump lands on this message. */
+  highlighted?: boolean;
 }
 
 export type QuickAction = 'edit' | 'copy' | 'regenerate' | 'delete' | 'important';
@@ -50,6 +52,7 @@ export const MessageItem = memo(function MessageItem({
   onSetAlternative,
   onViewImage,
   showTimestamps,
+  highlighted,
 }: MessageItemProps) {
   const { name, character } = speakerFor(message, characters, persona, story);
   const isUser = message.role === 'user';
@@ -78,7 +81,11 @@ export const MessageItem = memo(function MessageItem({
   const displayText = streaming ? streamingText : content;
 
   return (
-    <article className={`msg${isUser ? ' msg-user' : ''}`} aria-label={`${name} message`}>
+    <article
+      className={`msg${isUser ? ' msg-user' : ''}${highlighted ? ' msg-highlighted' : ''}`}
+      data-message-id={message.id}
+      aria-label={`${name} message`}
+    >
       {!isUser && (
         <Avatar
           mediaId={character?.avatarMediaId ?? null}
