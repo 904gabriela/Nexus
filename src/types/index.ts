@@ -400,7 +400,7 @@ export interface Chat extends Timestamped {
 
 /* --------------------------------------------------------------- provider */
 
-export type ProviderKind = 'openrouter' | 'openai' | 'custom' | 'local';
+export type ProviderKind = 'openrouter' | 'openai' | 'custom' | 'local' | 'ollama';
 
 /**
  * What a given model can actually do. Populated from the provider's model

@@ -2092,3 +2092,27 @@ mark {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Connection diagnostics: the sequence of what was established. */
+.diagnostic-steps {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.diagnostic-step {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 13px;
+}
+.diagnostic-step > span:first-child {
+  width: 1em;
+  flex: none;
+  font-weight: 700;
+}
+.diagnostic-step.is-ok > span:first-child { color: var(--ok, #4ade80); }
+.diagnostic-step.is-warn > span:first-child { color: var(--warn); }
+.diagnostic-step.is-fail > span:first-child { color: var(--danger, #f87171); }

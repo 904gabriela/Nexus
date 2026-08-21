@@ -21,7 +21,14 @@ import {
 } from '../components/ui/Field';
 import { Sheet } from '../components/ui/Sheet';
 import { useConfirm, deleteConfirm } from '../components/ui/Confirm';
-import { fetchModels, maskKey, testConnection, type TestResult } from '../ai/client';
+import {
+  ProviderError,
+  corsRemedy,
+  fetchModels,
+  maskKey,
+  testConnection,
+  type TestResult,
+} from '../ai/client';
 import {
   fetchImageModels,
   maskKey as maskImageKey,
@@ -190,6 +197,66 @@ function ProvidersSection() {
   );
 }
 
+/**
+ * What the connection test established, step by step.
+ *
+ * "Reachable" and "ready" are different states, and so are "nothing is
+ * listening" and "the browser would not let this page read the reply". Showing
+ * the sequence means a partial success reads as progress rather than as a
+ * failure, and names the one remaining thing to do.
+ */
+function Diagnostics({ result }: { result: TestResult }) {
+  const title = !result.ok
+    ? result.code === 'CORS_BLOCKED'
+      ? 'Reachable, but your browser blocked it'
+      : result.code === 'NETWORK_UNREACHABLE'
+        ? 'Nothing answered at that address'
+        : result.code === 'LOOPBACK_FROM_OTHER_DEVICE'
+          ? 'That address points at this device'
+          : result.code === 'MIXED_CONTENT'
+            ? 'Blocked: HTTPS page, HTTP endpoint'
+            : result.code === 'TIMEOUT'
+              ? 'Timed out'
+              : 'Connection failed'
+    : result.code === 'MODEL_NOT_SELECTED'
+      ? 'Server reachable — choose a model'
+      : result.code === 'MODEL_NOT_FOUND'
+        ? 'Server reachable — that model is not on it'
+        : 'Provider ready';
+
+  return (
+    <Banner
+      kind={!result.ok ? 'error' : result.code ? 'warn' : 'success'}
+      title={title}
+    >
+      {!!result.steps?.length && (
+        <ul className="diagnostic-steps">
+          {result.steps.map((step) => (
+            <li key={step.label} className={`diagnostic-step is-${step.state}`}>
+              <span aria-hidden="true">
+                {step.state === 'ok' ? '✓' : step.state === 'warn' ? '!' : '✗'}
+              </span>
+              <span>{step.label}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {result.message}
+      {result.remedy && (
+        <p style={{ marginBottom: 0 }}>
+          <strong>How to fix it: </strong>
+          {result.remedy}
+        </p>
+      )}
+      {result.detail && (
+        <p className="mono small" style={{ marginBottom: 0, opacity: 0.8 }}>
+          {result.detail}
+        </p>
+      )}
+    </Banner>
+  );
+}
+
 function ProviderEditor({
   provider,
   onClose,
@@ -226,7 +293,19 @@ function ProviderEditor({
     setTesting(true);
     setResult(null);
     try {
-      setResult(await testConnection(draft));
+      const outcome = await testConnection(draft);
+      // A test that reached the server has already listed the models; keeping
+      // them saves a second round trip and lets the picker fill itself.
+      if (outcome.discovered) {
+        patch({
+          models: outcome.discovered.models,
+          modelInfo: outcome.discovered.info,
+          ...(draft.model.trim() || outcome.discovered.models.length !== 1
+            ? {}
+            : { model: outcome.discovered.models[0] }),
+        });
+      }
+      setResult(outcome);
     } finally {
       setTesting(false);
     }
@@ -237,13 +316,30 @@ function ProviderEditor({
     setResult(null);
     try {
       const { models, info } = await fetchModels(draft);
-      patch({ models, modelInfo: info, model: draft.model || models[0] });
-      setResult({ ok: true, message: `Loaded ${models.length} models.` });
+      // One model means there is nothing to choose: select it rather than
+      // making the user retype what the server just reported.
+      const model = draft.model.trim() && models.includes(draft.model.trim())
+        ? draft.model
+        : models.length === 1
+          ? models[0]
+          : draft.model || models[0];
+      patch({ models, modelInfo: info, model });
+      setResult({
+        ok: true,
+        message:
+          models.length === 1
+            ? `Found one model and selected it: ${models[0]}.`
+            : `Loaded ${models.length} models.`,
+        models: models.length,
+      });
     } catch (err) {
+      const e = err instanceof ProviderError ? err : null;
       setResult({
         ok: false,
         message: (err as Error).message,
-        detail: (err as { detail?: string }).detail,
+        detail: e?.detail ?? (err as { detail?: string }).detail,
+        code: e?.code,
+        remedy: e?.code === 'CORS_BLOCKED' ? corsRemedy(draft.baseUrl) : undefined,
       });
     } finally {
       setFetching(false);
@@ -296,9 +392,11 @@ function ProviderEditor({
         inputMode="url"
         placeholder="https://openrouter.ai/api/v1"
         hint={
-          draft.kind === 'local'
-            ? 'Any LAN address works, e.g. http://192.168.1.42:1234/v1 or http://192.168.1.42:11434/v1. Do not assume localhost — use the address of the machine running the model. "/v1" is added automatically if you leave it off.'
-            : 'The OpenAI-compatible root. "/chat/completions" is appended automatically.'
+          draft.kind === 'ollama'
+            ? 'Just the address of the machine running Ollama, e.g. http://192.168.1.49:11434 — no path needed. Use that machine\'s address on your network, never localhost, unless Ollama runs on this same device.'
+            : draft.kind === 'local'
+              ? 'Any LAN address works, e.g. http://192.168.1.42:1234/v1 or http://192.168.1.42:11434/v1. Do not assume localhost — use the address of the machine running the model. "/v1" is added automatically if you leave it off.'
+              : 'The OpenAI-compatible root. "/chat/completions" is appended automatically.'
         }
       />
 
@@ -349,20 +447,7 @@ function ProviderEditor({
         </button>
       </div>
 
-      {result && (
-        <Banner
-          kind={result.ok ? 'success' : 'error'}
-          title={result.ok ? 'Connected' : 'Connection failed'}
-        >
-          {result.message}
-          {result.detail && (
-            <>
-              {' '}
-              <span className="mono small">{result.detail}</span>
-            </>
-          )}
-        </Banner>
-      )}
+      {result && <Diagnostics result={result} />}
 
       {draft.models.length ? (
         <SelectField

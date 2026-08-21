@@ -350,10 +350,15 @@ export const PROVIDER_PRESETS: Record<
     baseUrl: '',
     hint: 'Any service exposing /chat/completions.',
   },
+  ollama: {
+    label: 'Ollama',
+    baseUrl: 'http://192.168.1.10:11434',
+    hint: 'Models are discovered from Ollama itself — no need to type a model name.',
+  },
   local: {
-    label: 'Local / LAN',
+    label: 'Local / LAN (other)',
     baseUrl: 'http://192.168.1.10:1234/v1',
-    hint: 'LM Studio, Ollama, KoboldCpp, text-generation-webui…',
+    hint: 'LM Studio, KoboldCpp, text-generation-webui…',
   },
 };
 

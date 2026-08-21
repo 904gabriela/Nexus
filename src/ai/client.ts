@@ -15,21 +15,48 @@ import type {
 import { defaultCapabilities } from '../types';
 import { inferCapabilities } from '../types/factories';
 
+/**
+ * Why a request failed, in terms the UI can act on. `fetch` deliberately
+ * reports a blocked request and an unreachable host identically, so these are
+ * established by probing rather than by reading the error message.
+ */
+export type ProviderErrorCode =
+  | 'NETWORK_UNREACHABLE'
+  | 'CORS_BLOCKED'
+  | 'MIXED_CONTENT'
+  | 'LOOPBACK_FROM_OTHER_DEVICE'
+  | 'TIMEOUT'
+  | 'INVALID_URL'
+  | 'HTTP_ERROR'
+  | 'UNAUTHORIZED'
+  | 'INVALID_RESPONSE'
+  | 'NO_MODELS'
+  | 'MODEL_NOT_SELECTED'
+  | 'MODEL_NOT_FOUND'
+  | 'GENERATION_FAILED';
+
 export class ProviderError extends Error {
   readonly status?: number;
   readonly detail?: string;
+  readonly code: ProviderErrorCode;
 
-  constructor(message: string, status?: number, detail?: string) {
+  constructor(
+    message: string,
+    status?: number,
+    detail?: string,
+    code: ProviderErrorCode = 'GENERATION_FAILED',
+  ) {
     super(message);
     this.name = 'ProviderError';
     this.status = status;
     this.detail = detail;
+    this.code = code;
   }
 }
 
 export function normalizeBaseUrl(baseUrl: string): string {
   let url = baseUrl.trim().replace(/\/+$/, '');
-  if (!url) throw new ProviderError('This provider has no base URL configured.');
+  if (!url) throw new ProviderError('This provider has no base URL configured.', undefined, undefined, 'INVALID_URL');
   if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
   // A pasted endpoint often already includes the path. Strip it back to the
   // base so "http://host:1234/v1/chat/completions" and "http://host:1234" both
@@ -52,6 +79,8 @@ export function normalizeBaseUrl(baseUrl: string): string {
 const CONNECT_TIMEOUT_MS = 45_000;
 const REQUEST_TIMEOUT_MS = 180_000;
 const MODELS_TIMEOUT_MS = 20_000;
+/** Only asks whether something answers, so it should not wait long. */
+const PROBE_TIMEOUT_MS = 8_000;
 /** A stream that goes quiet this long is treated as dead. */
 const STALL_TIMEOUT_MS = 120_000;
 
@@ -100,6 +129,7 @@ function timeoutError(provider: Provider, seconds: number, what: string): Provid
     `${what} timed out after ${seconds}s. ${lanHint(provider.baseUrl)}`,
     undefined,
     'No response before the deadline.',
+    'TIMEOUT',
   );
 }
 
@@ -175,6 +205,7 @@ function assertReachable(provider: Provider, url: string): void {
       `Use the other computer's address on your network instead, for example ` +
         `http://${location.hostname}:11434/v1 if the model is running on the same machine ` +
         'that is serving this page.',
+      'LOOPBACK_FROM_OTHER_DEVICE',
     );
   }
   if (pageIsHttps() && url.toLowerCase().startsWith('http://')) {
@@ -184,6 +215,7 @@ function assertReachable(provider: Provider, url: string): void {
         'rule and no setting in this app can bypass it.',
       undefined,
       'Open this app over http:// on your LAN, or put the AI endpoint behind HTTPS.',
+      'MIXED_CONTENT',
     );
   }
 }
@@ -234,16 +266,183 @@ async function readError(response: Response): Promise<string> {
 }
 
 /**
- * `fetch` reports a blocked request and an unreachable host identically — the
- * browser deliberately withholds the difference. So this explains both real
- * possibilities rather than guessing at one.
+ * Asks whether anything is listening, without asking to read the answer.
+ *
+ * A no-cors request is exempt from the cross-origin rules that hide a normal
+ * response: the browser still sends it and still waits for the server, it just
+ * hands back an opaque result the page may not inspect. That is enough to tell
+ * the two indistinguishable failures apart — a server that replied but withheld
+ * its response from this origin resolves here, while a host with nothing
+ * listening rejects. It is the only way to separate them from inside a page.
  */
-function describeNetworkFailure(provider: Provider, err: unknown): ProviderError {
+async function probeReachable(baseUrl: string): Promise<boolean> {
+  let origin: string;
+  try {
+    origin = new URL(/^https?:\/\//i.test(baseUrl) ? baseUrl : `http://${baseUrl}`).origin;
+  } catch {
+    return false;
+  }
+  const clock = deadline(undefined, PROBE_TIMEOUT_MS);
+  try {
+    await fetch(origin, { mode: 'no-cors', signal: clock.signal });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clock.done();
+  }
+}
+
+/**
+ * `fetch` reports a blocked request and an unreachable host identically, so the
+ * difference is established by probing rather than guessed at. Getting this
+ * wrong sends people to rewrite firewall rules for a problem that is actually
+ * the browser refusing to hand over a response it already received.
+ */
+async function describeNetworkFailure(provider: Provider, err: unknown): Promise<ProviderError> {
+  const detail = err instanceof Error ? err.message : String(err);
+  if (await probeReachable(provider.baseUrl)) {
+    return new ProviderError(
+      `${provider.baseUrl} is reachable and answered, but your browser refused to hand the ` +
+        'response to this page: the server did not say it accepts requests from ' +
+        `${pageOrigin()}. This is the browser enforcing cross-origin rules (CORS), not a ` +
+        'network problem, and no setting in this app can bypass it.',
+      undefined,
+      `${detail} — opening the URL directly in a browser tab works even when this is blocked, ` +
+        'because a typed address is not a cross-origin request.',
+      'CORS_BLOCKED',
+    );
+  }
   return new ProviderError(
-    `Could not reach ${provider.baseUrl}. ${lanHint(provider.baseUrl)}`,
+    `Could not reach ${provider.baseUrl}. Nothing answered on that address and port. ` +
+      lanHint(provider.baseUrl),
     undefined,
-    err instanceof Error ? err.message : String(err),
+    detail,
+    'NETWORK_UNREACHABLE',
   );
+}
+
+function pageOrigin(): string {
+  return typeof location !== 'undefined' ? location.origin : 'this page';
+}
+
+/** Ollama's own remedy, named exactly, since it is the only fix that works. */
+export function corsRemedy(baseUrl: string): string {
+  const looksLikeOllama = /:11434(\/|$)/.test(baseUrl);
+  if (looksLikeOllama) {
+    return (
+      `Ollama only answers pages it has been told to trust. Set OLLAMA_ORIGINS=${pageOrigin()} ` +
+      "(or * while testing) on the computer running Ollama and restart it. On Windows that is " +
+      'setx OLLAMA_ORIGINS "*" followed by quitting Ollama from the tray and reopening it.'
+    );
+  }
+  return (
+    `Configure the server to allow requests from ${pageOrigin()} — usually a CORS or ` +
+    'allowed-origins setting.'
+  );
+}
+
+/* ----------------------------------------------------------------- Ollama */
+
+/**
+ * Ollama speaks two dialects: its own API under /api, and an OpenAI-compatible
+ * one under /v1. Its own is the reliable one — /api/tags lists what is actually
+ * pulled on the machine, with the size and quantisation the OpenAI shim drops.
+ * The base URL is stored however the user typed it, so both are derived from
+ * the origin rather than from whatever path normalisation produced.
+ */
+function ollamaRoot(baseUrl: string): string {
+  const raw = /^https?:\/\//i.test(baseUrl) ? baseUrl : `http://${baseUrl}`;
+  try {
+    return new URL(raw).origin;
+  } catch {
+    throw new ProviderError(
+      `"${baseUrl}" is not a valid address.`,
+      undefined,
+      'Expected something like http://192.168.1.49:11434',
+      'INVALID_URL',
+    );
+  }
+}
+
+/** True when the address looks like Ollama, or is configured as such. */
+export function isOllama(provider: Provider): boolean {
+  return provider.kind === 'ollama' || /:11434(\/|$)/.test(provider.baseUrl.trim());
+}
+
+interface OllamaTag {
+  name?: string;
+  model?: string;
+  details?: { family?: string; parameter_size?: string; quantization_level?: string };
+}
+
+/** Model discovery straight from Ollama, needing no model to be chosen first. */
+export async function fetchOllamaModels(
+  provider: Provider,
+  signal?: AbortSignal,
+): Promise<FetchModelsResult> {
+  const url = `${ollamaRoot(provider.baseUrl)}/api/tags`;
+  const clock = deadline(signal, MODELS_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(url, { headers: buildHeaders(provider), signal: clock.signal });
+  } catch (err) {
+    if ((err as Error)?.name === 'AbortError' && clock.timedOut()) {
+      throw timeoutError(provider, MODELS_TIMEOUT_MS / 1000, 'Loading models');
+    }
+    throw await describeNetworkFailure(provider, err);
+  } finally {
+    clock.done();
+  }
+  if (!response.ok) {
+    throw new ProviderError(
+      `Ollama answered /api/tags with HTTP ${response.status}.`,
+      response.status,
+      await readError(response),
+      'HTTP_ERROR',
+    );
+  }
+  const payload = await response.json().catch(() => null);
+  const tags: OllamaTag[] = Array.isArray(payload?.models) ? payload.models : [];
+  const info: Record<string, ModelInfo> = {};
+  const models: string[] = [];
+  for (const tag of tags) {
+    const id = String(tag.name ?? tag.model ?? '').trim();
+    if (!id) continue;
+    models.push(id);
+    info[id] = { id, capabilities: inferCapabilities(id), reported: false };
+  }
+  if (!models.length) {
+    throw new ProviderError(
+      'Ollama is running but has no models pulled. Run "ollama pull llama3.1" on that machine.',
+      undefined,
+      undefined,
+      'NO_MODELS',
+    );
+  }
+  return { models: models.sort((a, b) => a.localeCompare(b)), info };
+}
+
+/** Describes a model as Ollama reports it, for display next to the picker. */
+export async function describeOllamaModels(
+  provider: Provider,
+): Promise<Record<string, string>> {
+  try {
+    const url = `${ollamaRoot(provider.baseUrl)}/api/tags`;
+    const response = await fetch(url, { headers: buildHeaders(provider) });
+    if (!response.ok) return {};
+    const payload = await response.json().catch(() => null);
+    const out: Record<string, string> = {};
+    for (const tag of (payload?.models ?? []) as OllamaTag[]) {
+      const id = String(tag.name ?? tag.model ?? '').trim();
+      if (!id) continue;
+      const bits = [tag.details?.parameter_size, tag.details?.quantization_level].filter(Boolean);
+      if (bits.length) out[id] = bits.join(' · ');
+    }
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 export interface FetchModelsResult {
@@ -297,6 +496,16 @@ function readCapabilities(raw: unknown, id: string): ModelInfo {
 export async function fetchModels(provider: Provider, signal?: AbortSignal): Promise<FetchModelsResult> {
   const base = normalizeBaseUrl(provider.baseUrl);
   assertReachable(provider, base);
+  // Ollama's own listing is richer and always present; its OpenAI shim is not
+  // enabled on every build. Fall back only if /api/tags is genuinely absent.
+  if (isOllama(provider)) {
+    try {
+      return await fetchOllamaModels(provider, signal);
+    } catch (err) {
+      const code = err instanceof ProviderError ? err.code : undefined;
+      if (code && code !== 'HTTP_ERROR') throw err;
+    }
+  }
   const url = `${base}/models`;
   const clock = deadline(signal, MODELS_TIMEOUT_MS);
   let response: Response;
@@ -307,7 +516,7 @@ export async function fetchModels(provider: Provider, signal?: AbortSignal): Pro
       if (clock.timedOut()) throw timeoutError(provider, MODELS_TIMEOUT_MS / 1000, 'Loading models');
       throw err;
     }
-    throw describeNetworkFailure(provider, err);
+    throw await describeNetworkFailure(provider, err);
   } finally {
     clock.done();
   }
@@ -357,47 +566,115 @@ export async function fetchModels(provider: Provider, signal?: AbortSignal): Pro
   return { models: Array.from(new Set(models)), info };
 }
 
+export interface TestStep {
+  label: string;
+  state: 'ok' | 'fail' | 'warn';
+}
+
 export interface TestResult {
   ok: boolean;
   message: string;
   detail?: string;
   models?: number;
+  /** What was established, in order, so a partial success reads as progress. */
+  steps?: TestStep[];
+  code?: ProviderErrorCode;
+  /** The concrete fix, when there is exactly one. */
+  remedy?: string;
+  /** Discovered during the test, so the caller can populate the picker. */
+  discovered?: FetchModelsResult;
 }
 
+/**
+ * Establishes what is true, in order, and stops at the first thing that is not.
+ *
+ * "Can the server be reached" and "is a model chosen" are separate questions,
+ * and answering the first with the second's failure is what sent people
+ * rewriting firewall rules for a provider that was reachable all along. Nothing
+ * here needs a model to be selected: a missing model is a finding, not an error.
+ */
 export async function testConnection(provider: Provider): Promise<TestResult> {
+  const steps: TestStep[] = [];
+  const fail = (err: unknown): TestResult => {
+    const e = err instanceof ProviderError ? err : null;
+    return {
+      ok: false,
+      steps,
+      message: e?.message ?? (err instanceof Error ? err.message : 'Connection failed.'),
+      detail: e?.detail,
+      code: e?.code,
+      remedy: e?.code === 'CORS_BLOCKED' ? corsRemedy(provider.baseUrl) : undefined,
+    };
+  };
+
+  // 1. Is the address usable from this page at all? Both of these are decided
+  //    before any request leaves, so they are checked first.
   try {
-    const { models } = await fetchModels(provider);
+    assertReachable(provider, normalizeBaseUrl(provider.baseUrl));
+  } catch (err) {
+    steps.push({ label: 'Address usable from this page', state: 'fail' });
+    return fail(err);
+  }
+
+  // 2. Discover models. This is also the reachability test, because a failure
+  //    here is classified by probe into "nothing listening" vs "blocked".
+  let discovered: FetchModelsResult;
+  try {
+    discovered = await fetchModels(provider);
+  } catch (err) {
+    const reachable = await probeReachable(provider.baseUrl);
+    steps.push({ label: 'Server responds', state: reachable ? 'ok' : 'fail' });
+    if (reachable) steps.push({ label: 'Browser allowed to read the response', state: 'fail' });
+    return fail(err);
+  }
+  steps.push({ label: 'Server responds', state: 'ok' });
+  steps.push({ label: 'Browser allowed to read the response', state: 'ok' });
+  if (isOllama(provider)) steps.push({ label: 'Ollama detected', state: 'ok' });
+  steps.push({
+    label: `${discovered.models.length} model${discovered.models.length === 1 ? '' : 's'} available`,
+    state: 'ok',
+  });
+
+  // 3. A model that is not selected, or no longer exists, is reported as its
+  //    own state — the server is fine either way.
+  const chosen = provider.model.trim();
+  if (!chosen) {
+    steps.push({ label: 'Model selected', state: 'warn' });
     return {
       ok: true,
-      message: `Connected. ${models.length} model${models.length === 1 ? '' : 's'} available.`,
-      models: models.length,
+      steps,
+      models: discovered.models.length,
+      discovered,
+      code: 'MODEL_NOT_SELECTED',
+      message:
+        discovered.models.length === 1
+          ? `Server reachable. One model is available (${discovered.models[0]}) — select it to finish.`
+          : 'Server reachable, but no model is selected yet. Choose one below.',
     };
-  } catch (err) {
-    if (err instanceof ProviderError && err.status && err.status !== 401 && err.status !== 404) {
-      return { ok: false, message: err.message, detail: err.detail };
-    }
-    // /models is optional; a minimal completion is the definitive check.
-    try {
-      const reply = await complete({
-        provider,
-        messages: [{ role: 'user', content: 'Reply with the single word: ok' }],
-        settings: { maxTokens: 5, temperature: 0, streaming: false },
-      });
-      return {
-        ok: true,
-        message: `Connected. The endpoint answered a test completion${
-          reply.trim() ? ` ("${reply.trim().slice(0, 40)}")` : ''
-        }.`,
-      };
-    } catch (completionErr) {
-      const e = completionErr instanceof ProviderError ? completionErr : null;
-      return {
-        ok: false,
-        message: e?.message ?? (err instanceof Error ? err.message : 'Connection failed.'),
-        detail: e?.detail ?? (err instanceof ProviderError ? err.detail : undefined),
-      };
-    }
   }
+  if (!discovered.models.includes(chosen)) {
+    steps.push({ label: 'Model selected', state: 'warn' });
+    return {
+      ok: true,
+      steps,
+      models: discovered.models.length,
+      discovered,
+      code: 'MODEL_NOT_FOUND',
+      message: `Server reachable, but "${chosen}" is not one of the ${discovered.models.length} models this server offers.`,
+      detail: `Available: ${discovered.models.slice(0, 6).join(', ')}`,
+    };
+  }
+  steps.push({ label: `Model: ${chosen}`, state: 'ok' });
+  steps.push({ label: 'Provider ready', state: 'ok' });
+  return {
+    ok: true,
+    steps,
+    models: discovered.models.length,
+    discovered,
+    message: `Ready. ${discovered.models.length} model${
+      discovered.models.length === 1 ? '' : 's'
+    } available, using ${chosen}.`,
+  };
 }
 
 export interface CompleteOptions {
@@ -449,7 +726,7 @@ export async function complete(options: CompleteOptions): Promise<string> {
       if (clock.timedOut()) throw timeoutError(provider, REQUEST_TIMEOUT_MS / 1000, 'The request');
       throw err;
     }
-    throw describeNetworkFailure(provider, err);
+    throw await describeNetworkFailure(provider, err);
   }
 
   // The deadline stays armed through the body read: a server can send headers
@@ -505,9 +782,137 @@ async function httpError(response: Response): Promise<ProviderError> {
  * Streaming completion. Falls back to a single request when the endpoint does
  * not produce a readable stream. Returns the full text.
  */
+/**
+ * Ollama's own chat endpoint. It streams newline-delimited JSON rather than
+ * SSE, and takes its sampling options in an `options` object instead of at the
+ * top level, so it cannot share the OpenAI request builder.
+ */
+async function streamOllama(options: CompleteOptions): Promise<string> {
+  const { provider, onToken, settings = {} } = options;
+  const model = options.model || provider.model;
+  if (!model) {
+    throw new ProviderError(
+      'No model is selected for this provider.',
+      undefined,
+      'Fetch the models and choose one in Settings.',
+      'MODEL_NOT_SELECTED',
+    );
+  }
+  const url = `${ollamaRoot(provider.baseUrl)}/api/chat`;
+  const body = {
+    model,
+    messages: options.messages,
+    stream: true,
+    options: {
+      temperature: settings.temperature ?? provider.temperature,
+      top_p: settings.topP ?? provider.topP,
+      num_predict: settings.maxTokens ?? provider.maxTokens,
+      // Ollama calls these by their llama.cpp names.
+      repeat_penalty:
+        1 + ((settings.frequencyPenalty ?? provider.frequencyPenalty) || 0),
+    },
+  };
+
+  const clock = deadline(options.signal, CONNECT_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: buildHeaders(provider),
+      body: JSON.stringify(body),
+      signal: clock.signal,
+    });
+  } catch (err) {
+    clock.done();
+    if ((err as Error)?.name === 'AbortError' && clock.timedOut()) {
+      throw timeoutError(provider, CONNECT_TIMEOUT_MS / 1000, 'The request');
+    }
+    throw await describeNetworkFailure(provider, err);
+  }
+  if (!response.ok) {
+    clock.done();
+    const detail = await readError(response);
+    throw new ProviderError(
+      response.status === 404
+        ? `Ollama does not have a model called "${model}". Run "ollama pull ${model}" on that machine.`
+        : `Ollama answered with HTTP ${response.status}.`,
+      response.status,
+      detail,
+      response.status === 404 ? 'MODEL_NOT_FOUND' : 'HTTP_ERROR',
+    );
+  }
+  if (!response.body) {
+    clock.done();
+    throw new ProviderError(
+      'Ollama returned no response body.',
+      undefined,
+      undefined,
+      'INVALID_RESPONSE',
+    );
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let full = '';
+  clock.bump(STALL_TIMEOUT_MS);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      clock.bump(STALL_TIMEOUT_MS);
+      buffer += decoder.decode(value, { stream: true });
+      // One JSON object per line; a partial tail stays in the buffer.
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        let parsed: any;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          continue;
+        }
+        if (parsed.error) {
+          throw new ProviderError(String(parsed.error), undefined, undefined, 'GENERATION_FAILED');
+        }
+        const chunk = parsed?.message?.content ?? parsed?.response ?? '';
+        if (chunk) {
+          full += chunk;
+          onToken?.(chunk, full);
+        }
+      }
+    }
+  } catch (err) {
+    if ((err as Error)?.name === 'AbortError') {
+      if (clock.timedOut()) {
+        if (full.trim()) return full;
+        throw timeoutError(provider, STALL_TIMEOUT_MS / 1000, 'The stream');
+      }
+      return full; // the user pressed Stop
+    }
+    throw err;
+  } finally {
+    clock.done();
+    reader.releaseLock();
+  }
+  return full;
+}
+
 export async function streamComplete(options: CompleteOptions): Promise<string> {
   const { provider, onToken } = options;
   const wantsStream = options.settings?.streaming ?? provider.streaming;
+  // Ollama's own endpoint is preferred when the provider is configured as
+  // Ollama; its OpenAI shim is not enabled on every build.
+  if (provider.kind === 'ollama') {
+    if (!wantsStream) {
+      const text = await streamOllama({ ...options, onToken: undefined });
+      onToken?.(text, text);
+      return text;
+    }
+    return streamOllama(options);
+  }
   if (!wantsStream) {
     const text = await complete(options);
     onToken?.(text, text);
@@ -536,7 +941,7 @@ export async function streamComplete(options: CompleteOptions): Promise<string> 
       if (clock.timedOut()) throw timeoutError(provider, CONNECT_TIMEOUT_MS / 1000, 'Connecting');
       throw err;
     }
-    throw describeNetworkFailure(provider, err);
+    throw await describeNetworkFailure(provider, err);
   }
 
   if (!response.ok) {

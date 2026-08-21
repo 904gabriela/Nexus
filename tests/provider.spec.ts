@@ -118,7 +118,11 @@ test('base URLs are normalized for the shapes people actually paste', async ({ p
     const dialog = page.getByRole('dialog');
     await fieldIn(dialog, 'Base URL').fill(input);
     await dialog.getByRole('button', { name: 'Fetch models' }).click();
-    await expect(dialog.getByText(/Loaded 1 model/)).toBeVisible({ timeout: 15_000 });
+    // A lone model is selected automatically, so the wording differs from a
+    // multi-model load; this test is about the URL, not the phrasing.
+    await expect(
+      dialog.getByText(/Loaded 1 model|Found one model and selected it/),
+    ).toBeVisible({ timeout: 15_000 });
     await dialog.getByRole('button', { name: 'Cancel' }).click();
   }
 
