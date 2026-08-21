@@ -6,7 +6,7 @@
  */
 
 export const DB_NAME = 'nexus-tavern-pro';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 export const STORES = {
   characters: 'characters',
@@ -23,6 +23,8 @@ export const STORES = {
   media: 'media',
   mediaBlobs: 'mediaBlobs',
   providers: 'providers',
+  imageProviders: 'imageProviders',
+  storySummaries: 'storySummaries',
   settings: 'settings',
 } as const;
 
@@ -64,9 +66,12 @@ const SCHEMA: Record<StoreName, IndexSpec[]> = {
   media: [
     { name: 'ownerId', keyPath: 'ownerId' },
     { name: 'createdAt', keyPath: 'createdAt' },
+    { name: 'source', keyPath: 'source' },
   ],
   mediaBlobs: [],
   providers: [],
+  imageProviders: [],
+  storySummaries: [{ name: 'storyId', keyPath: 'storyId' }],
   settings: [],
 };
 
@@ -101,17 +106,32 @@ export function openDB(): Promise<IDBDatabase> {
       reject(new StorageError('Could not open the local database.', err));
       return;
     }
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result;
+      const tx = request.transaction!;
       for (const [name, indexes] of Object.entries(SCHEMA) as [StoreName, IndexSpec[]][]) {
         const store = db.objectStoreNames.contains(name)
-          ? request.transaction!.objectStore(name)
+          ? tx.objectStore(name)
           : db.createObjectStore(name, { keyPath: 'id' });
         for (const idx of indexes) {
           if (!store.indexNames.contains(idx.name)) {
             store.createIndex(idx.name, idx.keyPath, { unique: !!idx.unique });
           }
         }
+      }
+
+      // v1 media rows have no `source`, so they would be invisible to the new
+      // index. Backfill them as uploads during the upgrade transaction.
+      if (event.oldVersion > 0 && event.oldVersion < 2) {
+        const media = tx.objectStore(STORES.media);
+        const cursorRequest = media.openCursor();
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const row = cursor.value as { source?: string };
+          if (!row.source) cursor.update({ ...row, source: 'upload' });
+          cursor.continue();
+        };
       }
     };
     request.onsuccess = () => {
@@ -280,5 +300,7 @@ export const ALL_DATA_STORES: StoreName[] = [
   STORES.media,
   STORES.mediaBlobs,
   STORES.providers,
+  STORES.imageProviders,
+  STORES.storySummaries,
   STORES.settings,
 ];

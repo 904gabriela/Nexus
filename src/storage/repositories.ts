@@ -22,8 +22,10 @@ import type {
   MessageAlternative,
   Persona,
   Provider,
+  ImageProvider,
   Settings,
   Story,
+  StorySummary,
 } from '../types';
 import { SCHEMA_VERSION, defaultSettings, now } from '../types/factories';
 
@@ -151,6 +153,22 @@ export const providers = {
   remove: (id: ID) => dbDelete(STORES.providers, id),
 };
 
+export const imageProviders = {
+  all: () => dbGetAll<ImageProvider>(STORES.imageProviders),
+  get: (id: ID) => dbGet<ImageProvider>(STORES.imageProviders, id),
+  save: (value: ImageProvider) => dbPut(STORES.imageProviders, touch(value)),
+  saveMany: (values: ImageProvider[]) => dbPutMany(STORES.imageProviders, values),
+  remove: (id: ID) => dbDelete(STORES.imageProviders, id),
+};
+
+export const storySummaries = {
+  all: () => dbGetAll<StorySummary>(STORES.storySummaries),
+  get: (storyId: ID) => dbGet<StorySummary>(STORES.storySummaries, storyId),
+  save: (value: StorySummary) => dbPut(STORES.storySummaries, touch(value)),
+  saveMany: (values: StorySummary[]) => dbPutMany(STORES.storySummaries, values),
+  remove: (storyId: ID) => dbDelete(STORES.storySummaries, storyId),
+};
+
 export const settingsRepo = {
   async load(): Promise<Settings> {
     const stored = await dbGet<Settings>(STORES.settings, 'settings');
@@ -187,6 +205,7 @@ export async function deleteChatCascade(chatId: ID): Promise<void> {
 export async function deleteStoryCascade(storyId: ID): Promise<void> {
   const storyChats = await chats.byStory(storyId);
   for (const chat of storyChats) await deleteChatCascade(chat.id);
+  await storySummaries.remove(storyId);
   await stories.remove(storyId);
 }
 

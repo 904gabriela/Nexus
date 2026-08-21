@@ -1,26 +1,40 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type {
+  AspectRatio,
   Attachment,
   Character,
   Chat,
   ID,
+  MediaMeta,
   Message,
   Persona,
   Story,
 } from '../types';
 import {
+  activeImageProvider,
   activeProvider,
+  capabilitiesOf,
   charactersOf,
   effectiveGeneration,
   personaOf,
   storyOf,
+  summaryOf,
   useActions,
   useAppState,
   useStore,
 } from '../state/store';
+import { maybeCreateAutoMemory } from '../memory/autoMemory';
+import {
+  applyDraft,
+  generateStorySummary,
+  shouldAutoSummarize,
+} from '../memory/storySummary';
+import { newStorySummary } from '../types/factories';
 import { ProviderError, streamComplete } from '../ai/client';
 import { compileContext, type CompileInput, type CompileResult } from '../context/compiler';
-import { getMediaBlob, blobToDataUrl } from '../media/mediaStore';
+import { resolveTimeline } from '../services/timeline';
+import { getMediaBlob, blobToDataUrl, saveMedia } from '../media/mediaStore';
+import { ImageError, generateImage } from '../ai/imageClient';
 
 export interface GenerationTarget {
   /** Which cast member replies; defaults to the primary character. */
@@ -62,6 +76,9 @@ export function useGeneration() {
   const actions = useActions();
   const { timeline, activeChat } = useStore();
   const abortRef = useRef<AbortController | null>(null);
+  // Upkeep runs after the reply resolves, so it must read state as it is then.
+  const stateRef = useRef(state);
+  stateRef.current = state;
   /** Latest streamed text, readable from the catch block after an abort. */
   const streamingTextRef = useRef('');
 
@@ -74,6 +91,9 @@ export function useGeneration() {
   const characters = useMemo(() => charactersOf(state, story), [state, story]);
   const persona = useMemo(() => personaOf(state, activeChat, story), [state, activeChat, story]);
   const provider = useMemo(() => activeProvider(state), [state]);
+  const imageProvider = useMemo(() => activeImageProvider(state), [state]);
+  const capabilities = useMemo(() => capabilitiesOf(provider), [provider]);
+  const summary = useMemo(() => summaryOf(state, story), [state, story]);
 
   /** Alternative-aware content for a message. */
   const contentOf = useCallback(
@@ -117,11 +137,12 @@ export function useGeneration() {
       lorebooks: state.lorebooks,
       loreEntries: state.loreEntries,
       history: history.map((message) => ({ ...message, content: contentOf(message) })),
+      summary,
       pendingUserText: options.pendingUserText,
       pendingAttachments: options.pendingAttachments,
       instruction: options.instruction,
       respondingCharacterId: options.respondingCharacterId,
-      visionEnabled: !!provider?.visionSupport,
+      visionEnabled: capabilities.vision,
       imageResolver: options.imageMap
         ? (attachment) => (attachment.mediaId ? options.imageMap!.get(attachment.mediaId) : undefined)
         : undefined,
@@ -136,7 +157,8 @@ export function useGeneration() {
       persona,
       memoriesForContext,
       contentOf,
-      provider,
+      capabilities.vision,
+      summary,
     ],
   );
 
@@ -154,6 +176,82 @@ export function useGeneration() {
     abortRef.current?.abort();
     abortRef.current = null;
   }, []);
+
+  /**
+   * Keeps long-run memory current after a turn: folds older history into the
+   * rolling summary, and proposes an automatic memory when a trigger fires.
+   * Runs detached so neither can delay or break the reply.
+   */
+  const runPostTurnUpkeep = useCallback(async () => {
+    const current = stateRef.current;
+    const chat = current.chats.find((c) => c.id === current.activeChatId) ?? null;
+    if (!chat) return;
+    const currentStory = storyOf(current, chat);
+    const currentCharacters = charactersOf(current, currentStory);
+    const currentPersona = personaOf(current, chat, currentStory);
+    const currentProvider = activeProvider(current);
+    const line = resolveTimeline(current.messages, current.branches, chat.activeBranchId);
+
+    // 1. Rolling story summary.
+    if (currentStory && current.settings.useStorySummary) {
+      const existing = summaryOf(current, currentStory);
+      if (
+        shouldAutoSummarize(
+          existing,
+          line,
+          current.settings.summaryWindow,
+          current.settings.autoSummaryEvery,
+        )
+      ) {
+        try {
+          const draft = await generateStorySummary({
+            story: currentStory,
+            existing,
+            characters: currentCharacters,
+            persona: currentPersona,
+            timeline: line,
+            window: current.settings.summaryWindow,
+            provider: currentProvider,
+          });
+          await actions.saveStorySummary(
+            applyDraft(existing ?? newStorySummary(currentStory.id), draft),
+          );
+        } catch {
+          // A failed summary just means the next turn tries again.
+        }
+      }
+    }
+
+    // 2. Automatic memory.
+    if (current.settings.autoMemory && current.settings.autoMemoryEvery > 0) {
+      const assistantCount = line.filter((m) => m.role === 'assistant').length;
+      if (assistantCount > 0 && assistantCount % current.settings.autoMemoryEvery === 0) {
+        try {
+          const exchange = line.slice(-2);
+          const result = await maybeCreateAutoMemory({
+            messages: exchange.map((m) => ({ ...m, content: contentOf(m) })),
+            characters: currentCharacters,
+            persona: currentPersona,
+            provider: currentProvider,
+            settings: current.settings,
+            chatId: chat.id,
+            storyId: chat.storyId,
+            existing: current.memories,
+          });
+          if (result) {
+            await actions.saveMemory(result.memory);
+            actions.toast({
+              kind: 'info',
+              title: 'Memory saved automatically',
+              detail: `${result.memory.title} — triggered by: ${result.hit.trigger}. Edit or delete it from Memories.`,
+            });
+          }
+        } catch {
+          // Automatic memory is an assist, never a hard requirement.
+        }
+      }
+    }
+  }, [actions, contentOf]);
 
   const generate = useCallback(
     async (target: GenerationTarget = {}): Promise<void> => {
@@ -201,7 +299,7 @@ export function useGeneration() {
 
       let placeholder: Message | null = null;
       try {
-        const imageMap = provider.visionSupport
+        const imageMap = capabilities.vision
           ? await buildImageMap(history, [])
           : undefined;
 
@@ -313,6 +411,10 @@ export function useGeneration() {
         setStreamingText('');
         setStreamingFor(null);
       }
+
+      // Background upkeep. These are best-effort: a failure here must never
+      // surface as a failed reply, so each is caught independently.
+      void runPostTurnUpkeep();
     },
     [
       activeChat,
@@ -323,7 +425,96 @@ export function useGeneration() {
       buildCompileInput,
       actions,
       state.messages,
+      capabilities.vision,
+      runPostTurnUpkeep,
     ],
+  );
+
+  /* ---------------------------------------------------------- image gen */
+
+  const [generatingImage, setGeneratingImage] = useState(false);
+  const imageAbortRef = useRef<AbortController | null>(null);
+
+  const stopImage = useCallback(() => {
+    imageAbortRef.current?.abort();
+    imageAbortRef.current = null;
+  }, []);
+
+  /**
+   * Generates an image and stores it as blob-backed media, tagged with where
+   * it came from so the gallery can group it and it can be regenerated later.
+   */
+  const createImage = useCallback(
+    async (options: {
+      prompt: string;
+      aspect?: AspectRatio;
+      messageId?: ID | null;
+      characterId?: ID | null;
+      personaId?: ID | null;
+    }): Promise<MediaMeta | null> => {
+      if (!imageProvider) {
+        actions.toast({
+          kind: 'error',
+          title: 'No image provider configured',
+          detail: 'Add one in Settings → Image Generation before generating art.',
+        });
+        return null;
+      }
+
+      const controller = new AbortController();
+      imageAbortRef.current = controller;
+      setGeneratingImage(true);
+      try {
+        const result = await generateImage({
+          provider: imageProvider,
+          prompt: options.prompt,
+          aspect: options.aspect ?? imageProvider.defaultAspect,
+          signal: controller.signal,
+        });
+
+        const extension = result.mimeType.includes('jpeg') ? 'jpg' : 'png';
+        const file =
+          typeof File !== 'undefined'
+            ? new File([result.blob], `generated-${Date.now()}.${extension}`, {
+                type: result.mimeType,
+              })
+            : result.blob;
+
+        const meta = await saveMedia(file, {
+          ownerType: 'generated',
+          source: 'generated',
+          prompt: result.prompt,
+          imageProviderId: imageProvider.id,
+          imageModel: result.model,
+          storyId: story?.id ?? null,
+          chatId: activeChat?.id ?? null,
+          messageId: options.messageId ?? null,
+          characterId: options.characterId ?? null,
+          personaId: options.personaId ?? null,
+          // Preserve the model's exact output rather than re-encoding it.
+          preserveOriginal: true,
+        });
+        await actions.refreshMedia();
+        return meta;
+      } catch (err) {
+        if ((err as Error)?.name === 'AbortError') {
+          actions.toast({ kind: 'info', title: 'Image generation stopped' });
+          return null;
+        }
+        const detail =
+          err instanceof ImageError ? (err.detail ?? err.message) : (err as Error).message;
+        actions.toast({
+          kind: 'error',
+          title: 'Image generation failed',
+          detail,
+        });
+        return null;
+      } finally {
+        imageAbortRef.current = null;
+        setGeneratingImage(false);
+      }
+    },
+    [imageProvider, actions, story, activeChat],
   );
 
   return {
@@ -336,9 +527,17 @@ export function useGeneration() {
     previewContext,
     contentOf,
     provider,
+    imageProvider,
+    capabilities,
+    summary,
     story,
     characters,
     persona,
+    /** Trailing slice of the active branch, for image prompt building. */
+    recentTimeline: timeline.slice(-8),
+    generatingImage,
+    createImage,
+    stopImage,
   };
 }
 

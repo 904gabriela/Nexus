@@ -4,6 +4,7 @@ import { useActions, useAppState } from '../state/store';
 import { MediaImage, useMediaUrl } from '../components/media/MediaImage';
 import { Icon } from '../components/ui/Icon';
 import { EmptyState, SearchInput } from '../components/ui/common';
+import { SelectField } from '../components/ui/Field';
 import { ActionSheet, Sheet } from '../components/ui/Sheet';
 import { useConfirm } from '../components/ui/Confirm';
 import { IMAGE_ACCEPT_ATTR, MediaError, replaceMedia, saveMedia } from '../media/mediaStore';
@@ -21,9 +22,10 @@ export function MediaPage() {
   const replaceInput = useRef<HTMLInputElement>(null);
 
   const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState<'all' | MediaMeta['ownerType']>('all');
+  const [filter, setFilter] = useState<'all' | 'generated' | MediaMeta['ownerType']>('all');
   const [preview, setPreview] = useState<MediaMeta | null>(null);
   const [menuFor, setMenuFor] = useState<MediaMeta | null>(null);
+  const [reuseFor, setReuseFor] = useState<MediaMeta | null>(null);
   const [uploading, setUploading] = useState(false);
 
   const usageOf = useMemo(() => {
@@ -55,7 +57,13 @@ export function MediaPage() {
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return state.media.filter((meta) => {
-      if (filter !== 'all' && meta.ownerType !== filter) return false;
+      // 'generated' cuts across owner types: a generated image may since have
+      // been made someone's avatar.
+      if (filter === 'generated') {
+        if (meta.source !== 'generated') return false;
+      } else if (filter !== 'all' && meta.ownerType !== filter) {
+        return false;
+      }
       if (!needle) return true;
       return (
         meta.filename.toLowerCase().includes(needle) ||
@@ -182,6 +190,7 @@ export function MediaPage() {
           {(
             [
               ['all', 'All'],
+              ['generated', 'Generated'],
               ['character', 'Character avatars'],
               ['persona', 'Persona avatars'],
               ['story-cover', 'Story covers'],
@@ -193,7 +202,9 @@ export function MediaPage() {
             const count =
               value === 'all'
                 ? state.media.length
-                : state.media.filter((m) => m.ownerType === value).length;
+                : value === 'generated'
+                  ? state.media.filter((m) => m.source === 'generated').length
+                  : state.media.filter((m) => m.ownerType === value).length;
             if (!count && value !== 'all') return null;
             return (
               <button
@@ -284,6 +295,8 @@ export function MediaPage() {
         />
       )}
 
+      {reuseFor && <ReuseSheet meta={reuseFor} onClose={() => setReuseFor(null)} />}
+
       <ActionSheet
         open={!!menuFor}
         onClose={() => setMenuFor(null)}
@@ -297,6 +310,13 @@ export function MediaPage() {
                   description: 'Keeps every existing reference and swaps the picture.',
                   icon: 'refresh',
                   onSelect: () => replaceInput.current?.click(),
+                },
+                {
+                  key: 'reuse',
+                  label: 'Use this image',
+                  description: 'Set it as an avatar, story cover or background.',
+                  icon: 'target',
+                  onSelect: () => setReuseFor(menuFor),
                 },
                 {
                   key: 'download',
@@ -369,6 +389,10 @@ function MediaDetail({
         />
       )}
       <div className="stack">
+        <Row label="Source" value={meta.source === 'generated' ? 'AI generated' : 'Uploaded'} />
+        {meta.source === 'generated' && meta.imageModel && (
+          <Row label="Model" value={meta.imageModel} />
+        )}
         <Row label="Type" value={meta.mimeType} />
         <Row label="Size" value={formatBytes(meta.size)} />
         <Row
@@ -377,6 +401,14 @@ function MediaDetail({
         />
         <Row label="Added" value={formatDate(meta.createdAt)} />
         <Row label="Identifier" value={meta.id} mono />
+        {meta.prompt && (
+          <div>
+            <div className="small muted">Prompt</div>
+            <pre className="ctx-part-body mono" style={{ borderRadius: 8, maxHeight: 160 }}>
+              {meta.prompt}
+            </pre>
+          </div>
+        )}
         <div>
           <div className="small muted">Used by</div>
           {!usage.length ? (
@@ -404,5 +436,101 @@ function Row({ label, value, mono }: { label: string; value: string; mono?: bool
         {value}
       </span>
     </div>
+  );
+}
+
+/**
+ * Attach an existing image to something. This is what makes the gallery a
+ * library rather than a dead-end list.
+ */
+function ReuseSheet({ meta, onClose }: { meta: MediaMeta; onClose: () => void }) {
+  const state = useAppState();
+  const actions = useActions();
+  const [target, setTarget] = useState<'character' | 'persona' | 'cover' | 'background'>(
+    'character',
+  );
+  const [id, setId] = useState('');
+
+  const options =
+    target === 'character'
+      ? state.characters.map((c) => ({ value: c.id, label: c.name || 'Unnamed' }))
+      : target === 'persona'
+        ? state.personas.map((p) => ({ value: p.id, label: p.name || 'Unnamed' }))
+        : state.stories.map((s) => ({ value: s.id, label: s.title || 'Untitled' }));
+
+  const apply = async () => {
+    if (!id) return;
+    if (target === 'character') {
+      const character = state.characters.find((c) => c.id === id);
+      if (character) await actions.saveCharacter({ ...character, avatarMediaId: meta.id });
+    } else if (target === 'persona') {
+      const persona = state.personas.find((p) => p.id === id);
+      if (persona) await actions.savePersona({ ...persona, avatarMediaId: meta.id });
+    } else {
+      const story = state.stories.find((s) => s.id === id);
+      if (story) {
+        await actions.saveStory({
+          ...story,
+          ...(target === 'cover' ? { coverMediaId: meta.id } : { backgroundMediaId: meta.id }),
+        });
+      }
+    }
+    actions.toast({ kind: 'success', title: 'Image applied' });
+    onClose();
+  };
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title="Use this image"
+      footer={
+        <>
+          <button type="button" className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn-primary" onClick={apply} disabled={!id}>
+            <Icon name="check" />
+            Apply
+          </button>
+        </>
+      }
+    >
+      <div className="chip-row" style={{ marginBottom: 14 }}>
+        {(
+          [
+            ['character', 'Character avatar'],
+            ['persona', 'Persona avatar'],
+            ['cover', 'Story cover'],
+            ['background', 'Story background'],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            className={`chip ${target === value ? 'chip-accent' : ''}`}
+            style={{ cursor: 'pointer', minHeight: 40, padding: '0 14px' }}
+            aria-pressed={target === value}
+            onClick={() => {
+              setTarget(value);
+              setId('');
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {!options.length ? (
+        <p className="small muted">Nothing to apply this to yet.</p>
+      ) : (
+        <SelectField
+          label={target === 'character' ? 'Character' : target === 'persona' ? 'Persona' : 'Story'}
+          value={id}
+          onChange={setId}
+          options={[{ value: '', label: 'Choose…' }, ...options]}
+        />
+      )}
+    </Sheet>
   );
 }

@@ -23,6 +23,7 @@ import type {
   Persona,
   Settings,
   Story,
+  StorySummary,
 } from '../types';
 import { scanLore } from '../lore/matcher';
 import { IMAGE_TOKEN_COST, estimateTokens } from './tokens';
@@ -45,6 +46,8 @@ export interface CompileInput {
   instruction?: string;
   /** Which character is being asked to reply, in a multi-character story. */
   respondingCharacterId?: string | null;
+  /** Long-run memory. When present, older history folds into this. */
+  summary?: StorySummary | null;
   /** Resolves an attachment to a data URL for vision-capable providers. */
   imageResolver?: (attachment: Attachment) => string | undefined;
   visionEnabled?: boolean;
@@ -211,6 +214,7 @@ const PRIORITY = {
   memory: 600,
   authorNote: 880,
   instruction: 990,
+  summary: 820,
   recentHistory: 500,
   olderHistory: 100,
 } as const;
@@ -418,6 +422,82 @@ export function compileContext(input: CompileInput): CompileResult {
     );
   }
 
+  /* ------------------------------------------------------ story summary */
+
+  // Long-run memory sits above lore and below the cast: it is the story's
+  // spine, and dropping it is what makes a months-old roleplay lose the plot.
+  const summary = settings.useStorySummary ? (input.summary ?? null) : null;
+  if (summary) {
+    if (summary.currentSummary.trim()) {
+      parts.push(
+        part(
+          'summary-current',
+          'Story summary — where things stand',
+          'memory',
+          macro(`## Story so far\n${summary.currentSummary}`),
+          'Long-run memory: the current state of the story.',
+          PRIORITY.summary,
+        ),
+      );
+    }
+    if (summary.rollingSummary.trim()) {
+      parts.push(
+        part(
+          'summary-rolling',
+          'Story summary — history',
+          'memory',
+          macro(`## Earlier history (compacted)\n${summary.rollingSummary}`),
+          'Long-run memory: replaces older messages that were trimmed from history.',
+          PRIORITY.summary - 5,
+        ),
+      );
+    }
+    if (summary.importantEvents.length) {
+      parts.push(
+        part(
+          'summary-events',
+          'Story summary — key events',
+          'memory',
+          macro(`## Key events\n${summary.importantEvents.map((e) => `- ${e}`).join('\n')}`),
+          'Long-run memory: beats flagged as never-forget.',
+          PRIORITY.summary - 10,
+        ),
+      );
+    }
+    if (summary.relationshipState.trim()) {
+      parts.push(
+        part(
+          'summary-relationships',
+          'Story summary — relationships',
+          'memory',
+          macro(`## Relationships\n${summary.relationshipState}`),
+          'Long-run memory: how the cast stands with each other.',
+          PRIORITY.summary - 15,
+        ),
+      );
+    }
+    const states = Object.entries(summary.characterState).filter(([, v]) => v.trim());
+    if (states.length) {
+      parts.push(
+        part(
+          'summary-character-state',
+          'Story summary — character state',
+          'memory',
+          macro(
+            `## Character state\n${states
+              .map(([id, state]) => {
+                const character = activeCharacters.find((c) => c.id === id);
+                return `- ${character?.displayName || character?.name || id}: ${state}`;
+              })
+              .join('\n')}`,
+          ),
+          'Long-run memory: each character\u2019s current condition and goal.',
+          PRIORITY.summary - 20,
+        ),
+      );
+    }
+  }
+
   /* --------------------------------------------------------------- lore */
 
   // History arrives with each message's active alternative already applied.
@@ -527,7 +607,17 @@ export function compileContext(input: CompileInput): CompileResult {
   // History is budgeted separately: newest messages are kept first.
   const historyParts: ContextPart[] = [];
   const historyLimit = Math.max(1, settings.historyLimit || 200);
-  const consideredHistory = input.history.slice(-historyLimit);
+  // Anything the rolling summary already covers is represented above, so only
+  // the verbatim window needs to be sent. This is what keeps a 5,000-message
+  // story inside a fixed token budget.
+  const summarised =
+    summary && summary.rollingSummary.trim()
+      ? input.history.filter((m) => m.order > summary.coveredThroughOrder)
+      : input.history;
+  const effectiveLimit = summary?.rollingSummary.trim()
+    ? Math.min(historyLimit, Math.max(2, settings.summaryWindow || 30))
+    : historyLimit;
+  const consideredHistory = summarised.slice(-effectiveLimit);
 
   for (let i = consideredHistory.length - 1; i >= 0; i -= 1) {
     const message = consideredHistory[i];

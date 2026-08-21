@@ -20,7 +20,11 @@ export type MediaOwnerType =
   | 'story-cover'
   | 'story-background'
   | 'message'
+  | 'generated'
   | 'unassigned';
+
+/** Provenance for a stored image: uploaded by the user, or model-generated. */
+export type MediaSource = 'upload' | 'generated';
 
 export interface MediaMeta extends Timestamped {
   id: ID;
@@ -32,6 +36,17 @@ export interface MediaMeta extends Timestamped {
   ownerType: MediaOwnerType;
   ownerId: ID | null;
   tags: string[];
+  source: MediaSource;
+  /** Set for generated images so they can be regenerated or audited. */
+  prompt?: string;
+  imageProviderId?: ID | null;
+  imageModel?: string;
+  /** Optional back-references so the gallery can group generated art. */
+  storyId?: ID | null;
+  chatId?: ID | null;
+  messageId?: ID | null;
+  characterId?: ID | null;
+  personaId?: ID | null;
 }
 
 /** Blob rows live in a separate store so listing metadata never loads pixels. */
@@ -239,6 +254,8 @@ export const MEMORY_IMPORTANCE: MemoryImportance[] = ['low', 'normal', 'high', '
 
 export interface Memory extends Timestamped {
   id: ID;
+  /** 'auto' memories were proposed by the trigger scan, not written by hand. */
+  origin: 'manual' | 'auto' | 'imported';
   title: string;
   content: string;
   category: MemoryCategory;
@@ -373,6 +390,30 @@ export interface Chat extends Timestamped {
 
 export type ProviderKind = 'openrouter' | 'openai' | 'custom' | 'local';
 
+/**
+ * What a given model can actually do. Populated from the provider's model
+ * listing where it exposes one, and overridable by hand — the UI gates
+ * controls on these rather than assuming.
+ */
+export interface ModelCapabilities {
+  text: boolean;
+  vision: boolean;
+  streaming: boolean;
+  imageGeneration: boolean;
+}
+
+export interface ModelInfo {
+  id: string;
+  label?: string;
+  capabilities: ModelCapabilities;
+  /** True when capabilities came from the provider rather than a guess. */
+  reported: boolean;
+}
+
+export function defaultCapabilities(partial: Partial<ModelCapabilities> = {}): ModelCapabilities {
+  return { text: true, vision: false, streaming: true, imageGeneration: false, ...partial };
+}
+
 export interface Provider extends Timestamped {
   id: ID;
   name: string;
@@ -381,6 +422,10 @@ export interface Provider extends Timestamped {
   apiKey: string;
   model: string;
   models: string[];
+  /** Capability records keyed by model id; `models` stays the ordered list. */
+  modelInfo: Record<string, ModelInfo>;
+  /** Manual override when a provider reports nothing useful. */
+  capabilityOverrides: Partial<ModelCapabilities>;
   temperature: number;
   maxTokens: number;
   topP: number;
@@ -389,6 +434,69 @@ export interface Provider extends Timestamped {
   streaming: boolean;
   visionSupport: boolean;
   extraHeaders: Record<string, string>;
+}
+
+/* --------------------------------------------------------- image provider */
+
+export type ImageProviderKind = 'openai' | 'gemini' | 'custom';
+
+export type AspectRatio = 'portrait' | 'square' | 'landscape';
+
+export const ASPECT_RATIOS: Array<{ value: AspectRatio; label: string; size: string }> = [
+  { value: 'portrait', label: 'Portrait', size: '1024x1536' },
+  { value: 'square', label: 'Square', size: '1024x1024' },
+  { value: 'landscape', label: 'Landscape', size: '1536x1024' },
+];
+
+/**
+ * Image generation is configured completely separately from text generation:
+ * people routinely pair a text model on one service with an image model on
+ * another.
+ */
+export interface ImageProvider extends Timestamped {
+  id: ID;
+  name: string;
+  kind: ImageProviderKind;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  models: string[];
+  extraHeaders: Record<string, string>;
+  /** Extra body fields merged into the request (quality, style, seed…). */
+  extraBody: Record<string, unknown>;
+  defaultAspect: AspectRatio;
+  /** Appended to every prompt — house style, quality tags, safety wording. */
+  promptSuffix: string;
+  negativePrompt: string;
+}
+
+/* --------------------------------------------------------- story summary */
+
+export type SummaryScope = 'story';
+
+/**
+ * Long-run memory for a story. Without this, a months-long roleplay either
+ * blows the context budget or silently forgets its own history.
+ */
+export interface StorySummary extends Timestamped {
+  /** One row per story; the story id doubles as the primary key. */
+  id: ID;
+  storyId: ID;
+  /** Human-facing synopsis of where the story stands right now. */
+  currentSummary: string;
+  /** Compacted history of everything before the recent window. */
+  rollingSummary: string;
+  /** Discrete beats worth never losing. */
+  importantEvents: string[];
+  /** "Sera ⇄ Corin: wary allies, one unpaid debt." */
+  relationshipState: string;
+  /** Per-character running state, keyed by character id. */
+  characterState: Record<ID, string>;
+  /** A locked summary is never overwritten by automatic regeneration. */
+  locked: boolean;
+  /** Message order the rolling summary already covers. */
+  coveredThroughOrder: number;
+  lastGeneratedAt: number;
 }
 
 /* --------------------------------------------------------------- settings */
@@ -411,7 +519,45 @@ export interface Settings {
   showTokenCounts: boolean;
   migratedV2: boolean;
   schemaVersion: number;
+
+  /* image generation */
+  activeImageProviderId: ID | null;
+
+  /* long-run memory */
+  useStorySummary: boolean;
+  /** Messages kept verbatim before older turns fold into the rolling summary. */
+  summaryWindow: number;
+  /** Auto-regenerate the summary once this many new messages accumulate. */
+  autoSummaryEvery: number;
+
+  /* automatic memory */
+  autoMemory: boolean;
+  autoMemoryTriggers: AutoMemoryTrigger[];
+  autoMemoryPin: boolean;
+  /** Evaluate automatic memory once every N assistant replies. */
+  autoMemoryEvery: number;
 }
+
+export type AutoMemoryTrigger =
+  | 'plot'
+  | 'relationship'
+  | 'new-character'
+  | 'revelation'
+  | 'promise'
+  | 'conflict'
+  | 'romance'
+  | 'location';
+
+export const AUTO_MEMORY_TRIGGERS: Array<{ value: AutoMemoryTrigger; label: string }> = [
+  { value: 'plot', label: 'Major plot event' },
+  { value: 'relationship', label: 'Relationship change' },
+  { value: 'new-character', label: 'New character' },
+  { value: 'revelation', label: 'Important revelation' },
+  { value: 'promise', label: 'Promise' },
+  { value: 'conflict', label: 'Conflict' },
+  { value: 'romance', label: 'Romance milestone' },
+  { value: 'location', label: 'Location change' },
+];
 
 /* ------------------------------------------------------------ compilation */
 

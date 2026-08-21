@@ -1,6 +1,13 @@
 import { useState } from 'react';
-import type { Provider } from '../types';
-import { PROVIDER_PRESETS, newProvider } from '../types/factories';
+import type { ImageProvider, ModelCapabilities, Provider } from '../types';
+import { ASPECT_RATIOS, AUTO_MEMORY_TRIGGERS } from '../types';
+import {
+  IMAGE_PROVIDER_PRESETS,
+  PROVIDER_PRESETS,
+  inferCapabilities,
+  newImageProvider,
+  newProvider,
+} from '../types/factories';
 import { useActions, useAppState } from '../state/store';
 import { Icon } from '../components/ui/Icon';
 import { Banner, EmptyState, Tabs } from '../components/ui/common';
@@ -15,14 +22,20 @@ import {
 import { Sheet } from '../components/ui/Sheet';
 import { useConfirm, deleteConfirm } from '../components/ui/Confirm';
 import { fetchModels, maskKey, testConnection, type TestResult } from '../ai/client';
+import {
+  fetchImageModels,
+  maskKey as maskImageKey,
+  testImageProvider,
+  type ImageTestResult,
+} from '../ai/imageClient';
 import { LorebookTester } from './Lorebooks';
 import { dbCount, STORES } from '../storage/db';
 import { formatBytes } from '../utils/text';
 
 export function SettingsPage() {
-  const [tab, setTab] = useState<'providers' | 'context' | 'appearance' | 'tools' | 'data'>(
-    'providers',
-  );
+  const [tab, setTab] = useState<
+    'providers' | 'images' | 'memory' | 'context' | 'appearance' | 'tools' | 'data'
+  >('providers');
   return (
     <>
       <div className="page-header">
@@ -35,6 +48,8 @@ export function SettingsPage() {
         <Tabs
           tabs={[
             { id: 'providers', label: 'AI Providers' },
+            { id: 'images', label: 'Image Generation' },
+            { id: 'memory', label: 'Memory' },
             { id: 'context', label: 'Context' },
             { id: 'appearance', label: 'Appearance' },
             { id: 'tools', label: 'Tools' },
@@ -45,6 +60,8 @@ export function SettingsPage() {
           label="Settings sections"
         />
         {tab === 'providers' && <ProvidersSection />}
+        {tab === 'images' && <ImageProvidersSection />}
+        {tab === 'memory' && <MemorySection />}
         {tab === 'context' && <ContextSection />}
         {tab === 'appearance' && <AppearanceSection />}
         {tab === 'tools' && <LorebookTester />}
@@ -214,8 +231,8 @@ function ProviderEditor({
     setFetching(true);
     setResult(null);
     try {
-      const { models } = await fetchModels(draft);
-      patch({ models, model: draft.model || models[0] });
+      const { models, info } = await fetchModels(draft);
+      patch({ models, modelInfo: info, model: draft.model || models[0] });
       setResult({ ok: true, message: `Loaded ${models.length} models.` });
     } catch (err) {
       setResult({
@@ -365,12 +382,7 @@ function ProviderEditor({
         checked={draft.streaming}
         onChange={(streaming) => patch({ streaming })}
       />
-      <Toggle
-        label="Vision support"
-        description="Send attached images to the model. Only enable this for models that accept images, or requests will fail."
-        checked={draft.visionSupport}
-        onChange={(visionSupport) => patch({ visionSupport })}
-      />
+      <CapabilityPanel draft={draft} onChange={patch} />
 
       <hr className="divider" />
       <h3 className="section-title">Default generation parameters</h3>
@@ -671,6 +683,549 @@ function DataSection() {
         <Icon name="trash" />
         Erase all local data
       </button>
+    </>
+  );
+}
+
+/* --------------------------------------------------- model capabilities */
+
+/**
+ * Model capabilities drive which controls are available elsewhere in the app,
+ * so they are shown plainly — including whether the provider actually reported
+ * them or we had to guess from the model name.
+ */
+function CapabilityPanel({
+  draft,
+  onChange,
+}: {
+  draft: Provider;
+  onChange: (patch: Partial<Provider>) => void;
+}) {
+  const reported = draft.modelInfo?.[draft.model];
+  const base = reported?.capabilities ?? inferCapabilities(draft.model || '');
+  const effective: ModelCapabilities = {
+    text: draft.capabilityOverrides?.text ?? base.text,
+    vision: draft.capabilityOverrides?.vision ?? (draft.visionSupport || base.vision),
+    streaming: draft.capabilityOverrides?.streaming ?? (draft.streaming && base.streaming),
+    imageGeneration: draft.capabilityOverrides?.imageGeneration ?? base.imageGeneration,
+  };
+
+  const setOverride = (key: keyof ModelCapabilities, value: boolean) => {
+    const next = { ...(draft.capabilityOverrides ?? {}), [key]: value };
+    // Keep the legacy flag in step so nothing reads a stale value.
+    onChange(
+      key === 'vision'
+        ? { capabilityOverrides: next, visionSupport: value }
+        : { capabilityOverrides: next },
+    );
+  };
+
+  const rows: Array<{ key: keyof ModelCapabilities; label: string; hint: string }> = [
+    { key: 'text', label: 'Text generation', hint: 'Can produce chat replies.' },
+    {
+      key: 'vision',
+      label: 'Vision (image understanding)',
+      hint: 'Attached images are sent to the model. Turning this on for a model that cannot read images makes requests fail.',
+    },
+    { key: 'streaming', label: 'Streaming', hint: 'Show the reply as it is written.' },
+    {
+      key: 'imageGeneration',
+      label: 'Image generation',
+      hint: 'Informational only — image generation is configured separately under Image Generation.',
+    },
+  ];
+
+  return (
+    <section className="section">
+      <h3 className="section-title">
+        Model capabilities
+        <span className={`chip ${reported?.reported ? 'chip-success' : 'chip-warn'}`}>
+          {reported?.reported ? 'Reported by provider' : 'Inferred from model name'}
+        </span>
+      </h3>
+      {!reported?.reported && (
+        <Banner kind="info" title="These are a best guess">
+          This provider did not describe {draft.model || 'the selected model'}, so capabilities were
+          inferred from its name. Correct anything that is wrong — the app gates its controls on
+          these values.
+        </Banner>
+      )}
+      <div className="stack">
+        {rows.map((row) => (
+          <Toggle
+            key={row.key}
+            label={row.label}
+            description={row.hint}
+            checked={effective[row.key]}
+            onChange={(value) => setOverride(row.key, value)}
+          />
+        ))}
+      </div>
+      {Object.keys(draft.capabilityOverrides ?? {}).length > 0 && (
+        <button
+          type="button"
+          className="btn btn-sm btn-ghost"
+          onClick={() => onChange({ capabilityOverrides: {} })}
+        >
+          <Icon name="refresh" />
+          Reset to detected values
+        </button>
+      )}
+    </section>
+  );
+}
+
+/* ----------------------------------------------------- image generation */
+
+function ImageProvidersSection() {
+  const state = useAppState();
+  const actions = useActions();
+  const confirm = useConfirm();
+  const [editing, setEditing] = useState<ImageProvider | null>(null);
+
+  return (
+    <>
+      <Banner kind="info" title="Image generation is configured separately">
+        Your text model and your image model are independent — most people pair a chat provider with
+        a different image service. Nothing here affects text generation.
+      </Banner>
+
+      {!state.imageProviders.length ? (
+        <EmptyState
+          icon="sparkle"
+          title="No image provider configured"
+          message="Add one to generate scene art and character portraits from inside a chat."
+          action={
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => setEditing(newImageProvider())}
+            >
+              <Icon name="plus" />
+              Add image provider
+            </button>
+          }
+        />
+      ) : (
+        <>
+          <SelectField
+            label="Active image provider"
+            value={state.settings.activeImageProviderId ?? ''}
+            onChange={(value) => actions.saveSettings({ activeImageProviderId: value || null })}
+            options={[
+              { value: '', label: 'None — image generation disabled' },
+              ...state.imageProviders.map((p) => ({
+                value: p.id,
+                label: `${p.name}${p.model ? ` · ${p.model}` : ''}`,
+              })),
+            ]}
+          />
+
+          <div className="list">
+            {state.imageProviders.map((provider) => (
+              <div className="card" key={provider.id}>
+                <div className="row row-between row-wrap">
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="row row-wrap" style={{ gap: 6 }}>
+                      <strong className="truncate">{provider.name}</strong>
+                      {state.settings.activeImageProviderId === provider.id && (
+                        <span className="chip chip-accent">Active</span>
+                      )}
+                      <span className="chip">{IMAGE_PROVIDER_PRESETS[provider.kind].label}</span>
+                    </div>
+                    <div className="small muted truncate">{provider.baseUrl}</div>
+                    <div className="small muted">
+                      {provider.model || 'No model set'}
+                      {provider.apiKey ? ` · key ${maskImageKey(provider.apiKey)}` : ' · no key'}
+                    </div>
+                  </div>
+                  <button type="button" className="btn btn-sm" onClick={() => setEditing(provider)}>
+                    <Icon name="edit" />
+                    Edit
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            className="btn btn-block"
+            style={{ marginTop: 12 }}
+            onClick={() => setEditing(newImageProvider())}
+          >
+            <Icon name="plus" />
+            Add another image provider
+          </button>
+        </>
+      )}
+
+      {editing && (
+        <ImageProviderEditor
+          provider={editing}
+          onClose={() => setEditing(null)}
+          onSave={async (provider) => {
+            await actions.saveImageProvider(provider);
+            setEditing(null);
+            actions.toast({ kind: 'success', title: `Saved "${provider.name}"` });
+          }}
+          onDelete={
+            state.imageProviders.some((p) => p.id === editing.id)
+              ? async () => {
+                  const ok = await confirm(deleteConfirm('image provider', editing.name));
+                  if (!ok) return;
+                  await actions.deleteImageProvider(editing.id);
+                  setEditing(null);
+                }
+              : undefined
+          }
+        />
+      )}
+    </>
+  );
+}
+
+function ImageProviderEditor({
+  provider,
+  onClose,
+  onSave,
+  onDelete,
+}: {
+  provider: ImageProvider;
+  onClose: () => void;
+  onSave: (provider: ImageProvider) => void | Promise<void>;
+  onDelete?: () => void | Promise<void>;
+}) {
+  const [draft, setDraft] = useState<ImageProvider>(provider);
+  const [showKey, setShowKey] = useState(false);
+  const [busy, setBusy] = useState<'test' | 'models' | null>(null);
+  const [result, setResult] = useState<ImageTestResult | null>(null);
+  const [advanced, setAdvanced] = useState(false);
+
+  const patch = (changes: Partial<ImageProvider>) => {
+    setDraft((current) => ({ ...current, ...changes }));
+    setResult(null);
+  };
+
+  const changeKind = (kind: ImageProvider['kind']) => {
+    const preset = IMAGE_PROVIDER_PRESETS[kind];
+    patch({
+      kind,
+      baseUrl: preset.baseUrl || draft.baseUrl,
+      model: preset.model || draft.model,
+      name: draft.name === 'New Image Provider' ? preset.label : draft.name,
+    });
+  };
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title={provider.name === 'New Image Provider' ? 'Add image provider' : 'Edit image provider'}
+      large
+      footer={
+        <>
+          {onDelete && (
+            <button type="button" className="btn btn-danger" onClick={onDelete}>
+              <Icon name="trash" />
+              Delete
+            </button>
+          )}
+          <button type="button" className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn-primary" onClick={() => onSave(draft)}>
+            <Icon name="save" />
+            Save
+          </button>
+        </>
+      }
+    >
+      <SelectField
+        label="Provider type"
+        value={draft.kind}
+        onChange={changeKind}
+        options={(Object.keys(IMAGE_PROVIDER_PRESETS) as ImageProvider['kind'][]).map((kind) => ({
+          value: kind,
+          label: IMAGE_PROVIDER_PRESETS[kind].label,
+        }))}
+        hint={IMAGE_PROVIDER_PRESETS[draft.kind].hint}
+      />
+
+      <TextField label="Name" value={draft.name} onChange={(name) => patch({ name })} required />
+      <TextField
+        label="Base URL"
+        value={draft.baseUrl}
+        onChange={(baseUrl) => patch({ baseUrl })}
+        required
+        type="url"
+        inputMode="url"
+        hint={
+          draft.kind === 'gemini'
+            ? 'The Gemini API root. The model path is appended automatically.'
+            : 'The API root. "/images/generations" is appended automatically.'
+        }
+      />
+
+      <div className="field">
+        <label className="field-label" htmlFor="image-api-key">
+          API key
+        </label>
+        <div className="row" style={{ gap: 6 }}>
+          <input
+            id="image-api-key"
+            className="input"
+            type={showKey ? 'text' : 'password'}
+            value={draft.apiKey}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(e) => patch({ apiKey: e.target.value })}
+          />
+          <button
+            type="button"
+            className="btn btn-icon"
+            onClick={() => setShowKey((v) => !v)}
+            aria-label={showKey ? 'Hide image API key' : 'Show image API key'}
+            aria-pressed={showKey}
+          >
+            <Icon name={showKey ? 'eyeOff' : 'eye'} />
+          </button>
+        </div>
+        <div className="field-hint">
+          Stored on this device only, and excluded from every backup and export.
+        </div>
+      </div>
+
+      <div className="btn-row" style={{ marginBottom: 14 }}>
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={busy !== null || !draft.baseUrl}
+          onClick={async () => {
+            setBusy('test');
+            try {
+              setResult(await testImageProvider(draft));
+            } finally {
+              setBusy(null);
+            }
+          }}
+        >
+          {busy === 'test' ? <span className="spinner" /> : <Icon name="link" />}
+          Test connection
+        </button>
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={busy !== null || !draft.baseUrl}
+          onClick={async () => {
+            setBusy('models');
+            try {
+              const models = await fetchImageModels(draft);
+              patch({ models, model: draft.model || models[0] });
+              setResult({ ok: true, message: `Loaded ${models.length} models.` });
+            } catch (err) {
+              setResult({
+                ok: false,
+                message: (err as Error).message,
+                detail: (err as { detail?: string }).detail,
+              });
+            } finally {
+              setBusy(null);
+            }
+          }}
+        >
+          {busy === 'models' ? <span className="spinner" /> : <Icon name="refresh" />}
+          Fetch models
+        </button>
+      </div>
+
+      {result && (
+        <Banner kind={result.ok ? 'success' : 'error'} title={result.ok ? 'Connected' : 'Failed'}>
+          {result.message}
+          {result.detail && (
+            <>
+              {' '}
+              <span className="mono small">{result.detail}</span>
+            </>
+          )}
+        </Banner>
+      )}
+
+      {draft.models.length ? (
+        <SelectField
+          label="Image model"
+          value={draft.model}
+          onChange={(model) => patch({ model })}
+          options={draft.models.map((model) => ({ value: model, label: model }))}
+        />
+      ) : (
+        <TextField
+          label="Image model"
+          value={draft.model}
+          onChange={(model) => patch({ model })}
+          placeholder="gpt-image-1"
+          hint="Fetch models above to pick from a list, or type the id directly."
+        />
+      )}
+
+      <SelectField
+        label="Default aspect ratio"
+        value={draft.defaultAspect}
+        onChange={(defaultAspect) => patch({ defaultAspect })}
+        options={ASPECT_RATIOS.map((a) => ({ value: a.value, label: `${a.label} (${a.size})` }))}
+      />
+
+      <button
+        type="button"
+        className="btn btn-ghost btn-sm"
+        onClick={() => setAdvanced((v) => !v)}
+        aria-expanded={advanced}
+      >
+        <Icon name={advanced ? 'chevronUp' : 'chevronDown'} />
+        Advanced
+      </button>
+
+      {advanced && (
+        <>
+          <TextArea
+            label="Prompt suffix"
+            value={draft.promptSuffix}
+            onChange={(promptSuffix) => patch({ promptSuffix })}
+            hint="Appended to every prompt — house style, quality tags, safety wording."
+          />
+          <TextArea
+            label="Negative prompt"
+            value={draft.negativePrompt}
+            onChange={(negativePrompt) => patch({ negativePrompt })}
+            hint="Sent as negative_prompt where the provider supports it."
+          />
+          <TextArea
+            label="Extra request body (JSON)"
+            value={JSON.stringify(draft.extraBody ?? {}, null, 2)}
+            onChange={(value) => {
+              try {
+                const parsed = JSON.parse(value || '{}');
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                  patch({ extraBody: parsed as Record<string, unknown> });
+                }
+              } catch {
+                /* keep the last valid value until the JSON parses */
+              }
+            }}
+            hint='Merged into every request, e.g. {"quality": "hd"}. Invalid JSON is ignored.'
+          />
+        </>
+      )}
+    </Sheet>
+  );
+}
+
+/* ------------------------------------------------------------- memory */
+
+function MemorySection() {
+  const state = useAppState();
+  const actions = useActions();
+  const s = state.settings;
+
+  return (
+    <>
+      <Banner kind="info" title="Memory for very long stories">
+        A months-long roleplay cannot resend its whole history every turn. The story summary
+        compacts older scenes so the model keeps the plot while the token cost stays flat.
+      </Banner>
+
+      <h3 className="section-title">Story summary</h3>
+      <Toggle
+        label="Use story summaries in the AI context"
+        description="Older messages are replaced by the summary instead of being silently dropped."
+        checked={s.useStorySummary}
+        onChange={(useStorySummary) => actions.saveSettings({ useStorySummary })}
+      />
+      <NumberField
+        label="Verbatim window (messages)"
+        value={s.summaryWindow}
+        onChange={(summaryWindow) =>
+          actions.saveSettings({ summaryWindow: Math.max(4, Math.round(summaryWindow)) })
+        }
+        min={4}
+        max={200}
+        hint="How many recent messages are always sent word-for-word."
+      />
+      <NumberField
+        label="Refresh the summary every N new messages"
+        value={s.autoSummaryEvery}
+        onChange={(autoSummaryEvery) =>
+          actions.saveSettings({ autoSummaryEvery: Math.max(0, Math.round(autoSummaryEvery)) })
+        }
+        min={0}
+        max={200}
+        hint="0 disables automatic refresh — you can still regenerate by hand from a chat's menu."
+      />
+
+      <hr className="divider" />
+
+      <h3 className="section-title">Automatic memory</h3>
+      <Toggle
+        label="Create memories automatically"
+        description="Watches for story beats worth remembering and saves one when a trigger fires. Everything it creates is an ordinary memory you can edit or delete."
+        checked={s.autoMemory}
+        onChange={(autoMemory) => actions.saveSettings({ autoMemory })}
+      />
+
+      {s.autoMemory && (
+        <>
+          <NumberField
+            label="Check every N replies"
+            value={s.autoMemoryEvery}
+            onChange={(autoMemoryEvery) =>
+              actions.saveSettings({ autoMemoryEvery: Math.max(1, Math.round(autoMemoryEvery)) })
+            }
+            min={1}
+            max={50}
+          />
+          <div className="field">
+            <span className="field-label">Triggers</span>
+            <div className="field-hint" style={{ marginBottom: 8 }}>
+              Only the selected kinds of beat create a memory.
+            </div>
+            <div className="chip-row">
+              {AUTO_MEMORY_TRIGGERS.map((trigger) => {
+                const on = s.autoMemoryTriggers.includes(trigger.value);
+                return (
+                  <button
+                    key={trigger.value}
+                    type="button"
+                    className={`chip ${on ? 'chip-accent' : ''}`}
+                    style={{ cursor: 'pointer', minHeight: 40, padding: '0 14px' }}
+                    aria-pressed={on}
+                    onClick={() =>
+                      actions.saveSettings({
+                        autoMemoryTriggers: on
+                          ? s.autoMemoryTriggers.filter((v) => v !== trigger.value)
+                          : [...s.autoMemoryTriggers, trigger.value],
+                      })
+                    }
+                  >
+                    {trigger.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <Toggle
+            label="Pin automatic memories"
+            description="Off (recommended): they behave like any other memory. On: they are always forced into the context."
+            checked={s.autoMemoryPin}
+            onChange={(autoMemoryPin) => actions.saveSettings({ autoMemoryPin })}
+          />
+        </>
+      )}
+
+      <hr className="divider" />
+      <p className="small muted">
+        {state.memories.filter((m) => m.origin === 'auto').length} memory/ies were created
+        automatically. They appear in the Memories tab tagged “auto”.
+      </p>
     </>
   );
 }

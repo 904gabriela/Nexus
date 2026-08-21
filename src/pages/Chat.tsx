@@ -10,6 +10,9 @@ import { useGeneration, chatDisplayTitle, speakerFor } from '../hooks/useGenerat
 import { MessageItem, type QuickAction } from '../components/chat/MessageItem';
 import { ContextInspector } from '../components/chat/ContextInspector';
 import { BranchPanel, CheckpointPanel } from '../components/chat/BranchPanel';
+import { ImageGenPanel } from '../components/chat/ImageGenPanel';
+import { AiSummarySheet } from '../components/chat/AiSummarySheet';
+import { StorySummarySheet } from '../components/chat/StorySummarySheet';
 import { MemoryEditor } from './Memories';
 import { Icon } from '../components/ui/Icon';
 import { ActionSheet, Sheet } from '../components/ui/Sheet';
@@ -39,6 +42,8 @@ export function ChatPage({
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const cameraInput = useRef<HTMLInputElement>(null);
+  const filesInput = useRef<HTMLInputElement>(null);
   const atBottomRef = useRef(true);
 
   const [draft, setDraft] = useState('');
@@ -67,6 +72,11 @@ export function ChatPage({
   const [speakerPicker, setSpeakerPicker] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameText, setRenameText] = useState('');
+  const [attachSheet, setAttachSheet] = useState(false);
+  const [imageGen, setImageGen] = useState(false);
+  const [aiSummary, setAiSummary] = useState(false);
+  const [storySummary, setStorySummary] = useState(false);
+  const [newChatFrom, setNewChatFrom] = useState<Message | null>(null);
 
   const textareaRef = useAutoResize(draft);
 
@@ -127,6 +137,14 @@ export function ChatPage({
     if (added.length) {
       setPending((current) => [...current, ...added]);
       await actions.refreshMedia();
+      // Be explicit rather than letting the user believe the model saw it.
+      if (gen.provider && !gen.capabilities.vision) {
+        actions.toast({
+          kind: 'warn',
+          title: 'This model does not support image understanding.',
+          detail: `${gen.provider.model || 'The selected model'} cannot read images. It will be told an image was attached, but not shown it. Pick a vision model, or enable vision for this provider in Settings if you know it supports images.`,
+        });
+      }
     }
     setUploading(false);
     if (fileInput.current) fileInput.current.value = '';
@@ -486,12 +504,17 @@ export function ChatPage({
           <button
             type="button"
             className="composer-btn"
-            onClick={() => fileInput.current?.click()}
-            aria-label="Attach images"
+            onClick={() => setAttachSheet(true)}
+            aria-label="Add image"
             disabled={uploading || gen.generating}
           >
-            {uploading ? <span className="spinner" /> : <Icon name="image" />}
+            {uploading ? <span className="spinner" /> : <Icon name="plus" />}
           </button>
+          {/*
+            Three distinct inputs, because the attribute combination is what
+            tells a phone which picker to open. `capture` opens the camera;
+            omitting it opens the photo library; `accept="*"` opens Files.
+          */}
           <input
             ref={fileInput}
             type="file"
@@ -499,6 +522,27 @@ export function ChatPage({
             multiple
             className="sr-only"
             tabIndex={-1}
+            data-testid="attach-library"
+            onChange={(e) => void addFiles(e.target.files)}
+          />
+          <input
+            ref={cameraInput}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="sr-only"
+            tabIndex={-1}
+            data-testid="attach-camera"
+            onChange={(e) => void addFiles(e.target.files)}
+          />
+          <input
+            ref={filesInput}
+            type="file"
+            accept="image/*,.png,.jpg,.jpeg,.webp,.gif"
+            multiple
+            className="sr-only"
+            tabIndex={-1}
+            data-testid="attach-files"
             onChange={(e) => void addFiles(e.target.files)}
           />
 
@@ -545,6 +589,82 @@ export function ChatPage({
       {/* ------------------------------------------------------ overlays */}
 
       <ContextInspector compiled={compiled} open={showContext} onClose={() => setShowContext(false)} />
+
+      <ImageGenPanel
+        open={imageGen}
+        onClose={() => setImageGen(false)}
+        gen={gen}
+        onOpenSettings={() => {
+          setImageGen(false);
+          navigate('settings');
+        }}
+      />
+
+      <AiSummarySheet open={aiSummary} onClose={() => setAiSummary(false)} gen={gen} />
+
+      <StorySummarySheet open={storySummary} onClose={() => setStorySummary(false)} gen={gen} />
+
+      {/*
+        Mobile-first image entry. Separate inputs are what make a phone offer
+        the camera vs the photo library vs Files — one picker cannot do all three.
+      */}
+      <ActionSheet
+        open={attachSheet}
+        onClose={() => setAttachSheet(false)}
+        title="Add an image"
+        actions={[
+          {
+            key: 'camera',
+            label: 'Camera',
+            description: 'Take a new photo.',
+            icon: 'camera',
+            onSelect: () => cameraInput.current?.click(),
+          },
+          {
+            key: 'library',
+            label: 'Photo Library',
+            description: 'Choose existing pictures.',
+            icon: 'image',
+            onSelect: () => fileInput.current?.click(),
+          },
+          {
+            key: 'files',
+            label: 'Files',
+            description: 'Browse your device storage.',
+            icon: 'file',
+            onSelect: () => filesInput.current?.click(),
+          },
+          {
+            key: 'generate',
+            label: 'Generate Image',
+            description: gen.imageProvider
+              ? `Create art with ${gen.imageProvider.name}.`
+              : 'Set up an image provider first.',
+            icon: 'sparkle',
+            separatorBefore: true,
+            onSelect: () => setImageGen(true),
+          },
+          {
+            key: 'gallery',
+            label: 'Media Library',
+            description: 'Reuse an image you already have.',
+            icon: 'grid',
+            onSelect: () => navigate('media'),
+          },
+        ]}
+      />
+
+      {newChatFrom && (
+        <NewChatFromSheet
+          message={newChatFrom}
+          onClose={() => setNewChatFrom(null)}
+          timeline={timeline}
+          onCreated={(id) => {
+            setNewChatFrom(null);
+            navigate('chat', id);
+          }}
+        />
+      )}
 
       <BranchPanel
         open={showBranches}
@@ -607,6 +727,32 @@ export function ChatPage({
                 : `${gen.characters.length} characters in this scene`,
             onSelect: () => setSpeakerPicker(true),
             separatorBefore: true,
+          },
+          {
+            key: 'story-summary',
+            label: 'Story summary',
+            description: gen.summary?.rollingSummary
+              ? 'Long-run memory for this story.'
+              : 'Not generated yet — long stories need this.',
+            icon: 'brain',
+            disabled: !activeChat.storyId,
+            onSelect: () => setStorySummary(true),
+          },
+          {
+            key: 'ai-summary',
+            label: 'Export for AI summary',
+            description: 'A briefing pack for handing this story to another AI.',
+            icon: 'file',
+            onSelect: () => setAiSummary(true),
+          },
+          {
+            key: 'generate-image',
+            label: 'Generate image',
+            description: gen.imageProvider
+              ? `Using ${gen.imageProvider.name}`
+              : 'No image provider configured yet.',
+            icon: 'sparkle',
+            onSelect: () => setImageGen(true),
           },
           {
             key: 'newchat',
@@ -777,6 +923,13 @@ export function ChatPage({
                     setBranchFor(menuFor);
                     setBranchName('');
                   },
+                },
+                {
+                  key: 'newchat-here',
+                  label: 'Start new chat from here',
+                  description: 'Copies the story setup and history up to this point.',
+                  icon: 'chat',
+                  onSelect: () => setNewChatFrom(menuFor),
                 },
                 {
                   key: 'checkpoint',
@@ -1073,6 +1226,147 @@ export function ChatPage({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Start a new chat seeded from an existing conversation.
+ *
+ * The source chat is never modified — history is copied, so branching and the
+ * original timeline both stay intact.
+ */
+function NewChatFromSheet({
+  message,
+  timeline,
+  onClose,
+  onCreated,
+}: {
+  message: Message;
+  timeline: Message[];
+  onClose: () => void;
+  onCreated: (chatId: string) => void;
+}) {
+  const state = useAppState();
+  const actions = useActions();
+  const { activeChat } = useStore();
+  const [mode, setMode] = useState<'beginning' | 'here' | 'checkpoint'>('here');
+  const [checkpointId, setCheckpointId] = useState<string>('');
+  const [busy, setBusy] = useState(false);
+
+  const chatCheckpoints = state.checkpoints.filter((c) => c.chatId === activeChat?.id);
+  const indexHere = timeline.findIndex((m) => m.id === message.id);
+  const countHere = indexHere >= 0 ? indexHere + 1 : timeline.length;
+
+  const create = async () => {
+    if (!activeChat) return;
+    setBusy(true);
+    try {
+      if (mode === 'checkpoint') {
+        const chat = await actions.chatFromCheckpoint(checkpointId);
+        if (chat) onCreated(chat.id);
+        return;
+      }
+      const upTo = mode === 'beginning' ? 0 : countHere;
+      const chat = await actions.chatFromMessages(activeChat.id, upTo, message.id);
+      if (chat) onCreated(chat.id);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title="Start new chat from here"
+      footer={
+        <>
+          <button type="button" className="btn" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={create}
+            disabled={busy || (mode === 'checkpoint' && !checkpointId)}
+          >
+            {busy ? <span className="spinner" /> : <Icon name="chat" />}
+            Create chat
+          </button>
+        </>
+      }
+    >
+      <p className="small muted" style={{ marginTop: 0 }}>
+        The new chat keeps this story's characters, persona, lorebooks, memories and summary. The
+        original conversation is left exactly as it is.
+      </p>
+
+      <div className="stack">
+        {(
+          [
+            {
+              id: 'beginning' as const,
+              label: 'Start from the beginning',
+              detail: 'A fresh chat with the same setup and no messages.',
+            },
+            {
+              id: 'here' as const,
+              label: 'Start from this message',
+              detail: `Copies the first ${countHere} message(s), ending here.`,
+            },
+            {
+              id: 'checkpoint' as const,
+              label: 'Start from a checkpoint',
+              detail: chatCheckpoints.length
+                ? `${chatCheckpoints.length} checkpoint(s) available.`
+                : 'No checkpoints saved in this chat yet.',
+              disabled: !chatCheckpoints.length,
+            },
+          ]
+        ).map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            className="card card-button"
+            aria-pressed={mode === option.id}
+            disabled={'disabled' in option && option.disabled}
+            style={
+              mode === option.id
+                ? { borderColor: 'var(--accent)', background: 'var(--accent-soft)' }
+                : undefined
+            }
+            onClick={() => setMode(option.id)}
+          >
+            <Icon name={mode === option.id ? 'check' : 'chevronRight'} />
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ display: 'block', fontWeight: 600 }}>{option.label}</span>
+              <span className="small muted">{option.detail}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+
+      {mode === 'checkpoint' && !!chatCheckpoints.length && (
+        <div className="field" style={{ marginTop: 14 }}>
+          <label className="field-label" htmlFor="cp-pick">
+            Checkpoint
+          </label>
+          <select
+            id="cp-pick"
+            className="select"
+            value={checkpointId}
+            onChange={(e) => setCheckpointId(e.target.value)}
+          >
+            <option value="">Choose a checkpoint…</option>
+            {chatCheckpoints.map((cp) => (
+              <option key={cp.id} value={cp.id}>
+                {cp.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+    </Sheet>
   );
 }
 

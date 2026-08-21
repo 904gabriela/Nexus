@@ -1,4 +1,5 @@
 import type {
+  AspectRatio,
   Branch,
   Chat,
   Character,
@@ -11,12 +12,15 @@ import type {
   Message,
   Persona,
   Provider,
+  ImageProvider,
   Settings,
   Story,
+  StorySummary,
 } from './index';
+import { defaultCapabilities } from './index';
 import { uid } from '../utils/uid';
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const DEFAULT_GENERATION: GenerationSettings = {
   temperature: 0.9,
@@ -182,6 +186,7 @@ export function newMemory(partial: Partial<Memory> = {}): Memory {
   const t = now();
   return {
     id: uid(),
+    origin: 'manual',
     title: '',
     content: '',
     category: 'Other',
@@ -308,6 +313,8 @@ export function newProvider(partial: Partial<Provider> = {}): Provider {
     apiKey: '',
     model: '',
     models: [],
+    modelInfo: {},
+    capabilityOverrides: {},
     temperature: DEFAULT_GENERATION.temperature,
     maxTokens: DEFAULT_GENERATION.maxTokens,
     topP: DEFAULT_GENERATION.topP,
@@ -369,5 +376,101 @@ export function defaultSettings(): Settings {
     showTokenCounts: true,
     migratedV2: false,
     schemaVersion: SCHEMA_VERSION,
+
+    activeImageProviderId: null,
+
+    useStorySummary: true,
+    summaryWindow: 30,
+    autoSummaryEvery: 20,
+
+    autoMemory: false,
+    autoMemoryTriggers: ['plot', 'relationship', 'revelation', 'promise', 'romance'],
+    autoMemoryPin: false,
+    autoMemoryEvery: 6,
   };
+}
+
+/* ---------------------------------------------------------- image provider */
+
+export function newImageProvider(partial: Partial<ImageProvider> = {}): ImageProvider {
+  const t = now();
+  return {
+    id: uid(),
+    name: 'New Image Provider',
+    kind: 'openai',
+    baseUrl: 'https://api.openai.com/v1',
+    apiKey: '',
+    model: 'gpt-image-1',
+    models: [],
+    extraHeaders: {},
+    extraBody: {},
+    defaultAspect: 'portrait' as AspectRatio,
+    promptSuffix: '',
+    negativePrompt: '',
+    createdAt: t,
+    updatedAt: t,
+    ...partial,
+  };
+}
+
+export const IMAGE_PROVIDER_PRESETS: Record<
+  ImageProvider['kind'],
+  { label: string; baseUrl: string; model: string; hint: string }
+> = {
+  openai: {
+    label: 'OpenAI-compatible',
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-image-1',
+    hint: 'Any service exposing POST /images/generations — OpenAI, Azure OpenAI, many self-hosted gateways.',
+  },
+  gemini: {
+    label: 'Google Gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    model: 'gemini-2.5-flash-image',
+    hint: 'Uses the generateContent endpoint and reads inline image data from the response.',
+  },
+  custom: {
+    label: 'Custom endpoint',
+    baseUrl: '',
+    model: '',
+    hint: 'Any endpoint that accepts a JSON prompt and returns a base64 image, a data URL or an image URL.',
+  },
+};
+
+/* ---------------------------------------------------------- story summary */
+
+export function newStorySummary(storyId: string, partial: Partial<StorySummary> = {}): StorySummary {
+  const t = now();
+  return {
+    // One summary per story, so the story id is the primary key.
+    id: storyId,
+    storyId,
+    currentSummary: '',
+    rollingSummary: '',
+    importantEvents: [],
+    relationshipState: '',
+    characterState: {},
+    locked: false,
+    coveredThroughOrder: -1,
+    lastGeneratedAt: 0,
+    createdAt: t,
+    updatedAt: t,
+    ...partial,
+  };
+}
+
+/** Capability guesses used when a provider reports nothing about a model. */
+export function inferCapabilities(modelId: string) {
+  const id = modelId.toLowerCase();
+  const vision =
+    /gpt-4o|gpt-4\.1|gpt-5|o[13]\b|claude-3|claude-[45]|gemini|llava|pixtral|qwen.*vl|intern.*vl|vision|-vl\b/.test(
+      id,
+    );
+  const imageGeneration = /dall-e|gpt-image|flux|stable-diffusion|sdxl|imagen|-image\b/.test(id);
+  return defaultCapabilities({
+    vision,
+    imageGeneration,
+    // Image-only endpoints do not do chat completions.
+    text: !imageGeneration || /gemini/.test(id),
+  });
 }

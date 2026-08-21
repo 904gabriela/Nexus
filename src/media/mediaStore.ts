@@ -7,7 +7,7 @@
  */
 
 import { STORES, StorageError, dbDelete, dbGet, dbGetAll, dbPut } from '../storage/db';
-import type { ID, MediaBlobRow, MediaMeta, MediaOwnerType } from '../types';
+import type { ID, MediaBlobRow, MediaMeta, MediaOwnerType, MediaSource } from '../types';
 import { uid } from '../utils/uid';
 import { now } from '../types/factories';
 
@@ -30,6 +30,15 @@ export interface SaveMediaOptions {
   ownerType?: MediaOwnerType;
   ownerId?: ID | null;
   tags?: string[];
+  source?: MediaSource;
+  prompt?: string;
+  imageProviderId?: ID | null;
+  imageModel?: string;
+  storyId?: ID | null;
+  chatId?: ID | null;
+  messageId?: ID | null;
+  characterId?: ID | null;
+  personaId?: ID | null;
   /** Skip downscaling (used when re-importing a backup byte-for-byte). */
   preserveOriginal?: boolean;
   id?: ID;
@@ -154,6 +163,15 @@ export async function saveMedia(
     ownerType: options.ownerType ?? 'unassigned',
     ownerId: options.ownerId ?? null,
     tags: options.tags ?? [],
+    source: options.source ?? 'upload',
+    prompt: options.prompt,
+    imageProviderId: options.imageProviderId ?? null,
+    imageModel: options.imageModel,
+    storyId: options.storyId ?? null,
+    chatId: options.chatId ?? null,
+    messageId: options.messageId ?? null,
+    characterId: options.characterId ?? null,
+    personaId: options.personaId ?? null,
     createdAt: now(),
     updatedAt: now(),
   };
@@ -205,6 +223,12 @@ export async function replaceMedia(id: ID, file: File | Blob): Promise<MediaMeta
     ownerType: existing.ownerType,
     ownerId: existing.ownerId,
     tags: existing.tags,
+    source: existing.source,
+    storyId: existing.storyId,
+    chatId: existing.chatId,
+    messageId: existing.messageId,
+    characterId: existing.characterId,
+    personaId: existing.personaId,
     id,
   });
   releaseAllFor(id);
@@ -213,7 +237,20 @@ export async function replaceMedia(id: ID, file: File | Blob): Promise<MediaMeta
 
 export async function updateMediaMeta(
   id: ID,
-  patch: Partial<Pick<MediaMeta, 'ownerType' | 'ownerId' | 'tags' | 'filename'>>,
+  patch: Partial<
+    Pick<
+      MediaMeta,
+      | 'ownerType'
+      | 'ownerId'
+      | 'tags'
+      | 'filename'
+      | 'storyId'
+      | 'chatId'
+      | 'messageId'
+      | 'characterId'
+      | 'personaId'
+    >
+  >,
 ): Promise<MediaMeta | null> {
   const existing = await dbGet<MediaMeta>(STORES.media, id);
   if (!existing) return null;

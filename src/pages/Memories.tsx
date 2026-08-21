@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react';
-import type { Memory, MemoryCategory, MemoryImportance } from '../types';
+import { useEffect, useMemo, useState } from 'react';
+import type { Memory, MemoryCategory, MemoryImportance, Message } from '../types';
 import { MEMORY_CATEGORIES, MEMORY_IMPORTANCE } from '../types';
 import { newMemory } from '../types/factories';
 import { useActions, useAppState } from '../state/store';
 import { Icon } from '../components/ui/Icon';
-import { EmptyState, SearchInput } from '../components/ui/common';
+import { Banner, EmptyState, SearchInput, Spinner, Tabs, copyText } from '../components/ui/common';
 import { SelectField, TagField, TextArea, TextField, Toggle } from '../components/ui/Field';
 import { ActionSheet, Sheet } from '../components/ui/Sheet';
 import { useConfirm, deleteConfirm } from '../components/ui/Confirm';
@@ -23,6 +23,7 @@ export function MemoriesPage() {
   const actions = useActions();
   const confirm = useConfirm();
 
+  const [view, setView] = useState<'memories' | 'important'>('memories');
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<'all' | MemoryCategory>('all');
   const [sort, setSort] = useState<'updated' | 'importance' | 'title'>('updated');
@@ -76,6 +77,26 @@ export function MemoriesPage() {
       </div>
 
       <div className="page">
+        {/*
+          Important messages and memories are different things: a memory is a
+          condensed fact, an important message is the original text preserved
+          verbatim. Keeping them in one place but on separate tabs makes that
+          distinction visible.
+        */}
+        <Tabs
+          tabs={[
+            { id: 'memories', label: 'Memories', badge: state.memories.length },
+            { id: 'important', label: 'Important messages' },
+          ]}
+          active={view}
+          onChange={setView}
+          label="Memory views"
+        />
+
+        {view === 'important' ? (
+          <ImportantMessages />
+        ) : (
+        <>
         <SearchInput value={query} onChange={setQuery} placeholder="Search memories…" />
 
         <div className="chip-row" style={{ marginBottom: 10 }}>
@@ -181,6 +202,7 @@ export function MemoriesPage() {
                         {memory.importance}
                       </span>
                     )}
+                    {memory.origin === 'auto' && <span className="chip">auto</span>}
                   </div>
                   <div className="small muted clamp-2" style={{ marginTop: 4 }}>
                     {truncate(memory.content, 150)}
@@ -203,6 +225,8 @@ export function MemoriesPage() {
               </div>
             ))}
           </div>
+        )}
+        </>
         )}
       </div>
 
@@ -400,5 +424,154 @@ export function MemoryEditor({
         </p>
       )}
     </Sheet>
+  );
+}
+
+/**
+ * Messages the user flagged as important, across every chat.
+ *
+ * Unlike a memory, the original wording is preserved exactly — this is the
+ * "don't paraphrase this" list.
+ */
+function ImportantMessages() {
+  const state = useAppState();
+  const actions = useActions();
+  const [rows, setRows] = useState<
+    Array<{ message: Message; chatTitle: string; chatId: string; storyTitle: string }>
+  >([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const repo = await import('../storage/repositories');
+      const found: typeof rows = [];
+      for (const chat of state.chats) {
+        const chatMessages = await repo.messages.byChat(chat.id);
+        const story = state.stories.find((s) => s.id === chat.storyId);
+        for (const message of chatMessages) {
+          if (!message.important) continue;
+          found.push({
+            message,
+            chatTitle: chat.title,
+            chatId: chat.id,
+            storyTitle: story?.title ?? '',
+          });
+        }
+      }
+      if (cancelled) return;
+      found.sort((a, b) => b.message.createdAt - a.message.createdAt);
+      setRows(found);
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [state.chats, state.stories]);
+
+  const visible = rows.filter((row) =>
+    search.trim() ? row.message.content.toLowerCase().includes(search.trim().toLowerCase()) : true,
+  );
+
+  if (loading) return <Spinner label="Finding important messages…" />;
+
+  return (
+    <>
+      <Banner kind="info" title="Important messages">
+        Messages you flagged with <strong>Mark important</strong> in a chat. The original text is
+        kept exactly as written — turn one into a memory when you want a condensed version instead.
+      </Banner>
+
+      {rows.length > 3 && (
+        <SearchInput value={search} onChange={setSearch} placeholder="Search important messages…" />
+      )}
+
+      {!visible.length ? (
+        <EmptyState
+          icon="flag"
+          title={rows.length ? 'Nothing matches' : 'No important messages yet'}
+          message="Open a message's actions in a chat and choose Mark important."
+        />
+      ) : (
+        <div className="list">
+          {visible.map((row) => (
+            <div className="card" key={row.message.id}>
+              <div className="row row-wrap" style={{ gap: 6 }}>
+                <Icon name="flag" width={14} height={14} style={{ color: 'var(--warn)' }} />
+                <strong className="truncate">{row.chatTitle}</strong>
+                {row.storyTitle && <span className="chip">{row.storyTitle}</span>}
+                <span className="chip">{row.message.role === 'user' ? 'You' : 'AI'}</span>
+              </div>
+              <div className="small" style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>
+                {truncate(row.message.content, 400)}
+              </div>
+              <div className="btn-row" style={{ marginTop: 10 }}>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => {
+                    location.hash = `#/chat/${row.chatId}`;
+                  }}
+                >
+                  <Icon name="chat" />
+                  Open chat
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={async () => {
+                    const ok = await copyText(row.message.content);
+                    actions.toast({
+                      kind: ok ? 'success' : 'error',
+                      title: ok ? 'Copied' : 'Copy failed',
+                    });
+                  }}
+                >
+                  <Icon name="copy" />
+                  Copy
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={async () => {
+                    await actions.saveMemory(
+                      newMemory({
+                        title: truncate(row.message.content, 60),
+                        content: row.message.content,
+                        category: 'Event',
+                        sourceMessageIds: [row.message.id],
+                        sourceChatId: row.chatId,
+                      }),
+                    );
+                    actions.toast({
+                      kind: 'success',
+                      title: 'Saved as a memory',
+                      detail: 'Edit it in the Memories tab to condense the wording.',
+                    });
+                  }}
+                >
+                  <Icon name="brain" />
+                  Make a memory
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  onClick={async () => {
+                    const repo = await import('../storage/repositories');
+                    await repo.messages.save({ ...row.message, important: false });
+                    setRows((current) => current.filter((r) => r.message.id !== row.message.id));
+                  }}
+                >
+                  <Icon name="x" />
+                  Unflag
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
   );
 }

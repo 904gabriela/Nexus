@@ -25,13 +25,18 @@ import type {
   MessageAlternative,
   Persona,
   Provider,
+  ImageProvider,
+  ModelCapabilities,
   Settings,
   Story,
+  StorySummary,
   ToastMessage,
 } from '../types';
+import { defaultCapabilities } from '../types';
 import {
   DEFAULT_GENERATION,
   defaultSettings,
+  inferCapabilities,
   newBranch,
   newChat,
   newCheckpoint,
@@ -57,6 +62,8 @@ export interface AppState {
   loreEntries: LoreEntry[];
   memories: Memory[];
   providers: Provider[];
+  imageProviders: ImageProvider[];
+  storySummaries: StorySummary[];
   media: MediaMeta[];
   checkpoints: Checkpoint[];
   /** Working set for the currently open chat. */
@@ -85,6 +92,8 @@ const initialState: AppState = {
   loreEntries: [],
   memories: [],
   providers: [],
+  imageProviders: [],
+  storySummaries: [],
   media: [],
   checkpoints: [],
   activeChatId: null,
@@ -156,6 +165,11 @@ export interface AppActions {
   saveProvider: (provider: Provider) => Promise<Provider>;
   deleteProvider: (id: ID) => Promise<void>;
 
+  saveImageProvider: (provider: ImageProvider) => Promise<ImageProvider>;
+  deleteImageProvider: (id: ID) => Promise<void>;
+
+  saveStorySummary: (summary: StorySummary) => Promise<StorySummary>;
+
   refreshMedia: () => Promise<MediaMeta[]>;
   removeMedia: (id: ID) => Promise<void>;
 
@@ -184,6 +198,8 @@ export interface AppActions {
   deleteCheckpoint: (checkpointId: ID) => Promise<void>;
   restoreCheckpoint: (checkpointId: ID) => Promise<Branch | null>;
   chatFromCheckpoint: (checkpointId: ID) => Promise<Chat | null>;
+  /** Fork a brand-new chat seeded from the first `count` messages. */
+  chatFromMessages: (chatId: ID, count: number, upToMessageId?: ID) => Promise<Chat | null>;
 }
 
 interface StoreValue {
@@ -244,6 +260,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         loreEntries,
         memories,
         providers,
+        imageProviderList,
+        summaries,
         media,
         checkpoints,
       ] = await Promise.all([
@@ -256,6 +274,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         repo.loreEntries.all(),
         repo.memories.all(),
         repo.providers.all(),
+        repo.imageProviders.all(),
+        repo.storySummaries.all(),
         listMedia(),
         repo.checkpoints.all(),
       ]);
@@ -271,6 +291,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           loreEntries,
           memories,
           providers,
+          imageProviders: imageProviderList,
+          storySummaries: summaries,
           media,
           checkpoints,
           v2Scan: settings.migratedV2 ? null : scanV2(),
@@ -599,6 +621,35 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           if (stateRef.current.settings.activeProviderId === id) {
             await this.saveSettings({ activeProviderId: remaining[0]?.id ?? null });
           }
+        });
+      },
+
+      async saveImageProvider(provider) {
+        return guard('Saving the image provider', async () => {
+          const saved = await repo.imageProviders.save(provider);
+          set({ imageProviders: upsert(stateRef.current.imageProviders, saved) });
+          if (!stateRef.current.settings.activeImageProviderId) {
+            await this.saveSettings({ activeImageProviderId: saved.id });
+          }
+          return saved;
+        });
+      },
+      async deleteImageProvider(id) {
+        return guard('Deleting the image provider', async () => {
+          await repo.imageProviders.remove(id);
+          const remaining = stateRef.current.imageProviders.filter((p) => p.id !== id);
+          set({ imageProviders: remaining });
+          if (stateRef.current.settings.activeImageProviderId === id) {
+            await this.saveSettings({ activeImageProviderId: remaining[0]?.id ?? null });
+          }
+        });
+      },
+
+      async saveStorySummary(summary) {
+        return guard('Saving the story summary', async () => {
+          const saved = await repo.storySummaries.save(summary);
+          set({ storySummaries: upsert(stateRef.current.storySummaries, saved) });
+          return saved;
         });
       },
 
@@ -1141,6 +1192,64 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         });
       },
 
+      /**
+       * Copies the leading `count` messages of a chat into a new one. The
+       * source chat is never touched, so this is safe from any point.
+       */
+      async chatFromMessages(chatId, count, upToMessageId) {
+        return guard('Starting a new chat', async () => {
+          const current = stateRef.current;
+          const [srcMessages, srcBranches, srcChat] = await Promise.all([
+            repo.messages.byChat(chatId),
+            repo.branches.byChat(chatId),
+            repo.chats.get(chatId),
+          ]);
+          if (!srcChat) return null;
+
+          const line = resolveTimeline(srcMessages, srcBranches, srcChat.activeBranchId);
+          const cut = upToMessageId
+            ? line.findIndex((m) => m.id === upToMessageId) + 1 || count
+            : count;
+          const slice = line.slice(0, Math.max(0, cut));
+
+          const story = srcChat.storyId
+            ? current.stories.find((s) => s.id === srcChat.storyId)
+            : null;
+          const chat = newChat({
+            storyId: srcChat.storyId,
+            title: story ? `${story.title} — new thread` : `${srcChat.title} — new thread`,
+            personaId: srcChat.personaId,
+            lorebookIds: srcChat.lorebookIds,
+            settings: srcChat.settings,
+          });
+          const branch = newBranch(chat.id, { name: 'Main' });
+          chat.activeBranchId = branch.id;
+
+          const messages = slice.map((message, index) => ({
+            ...structuredCloneSafe(message),
+            id: uid(),
+            chatId: chat.id,
+            branchId: branch.id,
+            order: index,
+            activeAlternativeId: null,
+          }));
+          chat.orderCounter = messages.length;
+
+          await repo.chats.save(chat);
+          await repo.branches.save(branch);
+          if (messages.length) await repo.messages.saveMany(messages);
+
+          set({
+            chats: upsert(stateRef.current.chats, chat),
+            activeChatId: chat.id,
+            messages,
+            branches: [branch],
+            alternatives: [],
+          });
+          return chat;
+        });
+      },
+
       /** Copies history up to the checkpoint into a brand-new chat. */
       async chatFromCheckpoint(checkpointId) {
         return guard('Starting a chat from the checkpoint', async () => {
@@ -1277,4 +1386,34 @@ export function personaOf(state: AppState, chat: Chat | null, story: Story | nul
 
 export function attachmentsOf(message: Message): Attachment[] {
   return message.attachments ?? [];
+}
+
+export function activeImageProvider(state: AppState): ImageProvider | null {
+  return (
+    state.imageProviders.find((p) => p.id === state.settings.activeImageProviderId) ?? null
+  );
+}
+
+export function summaryOf(state: AppState, story: Story | null): StorySummary | null {
+  if (!story) return null;
+  return state.storySummaries.find((s) => s.storyId === story.id) ?? null;
+}
+
+/**
+ * What the selected model can do. Provider-reported capabilities win; the
+ * user's manual overrides win over those; otherwise we infer from the id.
+ * Never assume — the UI gates controls on this.
+ */
+export function capabilitiesOf(provider: Provider | null): ModelCapabilities {
+  if (!provider) return defaultCapabilities({ text: false, streaming: false });
+  const reported = provider.modelInfo?.[provider.model]?.capabilities;
+  const base = reported ?? inferCapabilities(provider.model || '');
+  return {
+    ...base,
+    // The legacy per-provider vision flag still acts as an explicit opt-in.
+    vision: provider.capabilityOverrides?.vision ?? (provider.visionSupport || base.vision),
+    streaming: provider.capabilityOverrides?.streaming ?? (provider.streaming && base.streaming),
+    text: provider.capabilityOverrides?.text ?? base.text,
+    imageGeneration: provider.capabilityOverrides?.imageGeneration ?? base.imageGeneration,
+  };
 }

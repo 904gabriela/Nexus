@@ -6,7 +6,14 @@
  * a single non-streamed response when the endpoint does not support it.
  */
 
-import type { ChatCompletionMessage, GenerationSettings, Provider } from '../types';
+import type {
+  ChatCompletionMessage,
+  GenerationSettings,
+  ModelInfo,
+  Provider,
+} from '../types';
+import { defaultCapabilities } from '../types';
+import { inferCapabilities } from '../types/factories';
 
 export class ProviderError extends Error {
   readonly status?: number;
@@ -89,6 +96,50 @@ function describeNetworkFailure(provider: Provider, err: unknown): ProviderError
 
 export interface FetchModelsResult {
   models: string[];
+  /** Capability record per model, reported where the provider says so. */
+  info: Record<string, ModelInfo>;
+}
+
+/**
+ * Reads capabilities from a model listing. OpenRouter publishes
+ * `architecture.input_modalities`; most others publish nothing, in which case
+ * we fall back to inference and mark the record as unreported so the UI can
+ * say the capabilities are a guess.
+ */
+function readCapabilities(raw: unknown, id: string): ModelInfo {
+  if (!raw || typeof raw !== 'object') {
+    return { id, capabilities: inferCapabilities(id), reported: false };
+  }
+  const obj = raw as Record<string, any>;
+  const modalities: unknown =
+    obj.architecture?.input_modalities ?? obj.input_modalities ?? obj.modalities;
+  const outputModalities: unknown =
+    obj.architecture?.output_modalities ?? obj.output_modalities;
+
+  if (Array.isArray(modalities)) {
+    const list = modalities.map((m) => String(m).toLowerCase());
+    const outputs = Array.isArray(outputModalities)
+      ? outputModalities.map((m) => String(m).toLowerCase())
+      : [];
+    return {
+      id,
+      label: typeof obj.name === 'string' ? obj.name : undefined,
+      capabilities: defaultCapabilities({
+        text: list.includes('text'),
+        vision: list.includes('image'),
+        imageGeneration: outputs.includes('image'),
+        streaming: true,
+      }),
+      reported: true,
+    };
+  }
+
+  return {
+    id,
+    label: typeof obj.name === 'string' ? obj.name : undefined,
+    capabilities: inferCapabilities(id),
+    reported: false,
+  };
 }
 
 export async function fetchModels(provider: Provider, signal?: AbortSignal): Promise<FetchModelsResult> {
@@ -118,14 +169,22 @@ export async function fetchModels(provider: Provider, signal?: AbortSignal): Pro
       : Array.isArray(payload)
         ? payload
         : [];
+  const info: Record<string, ModelInfo> = {};
   const models = list
     .map((item) => {
-      if (typeof item === 'string') return item;
-      if (item && typeof item === 'object') {
-        const obj = item as Record<string, unknown>;
-        return String(obj.id ?? obj.name ?? obj.model ?? '');
-      }
-      return '';
+      const id =
+        typeof item === 'string'
+          ? item
+          : item && typeof item === 'object'
+            ? String(
+                (item as Record<string, unknown>).id ??
+                  (item as Record<string, unknown>).name ??
+                  (item as Record<string, unknown>).model ??
+                  '',
+              )
+            : '';
+      if (id) info[id] = readCapabilities(item, id);
+      return id;
     })
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b));
@@ -135,7 +194,7 @@ export async function fetchModels(provider: Provider, signal?: AbortSignal): Pro
       'The endpoint responded, but returned no models. It may not implement /models.',
     );
   }
-  return { models: Array.from(new Set(models)) };
+  return { models: Array.from(new Set(models)), info };
 }
 
 export interface TestResult {
