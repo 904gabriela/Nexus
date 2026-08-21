@@ -376,6 +376,7 @@ export function defaultSettings(): Settings {
     showTokenCounts: true,
     migratedV2: false,
     schemaVersion: SCHEMA_VERSION,
+    lastBackupAt: null,
 
     activeImageProviderId: null,
 

@@ -621,6 +621,8 @@ function BackupCenter() {
     try {
       const json = await buildBackup({ includeMedia, onProgress: setProgress });
       downloadFile(backupFilename(), json);
+      // Remembered so the app can stop recommending a backup it just made.
+      await actions.saveSettings({ lastBackupAt: Date.now() });
       actions.toast({
         kind: 'success',
         title: 'Backup downloaded',

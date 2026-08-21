@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ImageProvider, ModelCapabilities, Provider } from '../types';
 import { ASPECT_RATIOS, AUTO_MEMORY_TRIGGERS } from '../types';
 import {
@@ -30,6 +30,11 @@ import {
 } from '../ai/imageClient';
 import { LorebookTester } from './Lorebooks';
 import { dbCount, STORES } from '../storage/db';
+import {
+  readStorageStatus,
+  requestPersistence,
+  type StorageStatus,
+} from '../storage/persistence';
 import { formatBytes } from '../utils/text';
 
 export function SettingsPage() {
@@ -601,6 +606,34 @@ function DataSection() {
   const confirm = useConfirm();
   const [counts, setCounts] = useState<Record<string, number> | null>(null);
   const [estimate, setEstimate] = useState<string | null>(null);
+  const [storage, setStorage] = useState<StorageStatus | null>(null);
+  const [asking, setAsking] = useState(false);
+
+  // Read the durability state on mount so the section is truthful before the
+  // user presses anything.
+  useEffect(() => {
+    void readStorageStatus().then(setStorage);
+  }, []);
+
+  const askForPersistence = async () => {
+    setAsking(true);
+    try {
+      const next = await requestPersistence(true);
+      setStorage(next);
+      actions.toast(
+        next.state === 'persistent'
+          ? { kind: 'success', title: 'Your browser agreed to keep this data' }
+          : {
+              kind: 'warn',
+              title: 'The browser did not grant persistent storage',
+              detail:
+                'This is common and not an error. Keep backups — that is the only guarantee.',
+            },
+      );
+    } finally {
+      setAsking(false);
+    }
+  };
 
   const inspect = async () => {
     const entries = await Promise.all(
@@ -628,6 +661,49 @@ function DataSection() {
         anywhere except the messages you send to your configured AI provider. Clearing site data in
         your browser deletes it all — keep backups.
       </Banner>
+
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div className="row row-between row-wrap">
+          <strong>Storage durability</strong>
+          <span
+            className={`chip ${
+              storage?.state === 'persistent'
+                ? 'chip-success'
+                : storage?.state === 'best-effort'
+                  ? 'chip-warn'
+                  : 'chip'
+            }`}
+          >
+            {storage?.state === 'persistent'
+              ? 'Persistent'
+              : storage?.state === 'best-effort'
+                ? 'Best effort'
+                : 'Unknown'}
+          </span>
+        </div>
+        <p className="small muted" style={{ marginTop: 6 }}>
+          {storage?.state === 'persistent'
+            ? 'This browser has agreed not to evict your data automatically. It can still be lost ' +
+              'if you clear site data, uninstall the browser, or lose the device — so keep backups.'
+            : storage?.state === 'best-effort'
+              ? 'Your data is stored "best effort": a browser may clear it when storage runs low, ' +
+                'and some browsers discard unused site data after a week or so. Ask for persistent ' +
+                'storage below, and keep backups either way.'
+              : 'This browser does not report a storage-durability setting. Keep backups.'}
+        </p>
+        {storage?.usage != null && (
+          <p className="small muted">
+            Using {formatBytes(storage.usage)}
+            {storage.quota ? ` of about ${formatBytes(storage.quota)} available` : ''}.
+          </p>
+        )}
+        {storage?.state === 'best-effort' && (
+          <button type="button" className="btn btn-block" onClick={askForPersistence} disabled={asking}>
+            {asking ? <span className="spinner" /> : <Icon name="save" />}
+            Ask the browser to keep this data
+          </button>
+        )}
+      </div>
 
       <button type="button" className="btn btn-block" onClick={inspect}>
         <Icon name="search" />

@@ -519,6 +519,8 @@ export interface Settings {
   showTokenCounts: boolean;
   migratedV2: boolean;
   schemaVersion: number;
+  /** When a full backup was last downloaded, so we can stop nagging. */
+  lastBackupAt: number | null;
 
   /* image generation */
   activeImageProviderId: ID | null;

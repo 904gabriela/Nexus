@@ -43,6 +43,7 @@ import {
   newMessage,
 } from '../types/factories';
 import * as repo from '../storage/repositories';
+import { requestPersistence } from '../storage/persistence';
 import { listMedia } from '../media/mediaStore';
 import { scanV2, type V2Scan } from '../storage/migration';
 import { resolveTimeline, descendantBranchIds, ownedMessageIds } from '../services/timeline';
@@ -318,6 +319,16 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
+
+  /**
+   * Ask the browser to keep this origin's data. IndexedDB is evictable by
+   * default, and this app's whole value is months of accumulated story. The
+   * request may be refused — that is a normal outcome and is reported honestly
+   * in Settings rather than assumed to have succeeded.
+   */
+  useEffect(() => {
+    void requestPersistence();
+  }, []);
 
   // Theme + font scale are applied at the document level.
   useEffect(() => {

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useActions, useAppState } from '../state/store';
 import { Avatar } from '../components/media/MediaImage';
 import { Icon } from '../components/ui/Icon';
@@ -6,6 +6,11 @@ import { Banner, EmptyState } from '../components/ui/common';
 import { migrateV2, dismissV2Migration } from '../storage/migration';
 import { newLorebook, newMemory } from '../types/factories';
 import { relativeTime, formatBytes, truncate } from '../utils/text';
+import {
+  backupAdvice,
+  readStorageStatus,
+  type PersistenceState,
+} from '../storage/persistence';
 import type { RouteName } from '../state/router';
 
 export function DashboardPage({
@@ -16,6 +21,21 @@ export function DashboardPage({
   const state = useAppState();
   const actions = useActions();
   const [migrating, setMigrating] = useState(false);
+
+  // Storage durability feeds the wording: an un-persisted origin is a stronger
+  // reason to back up than a persisted one.
+  const [persistence, setPersistence] = useState<PersistenceState>('unsupported');
+  useEffect(() => {
+    void readStorageStatus().then((s) => setPersistence(s.state));
+  }, []);
+
+  const totalMessages = state.chats.reduce((n, c) => n + Math.max(0, c.orderCounter), 0);
+  const advice = backupAdvice({
+    messages: totalMessages,
+    stories: state.stories.length,
+    lastBackupAt: state.settings.lastBackupAt,
+    persistence,
+  });
 
   const recentStories = useMemo(
     () =>
@@ -90,6 +110,25 @@ export function DashboardPage({
       </div>
 
       <div className="page">
+        {advice.recommend && (
+          <Banner
+            kind="warn"
+            title="Worth backing up"
+            action={
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => navigate('transfer')}
+              >
+                <Icon name="download" />
+                Back up now
+              </button>
+            }
+          >
+            {advice.reason}
+          </Banner>
+        )}
+
         {state.v2Scan?.found && (
           <Banner
             kind="info"
