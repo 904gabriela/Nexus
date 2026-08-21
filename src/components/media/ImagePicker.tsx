@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import type { ID, MediaOwnerType } from '../../types';
-import { IMAGE_ACCEPT_ATTR, MediaError, replaceMedia, saveMedia } from '../../media/mediaStore';
+import { IMAGE_ACCEPT_ATTR, MediaError, saveMedia } from '../../media/mediaStore';
 import { useActions, useAppState } from '../../state/store';
 import { useConfirm } from '../ui/Confirm';
 import { Icon } from '../ui/Icon';
@@ -61,20 +61,20 @@ export function ImagePicker({
     (('mediaDevices' in navigator && !!navigator.mediaDevices) ||
       /Android|iPhone|iPad|iPod/i.test(navigator.userAgent ?? ''));
 
-  const handleFile = async (file: File | undefined, mode: 'new' | 'replace') => {
+  /**
+   * Choosing another picture always stores a *new* image and points this field
+   * at it. Overwriting the bytes of the existing record would silently change
+   * the picture everywhere else it is used — the same file can be a character's
+   * avatar and a story cover at once. The Media library keeps an explicit
+   * "Replace image" action for the deliberate swap-everywhere case.
+   */
+  const handleFile = async (file: File | undefined) => {
     if (!file) return;
     setBusy(true);
     setError(null);
     try {
-      if (mode === 'replace' && mediaId) {
-        await replaceMedia(mediaId, file);
-        // Same id, new bytes: nudge consumers so cached URLs refresh.
-        onChange(null);
-        setTimeout(() => onChange(mediaId), 0);
-      } else {
-        const meta = await saveMedia(file, { ownerType, ownerId });
-        onChange(meta.id);
-      }
+      const meta = await saveMedia(file, { ownerType, ownerId });
+      onChange(meta.id);
       await actions.refreshMedia();
     } catch (err) {
       const message =
@@ -194,7 +194,7 @@ export function ImagePicker({
         className="sr-only"
         tabIndex={-1}
         aria-hidden="true"
-        onChange={(e) => void handleFile(e.target.files?.[0], mediaId ? 'replace' : 'new')}
+        onChange={(e) => void handleFile(e.target.files?.[0])}
       />
       <input
         ref={cameraInput}
@@ -204,7 +204,7 @@ export function ImagePicker({
         className="sr-only"
         tabIndex={-1}
         aria-hidden="true"
-        onChange={(e) => void handleFile(e.target.files?.[0], mediaId ? 'replace' : 'new')}
+        onChange={(e) => void handleFile(e.target.files?.[0])}
       />
 
       {error && (
