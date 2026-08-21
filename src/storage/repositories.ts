@@ -35,6 +35,19 @@ function touch<T extends { updatedAt: number }>(value: T): T {
   return { ...value, updatedAt: now() };
 }
 
+/**
+ * Records written before a field existed come back without it, and the type
+ * says otherwise. Fields added after the first release are filled in on read
+ * so the rest of the app can trust the type.
+ */
+function hydrateStory(story: Story): Story {
+  return { ...story, openingMessage: story.openingMessage ?? '' };
+}
+
+function hydrateChat(chat: Chat): Chat {
+  return { ...chat, direction: chat.direction ?? '' };
+}
+
 export const characters = {
   all: () => dbGetAll<Character>(STORES.characters),
   get: (id: ID) => dbGet<Character>(STORES.characters, id),
@@ -52,17 +65,18 @@ export const personas = {
 };
 
 export const stories = {
-  all: () => dbGetAll<Story>(STORES.stories),
-  get: (id: ID) => dbGet<Story>(STORES.stories, id),
+  all: () => dbGetAll<Story>(STORES.stories).then((all) => all.map(hydrateStory)),
+  get: (id: ID) => dbGet<Story>(STORES.stories, id).then((s) => (s ? hydrateStory(s) : s)),
   save: (value: Story) => dbPut(STORES.stories, touch(value)),
   saveMany: (values: Story[]) => dbPutMany(STORES.stories, values),
   remove: (id: ID) => dbDelete(STORES.stories, id),
 };
 
 export const chats = {
-  all: () => dbGetAll<Chat>(STORES.chats),
-  get: (id: ID) => dbGet<Chat>(STORES.chats, id),
-  byStory: (storyId: ID) => dbGetAllByIndex<Chat>(STORES.chats, 'storyId', storyId),
+  all: () => dbGetAll<Chat>(STORES.chats).then((all) => all.map(hydrateChat)),
+  get: (id: ID) => dbGet<Chat>(STORES.chats, id).then((c) => (c ? hydrateChat(c) : c)),
+  byStory: (storyId: ID) =>
+    dbGetAllByIndex<Chat>(STORES.chats, 'storyId', storyId).then((all) => all.map(hydrateChat)),
   save: (value: Chat) => dbPut(STORES.chats, touch(value)),
   saveMany: (values: Chat[]) => dbPutMany(STORES.chats, values),
   remove: (id: ID) => dbDelete(STORES.chats, id),

@@ -123,11 +123,20 @@ export function useGeneration() {
         instruction?: string;
         respondingCharacterId?: ID | null;
         imageMap?: Map<ID, string>;
+        /**
+         * The chat and story as they are at call time. generate() resolves
+         * these from the live store, because the values this callback closed
+         * over can be a render behind — sending immediately after switching
+         * chats would otherwise compile with the previous chat's direction and
+         * context size.
+         */
+        chat?: Chat | null;
+        story?: Story | null;
       } = {},
     ): CompileInput => ({
       settings: state.settings,
-      story,
-      chat: activeChat,
+      story: options.story !== undefined ? options.story : story,
+      chat: options.chat !== undefined ? options.chat : activeChat,
       characters,
       persona,
       memories: memoriesForContext,
@@ -284,6 +293,7 @@ export function useGeneration() {
       // stale — using it silently drops the newest turn from the request.
       const live = getState();
       const liveChat = live.chats.find((c) => c.id === live.activeChatId) ?? activeChat;
+      const liveStory = storyOf(live, liveChat);
       const currentTimeline = resolveTimeline(
         live.messages,
         live.branches,
@@ -316,6 +326,8 @@ export function useGeneration() {
             instruction: target.instruction,
             respondingCharacterId: respondingId,
             imageMap,
+            chat: liveChat,
+            story: liveStory,
           }),
         );
 
@@ -327,7 +339,7 @@ export function useGeneration() {
           });
         }
 
-        const generation = effectiveGeneration(activeChat, story, provider);
+        const generation = effectiveGeneration(liveChat, liveStory, provider);
 
         // Append a live placeholder so streaming text has somewhere to land.
         if (!target.replaceMessageId && !target.asAlternative) {

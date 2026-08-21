@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Attachment, Chat, ID, Memory, Message } from '../types';
 import { newMemory } from '../types/factories';
 import {
+  effectiveGeneration,
   useActions,
   useAppState,
   useStore,
@@ -14,6 +15,7 @@ import { ImageGenPanel } from '../components/chat/ImageGenPanel';
 import { AiSummarySheet } from '../components/chat/AiSummarySheet';
 import { StorySummarySheet } from '../components/chat/StorySummarySheet';
 import { StoryTimeline, type JumpTarget } from '../components/chat/StoryTimeline';
+import { ResponseSettingsSheet } from '../components/chat/ResponseSettingsSheet';
 import { MemoryEditor } from './Memories';
 import { Icon } from '../components/ui/Icon';
 import { ActionSheet, Sheet } from '../components/ui/Sheet';
@@ -64,6 +66,7 @@ export function ChatPage({
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<ID>>(new Set());
   const [chatMenu, setChatMenu] = useState(false);
+  const [responseSettings, setResponseSettings] = useState(false);
   const [showContext, setShowContext] = useState(false);
   const [showBranches, setShowBranches] = useState(false);
   const [showCheckpoints, setShowCheckpoints] = useState(false);
@@ -421,6 +424,16 @@ export function ChatPage({
   const branchCount = state.branches.length;
   const chatCheckpoints = state.checkpoints.filter((c) => c.chatId === activeChat.id);
 
+  // The menu row should say what is actually in force, so the tuning that is
+  // already applied is visible without opening the sheet.
+  const generation = effectiveGeneration(activeChat, gen.story, gen.provider);
+  const directionLines = (activeChat.direction ?? '')
+    .split('\n')
+    .filter((l) => l.trim()).length;
+  const responseSummary = directionLines
+    ? `${directionLines} direction${directionLines === 1 ? '' : 's'} · temperature ${generation.temperature}`
+    : `Temperature ${generation.temperature} · no direction set`;
+
   return (
     <div className="chat-screen">
       {gen.story?.backgroundMediaId && <ChatBackground mediaId={gen.story.backgroundMediaId} />}
@@ -701,6 +714,15 @@ export function ChatPage({
         }}
       />
 
+      <ResponseSettingsSheet
+        open={responseSettings}
+        onClose={() => setResponseSettings(false)}
+        chat={activeChat}
+        story={gen.story}
+        provider={gen.provider}
+        onSave={(patch) => actions.saveChat({ ...activeChat, ...patch })}
+      />
+
       <AiSummarySheet open={aiSummary} onClose={() => setAiSummary(false)} gen={gen} />
 
       <StorySummarySheet open={storySummary} onClose={() => setStorySummary(false)} gen={gen} />
@@ -799,6 +821,13 @@ export function ChatPage({
         onClose={() => setChatMenu(false)}
         title={chatDisplayTitle(activeChat, gen.story)}
         actions={[
+          {
+            key: 'response',
+            label: 'Response settings',
+            description: responseSummary,
+            icon: 'settings',
+            onSelect: () => setResponseSettings(true),
+          },
           {
             key: 'context',
             label: 'Context Inspector',

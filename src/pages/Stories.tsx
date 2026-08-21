@@ -6,7 +6,8 @@ import { Avatar, MediaImage } from '../components/media/MediaImage';
 import { ImagePicker } from '../components/media/ImagePicker';
 import { Icon } from '../components/ui/Icon';
 import { Banner, EmptyState, SearchInput, Tabs } from '../components/ui/common';
-import { NumberField, SelectField, SliderField, TagField, TextArea, TextField, Toggle } from '../components/ui/Field';
+import { SelectField, TagField, TextArea, TextField, Toggle } from '../components/ui/Field';
+import { GenerationOverrides } from '../components/ui/GenerationOverrides';
 import { ActionSheet } from '../components/ui/Sheet';
 import { useConfirm, deleteConfirm } from '../components/ui/Confirm';
 import { downloadFile, exportFilename, exportStory } from '../exporters';
@@ -296,6 +297,29 @@ export function StoryEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // What happens when the opening message is left empty depends on the cast,
+  // so say which greeting would actually be used rather than describing rules.
+  const openingHint = (() => {
+    const link =
+      draft.characters.find((c) => c.primary && c.enabled) ??
+      draft.characters.find((c) => c.enabled);
+    const character = link ? state.characters.find((c) => c.id === link.characterId) : undefined;
+    const greeting =
+      character?.greetings.find((g) => g.id === character.defaultGreetingId) ??
+      character?.greetings[0];
+    if (greeting?.content.trim()) {
+      return `The first message of every new chat in this story. Leave it empty to open with ${
+        character?.name || 'the main character'
+      }'s greeting instead.`;
+    }
+    if (character) {
+      return `The first message of every new chat in this story. ${
+        character.name || 'The main character'
+      } has no greeting, so leaving this empty starts the chat with nothing.`;
+    }
+    return 'The first message of every new chat in this story. Leave it empty and the chat starts with nothing.';
+  })();
+
   const patch = (changes: Partial<Story>) => {
     setDraft((current) => ({ ...current, ...changes }));
     setDirty(true);
@@ -394,6 +418,13 @@ export function StoryEditor({
               onChange={(scenario) => patch({ scenario })}
               large
               hint="The situation the roleplay takes place in. Overrides each character's own scenario."
+            />
+            <TextArea
+              label="Opening message"
+              value={draft.openingMessage}
+              onChange={(openingMessage) => patch({ openingMessage })}
+              large
+              hint={openingHint}
             />
             <TextArea
               label="Author's note"
@@ -790,117 +821,4 @@ function CastEditor({
       />
     </>
   );
-}
-
-export function GenerationOverrides({
-  value,
-  onChange,
-}: {
-  value: Partial<import('../types').GenerationSettings>;
-  onChange: (value: Partial<import('../types').GenerationSettings>) => void;
-}) {
-  const set = <K extends keyof import('../types').GenerationSettings>(
-    key: K,
-    next: import('../types').GenerationSettings[K] | undefined,
-  ) => {
-    const copy = { ...value };
-    if (next === undefined) delete copy[key];
-    else copy[key] = next;
-    onChange(copy);
-  };
-
-  const row = (
-    key: keyof import('../types').GenerationSettings,
-    label: string,
-    control: React.ReactNode,
-  ) => (
-    <div className="card" style={{ marginBottom: 10 }}>
-      <div className="row row-between">
-        <strong className="small">{label}</strong>
-        <button
-          type="button"
-          className="btn btn-sm btn-ghost"
-          onClick={() => set(key, value[key] === undefined ? (defaultFor(key) as never) : undefined)}
-        >
-          {value[key] === undefined ? 'Override' : 'Use default'}
-        </button>
-      </div>
-      {value[key] !== undefined && <div style={{ marginTop: 8 }}>{control}</div>}
-    </div>
-  );
-
-  return (
-    <>
-      {row(
-        'temperature',
-        'Temperature',
-        <SliderField
-          label="Temperature"
-          value={value.temperature ?? 0.9}
-          onChange={(v) => set('temperature', v)}
-          min={0}
-          max={2}
-          step={0.05}
-          format={(v) => v.toFixed(2)}
-        />,
-      )}
-      {row(
-        'maxTokens',
-        'Max response tokens',
-        <NumberField
-          label="Max tokens"
-          value={value.maxTokens ?? 900}
-          onChange={(v) => set('maxTokens', Math.max(16, Math.round(v)))}
-          min={16}
-          max={32000}
-        />,
-      )}
-      {row(
-        'topP',
-        'Top P',
-        <SliderField
-          label="Top P"
-          value={value.topP ?? 1}
-          onChange={(v) => set('topP', v)}
-          min={0}
-          max={1}
-          step={0.01}
-          format={(v) => v.toFixed(2)}
-        />,
-      )}
-      {row(
-        'contextSize',
-        'Context size',
-        <NumberField
-          label="Context size (tokens)"
-          value={value.contextSize ?? 8192}
-          onChange={(v) => set('contextSize', Math.max(512, Math.round(v)))}
-          min={512}
-          max={1000000}
-        />,
-      )}
-      {row(
-        'streaming',
-        'Streaming',
-        <Toggle
-          label="Stream the response"
-          checked={value.streaming ?? true}
-          onChange={(v) => set('streaming', v)}
-        />,
-      )}
-    </>
-  );
-}
-
-function defaultFor(key: keyof import('../types').GenerationSettings) {
-  const defaults = {
-    temperature: 0.9,
-    maxTokens: 900,
-    topP: 1,
-    frequencyPenalty: 0,
-    presencePenalty: 0,
-    streaming: true,
-    contextSize: 8192,
-  };
-  return defaults[key];
 }

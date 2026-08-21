@@ -782,12 +782,17 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             const greeting =
               character?.greetings.find((g) => g.id === character.defaultGreetingId) ??
               character?.greetings[0];
-            if (greeting?.content.trim()) {
+            // The story's own opening wins: it was written for this story,
+            // while the greeting belongs to the character everywhere.
+            const opening = story.openingMessage?.trim()
+              ? story.openingMessage
+              : greeting?.content ?? '';
+            if (opening.trim()) {
               seeded.push(
                 newMessage(chat.id, branch.id, {
                   role: 'assistant',
-                  characterId: character!.id,
-                  content: greeting.content,
+                  characterId: character?.id ?? null,
+                  content: opening,
                   order: 0,
                 }),
               );

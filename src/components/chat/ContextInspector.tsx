@@ -17,6 +17,7 @@ const KIND_LABEL: Record<string, string> = {
   lore: 'Lore',
   memory: 'Memory',
   'author-note': "Author's note",
+  direction: 'Direction',
   history: 'Message',
   instruction: 'Instruction',
 };

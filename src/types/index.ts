@@ -294,6 +294,12 @@ export interface Story extends Timestamped {
   description: string;
   scenario: string;
   authorNote: string;
+  /**
+   * The message a new chat opens with. Takes precedence over the primary
+   * character's default greeting, so a story can set its own opening scene
+   * without editing the character.
+   */
+  openingMessage: string;
   tags: string[];
   characters: StoryCharacterLink[];
   personaId: ID | null;
@@ -381,6 +387,12 @@ export interface Chat extends Timestamped {
   favorite: boolean;
   archived: boolean;
   settings: Partial<GenerationSettings>;
+  /**
+   * Live steering for this chat alone: "shorter replies", "more dialogue".
+   * Injected near the end of the context, where it carries the most weight,
+   * and editable from inside the conversation.
+   */
+  direction: string;
   lorebookIds: ID[];
   /** Next value for Message.order. */
   orderCounter: number;
@@ -576,6 +588,7 @@ export interface ContextPart {
     | 'lore'
     | 'memory'
     | 'author-note'
+    | 'direction'
     | 'history'
     | 'instruction';
   content: string;

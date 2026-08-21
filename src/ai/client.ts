@@ -130,6 +130,35 @@ function pageIsHttps(): boolean {
   return typeof location !== 'undefined' && location.protocol === 'https:';
 }
 
+/** "This device", whichever device is asking. */
+function isLoopbackHost(host: string): boolean {
+  return host === 'localhost' || host === '::1' || /^127\./.test(host);
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(/^https?:\/\//i.test(url) ? url : `http://${url}`).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * A loopback address means "the device running the browser". Copying a base URL
+ * that works on the PC over to a phone therefore points the phone at itself,
+ * and nothing is listening there. This is only knowable when the page itself
+ * came from somewhere else — served from a LAN address, the mismatch is certain
+ * rather than a guess.
+ */
+function loopbackFromAnotherDevice(baseUrl: string): boolean {
+  if (typeof location === 'undefined') return false;
+  return (
+    isLoopbackHost(hostOf(baseUrl)) &&
+    !!location.hostname &&
+    !isLoopbackHost(location.hostname.toLowerCase())
+  );
+}
+
 /**
  * A browser on an HTTPS page refuses to open a plain-HTTP connection at all —
  * the request never leaves the device, so there is nothing to diagnose after
@@ -137,6 +166,17 @@ function pageIsHttps(): boolean {
  * generic network failure the user cannot act on.
  */
 function assertReachable(provider: Provider, url: string): void {
+  if (loopbackFromAnotherDevice(provider.baseUrl)) {
+    throw new ProviderError(
+      `${provider.baseUrl} means "this device", so on this device it points at itself — ` +
+        'not at the computer running the model. A base URL that works on that computer ' +
+        'cannot be copied here unchanged.',
+      undefined,
+      `Use the other computer's address on your network instead, for example ` +
+        `http://${location.hostname}:11434/v1 if the model is running on the same machine ` +
+        'that is serving this page.',
+    );
+  }
   if (pageIsHttps() && url.toLowerCase().startsWith('http://')) {
     throw new ProviderError(
       'Your browser will block this request: this page is served over HTTPS and the ' +

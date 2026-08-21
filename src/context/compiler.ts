@@ -213,6 +213,8 @@ const PRIORITY = {
   lore: 700,
   memory: 600,
   authorNote: 880,
+  /** Above the author's note: set from inside the chat, for this chat only. */
+  direction: 890,
   instruction: 990,
   summary: 820,
   recentHistory: 500,
@@ -583,6 +585,21 @@ export function compileContext(input: CompileInput): CompileResult {
         macro(authorNote),
         "Author's note is injected near the end for maximum steering weight.",
         PRIORITY.authorNote,
+      ),
+    );
+  }
+
+  // Set from inside the conversation. Sits in the same high tier as the
+  // author's note, so it steers just as strongly and survives trimming.
+  if (chat?.direction?.trim()) {
+    parts.push(
+      part(
+        'direction',
+        'Direction',
+        'direction',
+        macro(chat.direction),
+        'Direction you set for this chat. Applies to this chat only.',
+        PRIORITY.direction,
       ),
     );
   }
