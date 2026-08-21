@@ -74,11 +74,8 @@ async function buildImageMap(messages: Message[], pending: Attachment[]): Promis
 export function useGeneration() {
   const state = useAppState();
   const actions = useActions();
-  const { timeline, activeChat } = useStore();
+  const { timeline, activeChat, getState } = useStore();
   const abortRef = useRef<AbortController | null>(null);
-  // Upkeep runs after the reply resolves, so it must read state as it is then.
-  const stateRef = useRef(state);
-  stateRef.current = state;
   /** Latest streamed text, readable from the catch block after an abort. */
   const streamingTextRef = useRef('');
 
@@ -183,7 +180,7 @@ export function useGeneration() {
    * Runs detached so neither can delay or break the reply.
    */
   const runPostTurnUpkeep = useCallback(async () => {
-    const current = stateRef.current;
+    const current = getState();
     const chat = current.chats.find((c) => c.id === current.activeChatId) ?? null;
     if (!chat) return;
     const currentStory = storyOf(current, chat);
@@ -251,7 +248,7 @@ export function useGeneration() {
         }
       }
     }
-  }, [actions, contentOf]);
+  }, [actions, contentOf, getState]);
 
   const generate = useCallback(
     async (target: GenerationTarget = {}): Promise<void> => {
@@ -281,13 +278,24 @@ export function useGeneration() {
         characters[0]?.id ??
         null;
 
+      // Resolve the timeline at call time rather than trusting the value this
+      // callback closed over. send() appends the user's message and calls
+      // generate() in the same tick, so the closed-over timeline is one message
+      // stale — using it silently drops the newest turn from the request.
+      const live = getState();
+      const liveChat = live.chats.find((c) => c.id === live.activeChatId) ?? activeChat;
+      const currentTimeline = resolveTimeline(
+        live.messages,
+        live.branches,
+        liveChat.activeBranchId,
+      );
+
       // History excludes the message being replaced so it is not fed back in.
-      const history = target.replaceMessageId
-        ? timeline.slice(
-            0,
-            timeline.findIndex((m) => m.id === target.replaceMessageId),
-          )
-        : timeline;
+      const replaceIndex = target.replaceMessageId
+        ? currentTimeline.findIndex((m) => m.id === target.replaceMessageId)
+        : -1;
+      const history =
+        replaceIndex >= 0 ? currentTimeline.slice(0, replaceIndex) : currentTimeline;
 
       const controller = new AbortController();
       abortRef.current = controller;
@@ -356,7 +364,7 @@ export function useGeneration() {
           // Show the new alternative straight away.
           await actions.setActiveAlternative(target.replaceMessageId, alternative.id);
         } else if (target.replaceMessageId) {
-          const message = state.messages.find((m) => m.id === target.replaceMessageId);
+          const message = getState().messages.find((m) => m.id === target.replaceMessageId);
           if (message) {
             await actions.updateMessage({
               ...message,
@@ -424,7 +432,7 @@ export function useGeneration() {
       timeline,
       buildCompileInput,
       actions,
-      state.messages,
+      getState,
       capabilities.vision,
       runPostTurnUpkeep,
     ],

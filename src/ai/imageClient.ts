@@ -97,6 +97,8 @@ function base64ToBlob(base64: string, mimeType: string): Blob {
 function findImagePayload(
   value: unknown,
   depth = 0,
+  /** True when we arrived here via a key that names image data explicitly. */
+  trusted = false,
 ): { kind: 'base64' | 'url'; value: string; mimeType?: string } | null {
   if (depth > 6) return null;
 
@@ -108,8 +110,11 @@ function findImagePayload(
     if (/^https?:\/\/\S+$/i.test(value) && /\.(png|jpe?g|webp|gif)(\?|$)/i.test(value)) {
       return { kind: 'url', value };
     }
-    // A long bare base64 blob with no data-URL prefix.
-    if (value.length > 256 && /^[A-Za-z0-9+/=\s]+$/.test(value)) {
+    // Bare base64 with no data-URL prefix. Under a key that explicitly names
+    // image data we trust any valid-looking payload; elsewhere we require some
+    // length so a stray identifier is not mistaken for an image.
+    const looksBase64 = /^[A-Za-z0-9+/=\s]+$/.test(value);
+    if (looksBase64 && (trusted ? value.length > 16 : value.length > 256)) {
       return { kind: 'base64', value, mimeType: 'image/png' };
     }
     return null;
@@ -117,7 +122,7 @@ function findImagePayload(
 
   if (Array.isArray(value)) {
     for (const item of value) {
-      const found = findImagePayload(item, depth + 1);
+      const found = findImagePayload(item, depth + 1, trusted);
       if (found) return found;
     }
     return null;
@@ -128,7 +133,9 @@ function findImagePayload(
     // Check the well-known keys first so we don't return a stray URL field.
     for (const key of ['b64_json', 'inlineData', 'inline_data', 'image', 'data', 'url']) {
       if (key in obj) {
-        const found = findImagePayload(obj[key], depth + 1);
+        // 'data' is often just a wrapper array, so only the leaf keys grant trust.
+        const grantsTrust = key !== 'data' && key !== 'url';
+        const found = findImagePayload(obj[key], depth + 1, trusted || grantsTrust);
         if (found) {
           const mime = typeof obj.mimeType === 'string' ? obj.mimeType : undefined;
           return mime && found.kind === 'base64' ? { ...found, mimeType: mime } : found;

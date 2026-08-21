@@ -204,6 +204,13 @@ export interface AppActions {
 
 interface StoreValue {
   state: AppState;
+  /**
+   * Reads state as of *now*, not as of the last render. Actions mutate the
+   * store synchronously, so code that runs between an action and React's next
+   * render (send → generate, for example) must read through this or it sees a
+   * stale snapshot and silently drops the newest message.
+   */
+  getState: () => AppState;
   actions: AppActions;
   toasts: ToastMessage[];
   dismissToast: (id: ID) => void;
@@ -1316,9 +1323,11 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     return resolveTimeline(state.messages, state.branches, activeChat.activeBranchId);
   }, [state.messages, state.branches, activeChat]);
 
+  const getState = useCallback(() => stateRef.current, []);
+
   const value = useMemo<StoreValue>(
-    () => ({ state, actions, toasts, dismissToast, timeline, activeChat, activeBranch }),
-    [state, actions, toasts, dismissToast, timeline, activeChat, activeBranch],
+    () => ({ state, getState, actions, toasts, dismissToast, timeline, activeChat, activeBranch }),
+    [state, getState, actions, toasts, dismissToast, timeline, activeChat, activeBranch],
   );
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

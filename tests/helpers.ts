@@ -8,9 +8,9 @@ export const PNG_BYTES = Buffer.from(
 );
 
 /** Builds a PNG carrying a `chara` tEXt chunk, i.e. a real character card. */
-export function makeCharacterCardPng(card: unknown): Buffer {
+export function makeCharacterCardPng(card: unknown, chunkKeyword = 'chara'): Buffer {
   const payload = Buffer.from(JSON.stringify(card), 'utf8').toString('base64');
-  const keyword = Buffer.from('chara', 'latin1');
+  const keyword = Buffer.from(chunkKeyword, 'latin1');
   const data = Buffer.concat([keyword, Buffer.from([0]), Buffer.from(payload, 'latin1')]);
 
   const type = Buffer.from('tEXt', 'latin1');
@@ -114,7 +114,12 @@ export async function boot(page: Page, hash = '#/dashboard') {
 }
 
 /** Reloads without changing the route — proves data survived a refresh. */
-export async function reloadApp(page: Page) {
+export async function reloadApp(page: Page, hash?: string) {
+  if (hash) {
+    await page.evaluate((h) => {
+      location.hash = h;
+    }, hash);
+  }
   await page.reload();
   await expect(page.locator('.app-shell')).toBeVisible();
   await expect(page.locator('#main')).toBeVisible({ timeout: 15_000 });
@@ -238,4 +243,79 @@ export function field(page: Page, name: string) {
 
 export function fieldIn(scope: { getByRole: Page['getByRole'] }, name: string) {
   return scope.getByRole('textbox', { name, exact: true });
+}
+
+/** Numeric inputs expose role="spinbutton", not "textbox". */
+export function numberField(page: Page, name: string) {
+  return page.getByRole('spinbutton', { name, exact: true });
+}
+
+/** A message bubble containing `text`. Scoped so titles never match. */
+export function bubble(page: Page, text: string) {
+  return page.getByTestId('message-bubble').filter({ hasText: text });
+}
+
+/** Bubbles for one role only. */
+export function bubbleByRole(page: Page, role: 'user' | 'assistant', text: string) {
+  return page.locator(`[data-testid="message-bubble"][data-role="${role}"]`).filter({ hasText: text });
+}
+
+/** Intercepts image-generation endpoints with a real 1x1 PNG payload. */
+export async function mockImageAI(
+  page: Page,
+  options: { fail?: boolean } = {},
+): Promise<{ requests: Array<{ url: string; body: any }> }> {
+  const state = { requests: [] as Array<{ url: string; body: any }> };
+  const b64 = PNG_BYTES.toString('base64');
+
+  const handler = async (route: Route) => {
+    state.requests.push({ url: route.request().url(), body: route.request().postDataJSON() });
+    if (options.fail) {
+      await route.fulfill({
+        status: 400,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { message: 'Mock image failure' } }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ data: [{ b64_json: b64 }] }),
+    });
+  };
+
+  await page.route('**/images/generations', handler);
+  await page.route('**/*:generateContent*', handler);
+  return state;
+}
+
+/** Configures a mock image provider through the real Settings UI. */
+export async function setupImageProvider(page: Page) {
+  await goto(page, '#/settings');
+  await page.getByRole('tab', { name: 'Image Generation' }).click();
+  await page
+    .getByRole('button', { name: /Add image provider|Add another image provider/ })
+    .first()
+    .click();
+  const dialog = page.getByRole('dialog');
+  await fieldIn(dialog, 'Base URL').fill('https://mockimg.test/v1');
+  await fieldIn(dialog, 'API key').fill('img-key-1234567890');
+  await fieldIn(dialog, 'Image model').fill('mock-image-model');
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.card').filter({ hasText: 'mock-image-model' }).first()).toBeVisible();
+}
+
+/**
+ * Opens the action menu for the message containing `text`.
+ * Targets by content rather than index, so a seeded greeting cannot shift it.
+ */
+export async function openMessageMenu(page: Page, text: string) {
+  const article = page
+    .locator('.msg')
+    .filter({ has: page.getByTestId('message-bubble').filter({ hasText: text }) })
+    .first();
+  await article.getByRole('button', { name: 'More message actions' }).click();
+  await expect(page.locator('.sheet').last()).toBeVisible();
 }

@@ -69,7 +69,12 @@ export function ContextInspector({
       footer={
         <>
           <CopyButton text={raw} label="Copy full context" className="btn btn-primary" />
-          <button type="button" className="btn" onClick={onClose}>
+          <button
+            type="button"
+            className="btn"
+            onClick={onClose}
+            aria-label="Close context inspector"
+          >
             Close
           </button>
         </>

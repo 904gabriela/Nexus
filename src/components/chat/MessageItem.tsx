@@ -115,6 +115,8 @@ export const MessageItem = memo(function MessageItem({
         </div>
 
         <div
+          data-testid="message-bubble"
+          data-role={message.role}
           className={`bubble${selected ? ' selected' : ''}${message.important ? ' important' : ''}${
             message.error ? ' error' : ''
           }`}

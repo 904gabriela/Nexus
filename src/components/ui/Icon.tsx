@@ -77,9 +77,14 @@ export function Icon({ name, size, ...rest }: IconProps) {
       {...(size ? { width: size, height: size } : {})}
       {...rest}
     >
-      {d.split('M').filter(Boolean).map((segment, i) => (
-        <path key={i} d={`M${segment}`} />
-      ))}
+      {/* Split on absolute/relative moveto so each subpath renders separately. */}
+      {d
+        .split(/(?=[Mm])/)
+        .map((segment) => segment.trim())
+        .filter(Boolean)
+        .map((segment, i) => (
+          <path key={i} d={segment} />
+        ))}
     </svg>
   );
 }

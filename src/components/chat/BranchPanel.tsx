@@ -74,6 +74,8 @@ export function BranchPanel({
                 <button
                   type="button"
                   className={`branch-row${active ? ' active' : ''}`}
+                  data-testid="branch-row"
+                  aria-label={`Switch to branch ${node.name}`}
                   onClick={async () => {
                     await actions.switchBranch(node.id);
                     onClose();
@@ -103,6 +105,7 @@ export function BranchPanel({
                   <button
                     type="button"
                     className="btn btn-sm"
+                    aria-label={`Rename branch ${node.name}`}
                     onClick={() => {
                       setRenaming(node);
                       setName(node.name);

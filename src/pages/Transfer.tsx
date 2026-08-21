@@ -510,7 +510,7 @@ function ExportCenter() {
     exporter: (item: T) => Promise<string>,
     kind: Parameters<typeof exportFilename>[0],
   ) => (
-    <section className="section">
+    <section className="section" data-testid={`export-section-${kind}`}>
       <h3 className="section-title">
         {title}
         <span className="chip">{items.length}</span>
@@ -520,13 +520,14 @@ function ExportCenter() {
       ) : (
         <div className="list">
           {items.map((item) => (
-            <div className="card card-button" key={item.id}>
+            <div className="card card-button" key={item.id} data-testid={`export-row-${kind}`}>
               <span className="truncate" style={{ flex: 1, minWidth: 0 }}>
                 {nameOf(item) || 'Untitled'}
               </span>
               <button
                 type="button"
                 className="btn btn-sm"
+                aria-label={`Export ${kind}: ${nameOf(item) || 'Untitled'}`}
                 disabled={busy === item.id}
                 onClick={() =>
                   run(item.id, async () => {

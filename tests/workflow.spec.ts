@@ -15,6 +15,8 @@ import {
   goto,
   makeCharacterCardPng,
   reloadApp,
+  bubble,
+  openMessageMenu,
   mockAI,
   readStore,
   resetDatabase,
@@ -448,7 +450,9 @@ test('steps 49-54: send a message with an image attachment and verify it persist
   await expect(page.locator('.chat-composer')).toBeVisible();
 
   // 51. Attach two images to prove multi-attachment support.
-  const attachInput = page.locator('.chat-composer input[type=file]');
+  await page.getByRole('button', { name: 'Add image' }).click();
+  await sheetAction(page, 'Photo Library');
+  const attachInput = page.getByTestId('attach-library');
   await attachInput.setInputFiles([
     { name: 'one.png', mimeType: 'image/png', buffer: PNG_BYTES },
     { name: 'two.png', mimeType: 'image/png', buffer: PNG_BYTES },
@@ -481,13 +485,18 @@ test('steps 55-62: edit, delete, regenerate, alternatives and branching', async 
   await expect(page.getByText(/The tavern door creaks open/)).toBeVisible({ timeout: 20_000 });
 
   // 55. Edit a message and confirm it persists.
-  await page.locator('.msg').first().getByRole('button', { name: 'Edit message' }).click();
+  await page
+    .locator('.msg')
+    .filter({ has: page.getByTestId('message-bubble').filter({ hasText: 'Hello there.' }) })
+    .first()
+    .getByRole('button', { name: 'Edit message' })
+    .click();
   const editDialog = page.getByRole('dialog');
   await fieldIn(editDialog, 'Message text').fill('Hello there. (edited)');
   await editDialog.getByRole('button', { name: 'Save' }).click();
-  await expect(page.locator('.bubble').filter({ hasText: 'Hello there. (edited)' }).first()).toBeVisible();
+  await expect(bubble(page, 'Hello there. (edited)').first()).toBeVisible();
   await reloadApp(page);
-  await expect(page.locator('.bubble').filter({ hasText: 'Hello there. (edited)' }).first()).toBeVisible();
+  await expect(bubble(page, 'Hello there. (edited)').first()).toBeVisible();
 
   // 57-58. Generate an alternative — the original must survive.
   const aiMessage = page.locator('.msg').last();
@@ -519,21 +528,21 @@ test('steps 55-62: edit, delete, regenerate, alternatives and branching', async 
   await page.getByRole('button', { name: 'Chat menu' }).click();
   await sheetAction(page, 'Branches');
   await expect(page.getByText('What if she refuses').first()).toBeVisible();
-  await page.getByRole('button', { name: 'Rename' }).last().click();
+  await page.getByRole('button', { name: 'Rename branch What if she refuses' }).click();
   const renameDialog = page.getByRole('dialog').last();
   await fieldIn(renameDialog, 'Branch name').fill('Refusal path');
   await renameDialog.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByText('Refusal path').first()).toBeVisible();
 
-  await page.getByRole('button', { name: /Main/ }).first().click();
-  await expect(page.locator('.bubble').filter({ hasText: 'This only exists on the branch.' })).toHaveCount(0);
-  await expect(page.locator('.bubble').filter({ hasText: 'Hello there. (edited)' }).first()).toBeVisible();
+  await page.getByRole('button', { name: 'Switch to branch Main' }).click();
+  await expect(bubble(page, 'This only exists on the branch.')).toHaveCount(0);
+  await expect(bubble(page, 'Hello there. (edited)').first()).toBeVisible();
 
   // Switch back to the branch: its message returns.
   await page.getByRole('button', { name: 'Chat menu' }).click();
   await sheetAction(page, 'Branches');
-  await page.getByRole('button', { name: /Refusal path/ }).first().click();
-  await expect(page.locator('.bubble').filter({ hasText: 'This only exists on the branch.' }).first()).toBeVisible();
+  await page.getByRole('button', { name: 'Switch to branch Refusal path' }).click();
+  await expect(bubble(page, 'This only exists on the branch.').first()).toBeVisible();
 });
 
 test('deleting a message removes it from storage', async ({ page }) => {
@@ -545,10 +554,10 @@ test('deleting a message removes it from storage', async ({ page }) => {
   await expect(page.getByText(/The tavern door creaks/)).toBeVisible({ timeout: 20_000 });
 
   const before = await countStore(page, 'messages');
-  await page.locator('.msg').first().getByRole('button', { name: 'More message actions' }).click();
+  await openMessageMenu(page, 'Delete me please.');
   await sheetAction(page, 'Delete message');
   await confirmDialog(page, 'Delete');
-  await expect(page.getByText('Delete me please.')).toHaveCount(0);
+  await expect(bubble(page, 'Delete me please.')).toHaveCount(0);
   expect(await countStore(page, 'messages')).toBe(before - 1);
 });
 
@@ -580,8 +589,8 @@ test('steps 63-66: save a checkpoint, continue, then start a chat from it', asyn
   await page.getByRole('button', { name: 'New chat from here' }).click();
   await expect(page.getByText(/^Started /).first()).toBeVisible();
 
-  await expect(page.locator('.bubble').filter({ hasText: 'First beat of the scene.' }).first()).toBeVisible();
-  await expect(page.locator('.bubble').filter({ hasText: 'Later developments after the checkpoint.' })).toHaveCount(0);
+  await expect(bubble(page, 'First beat of the scene.').first()).toBeVisible();
+  await expect(bubble(page, 'Later developments after the checkpoint.')).toHaveCount(0);
   expect(await countStore(page, 'chats')).toBe(2);
 });
 
@@ -604,8 +613,8 @@ test('restoring a checkpoint forks a branch and leaves the original intact', asy
   await page.getByRole('button', { name: 'Restore here' }).click();
   await expect(page.getByText(/Forked a new branch/).first()).toBeVisible();
 
-  await expect(page.locator('.bubble').filter({ hasText: 'Written after the checkpoint.' })).toHaveCount(0);
-  await expect(page.locator('.bubble').filter({ hasText: 'Anchor message.' }).first()).toBeVisible();
+  await expect(bubble(page, 'Written after the checkpoint.')).toHaveCount(0);
+  await expect(bubble(page, 'Anchor message.').first()).toBeVisible();
   expect(await countStore(page, 'branches')).toBe(2);
   // The original message still exists — it was not deleted, only hidden.
   const messages = await readStore(page, 'messages');
@@ -713,7 +722,7 @@ test('steps 76-79: a lore keyword triggers, is visible in the inspector and the 
   // The compiled system prompt must actually contain the lore text.
   await page.getByRole('tab', { name: 'Raw' }).click();
   await expect(page.getByText(/The grey city on the volcano/)).toBeVisible();
-  await page.locator('.sheet').getByRole('button', { name: 'Close', exact: true }).last().click();
+  await page.getByRole('button', { name: 'Close context inspector' }).click();
 
   // 79. The tester agrees, using the same retrieval code.
   await goto(page, '#/settings');
@@ -745,6 +754,16 @@ test('steps 80-85: every export produces readable JSON', async ({ page }) => {
   await seedStory(page);
   await setupProvider(page);
   await startChat(page);
+
+  // Attach an image so the "media is bundled" assertion below is meaningful
+  // rather than trivially true against an empty library.
+  await page.getByRole('button', { name: 'Add image' }).click();
+  await sheetAction(page, 'Photo Library');
+  await page
+    .getByTestId('attach-library')
+    .setInputFiles({ name: 'export.png', mimeType: 'image/png', buffer: PNG_BYTES });
+  await expect(page.locator('.attachment-preview')).toHaveCount(1);
+
   await sendMessage(page, 'A line worth exporting.');
   await expect(page.getByText(/The tavern door creaks/)).toBeVisible({ timeout: 20_000 });
 
@@ -752,7 +771,7 @@ test('steps 80-85: every export produces readable JSON', async ({ page }) => {
   await page.getByRole('tab', { name: 'Export' }).click();
 
   const characterJson = await captureDownload(page, async () => {
-    await page.getByRole('button', { name: 'Export' }).first().click();
+    await page.getByTestId('export-row-character').first().getByRole('button').click();
   });
   const parsedCharacter = JSON.parse(characterJson);
   expect(parsedCharacter.format).toBe('nexus-tavern-pro');
@@ -760,17 +779,10 @@ test('steps 80-85: every export produces readable JSON', async ({ page }) => {
   expect(parsedCharacter.data.character.name).toBeTruthy();
   expect(characterJson).toContain('\n  '); // human-readable indentation
 
-  // Story export bundles its cast, persona, lorebooks and chats. Scope to
-  // the Stories heading's section so we don't pick a chat card of the same
-  // name.
-  const storiesHeading = page.locator('.section-title', { hasText: /^Stories\s/ });
-  await expect(storiesHeading).toBeVisible();
-  const storyRow = storiesHeading
-    .locator('xpath=following-sibling::div[contains(@class, "list")][1]')
-    .locator('.card', { hasText: 'The Long Storm' })
-    .first();
+  // The export button carries its kind and item name, so this cannot pick up
+  // a chat that happens to be named after the story.
   const storyJson = await captureDownload(page, async () => {
-    await storyRow.getByRole('button', { name: 'Export' }).click();
+    await page.getByRole('button', { name: 'Export story: The Long Storm' }).click();
   });
   const parsedStory = JSON.parse(storyJson);
   expect(parsedStory.kind).toBe('story');
@@ -1160,9 +1172,7 @@ async function sendMessage(page: Page, text: string) {
   await expect(composer).toBeEditable();
   await composer.fill(text);
   await page.getByRole('button', { name: 'Send message' }).click();
-  // The user bubble carries the message; the chat title may also derive from
-  // it (first message auto-titles), so scope to bubbles.
-  await expect(
-    page.locator('.bubble').filter({ hasText: text }).first(),
-  ).toBeVisible({ timeout: 20_000 });
+  // Scoped to a bubble: the chat title is derived from the first message, so a
+  // bare text match would also hit the header.
+  await expect(bubble(page, text).first()).toBeVisible({ timeout: 20_000 });
 }
