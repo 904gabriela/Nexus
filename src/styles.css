@@ -586,37 +586,54 @@ textarea {
   font-weight: 400;
 }
 
+/*
+ * The switch is drawn by its pseudo-elements so the element itself can be a
+ * full-height tap target. A 27px-tall track is a 27px-tall target, which misses
+ * often enough on a phone to be worth the extra markup here.
+ */
 .switch {
   position: relative;
+  width: 46px;
+  height: var(--tap);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.switch::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
   width: 46px;
   height: 27px;
   border-radius: 14px;
   background: var(--border-strong);
-  border: 0;
-  cursor: pointer;
-  flex-shrink: 0;
   transition: background 0.16s ease;
-  padding: 0;
 }
 
-.switch[aria-checked='true'] {
+.switch[aria-checked='true']::before {
   background: var(--accent);
 }
 
 .switch::after {
   content: '';
   position: absolute;
-  top: 3px;
+  top: 50%;
   left: 3px;
   width: 21px;
   height: 21px;
   border-radius: 50%;
   background: #fff;
+  transform: translateY(-50%);
   transition: transform 0.16s ease;
 }
 
 .switch[aria-checked='true']::after {
-  transform: translateX(19px);
+  transform: translateY(-50%) translateX(19px);
 }
 
 .range-row {
@@ -1867,6 +1884,46 @@ mark {
 .stat span {
   font-size: calc(11.5px * var(--font-scale));
   color: var(--text-faint);
+}
+
+/* ------------------------------------------------- touch target sizing */
+
+/*
+ * On a touch screen every control has to be at least --tap on its short side.
+ * The compact variants keep their smaller type and padding — only the box
+ * grows — so the layout still reads as dense rather than blown up. Pointer
+ * devices keep the tighter sizes, where a 36px button is comfortably clickable.
+ */
+@media (pointer: coarse) {
+  .btn-sm,
+  .tag-input-shell input,
+  button.chip,
+  [role='button'].chip,
+  .link-button,
+  .filter-chip,
+  .msg-action,
+  .toast button {
+    min-height: var(--tap);
+  }
+
+  .msg-action,
+  .toast button {
+    min-width: var(--tap);
+  }
+
+  /* The row of quick actions is inline with the bubble, so give the taller
+     buttons a little breathing room rather than letting them collide. */
+  .msg-actions {
+    gap: 0;
+    margin-top: 0;
+  }
+
+  /* Chips sit in a wrapping row; keep them from turning into tall pills. */
+  button.chip,
+  [role='button'].chip {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

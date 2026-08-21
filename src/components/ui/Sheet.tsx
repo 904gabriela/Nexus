@@ -50,9 +50,15 @@ export function Sheet({
     const timer = window.setTimeout(() => {
       const panel = panelRef.current;
       if (!panel || panel.contains(document.activeElement)) return;
-      const target = panel.querySelector<HTMLElement>(
-        '[data-autofocus], input:not([type=hidden]), textarea, select, button',
-      );
+      // Skip controls that are not actually rendered — the attachment sheet,
+      // for example, leads with hidden file inputs. Focusing one of those is a
+      // no-op, which leaves focus on <body>, and Escape then never reaches the
+      // panel's key handler.
+      const target = Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          '[data-autofocus], input:not([type=hidden]), textarea, select, button',
+        ),
+      ).find((el) => el.offsetParent !== null || getComputedStyle(el).position === 'fixed');
       (target ?? panel).focus({ preventScroll: true });
     }, 40);
 

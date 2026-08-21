@@ -14,6 +14,7 @@ import type {
   Chat,
   Checkpoint,
   ID,
+  ImageProvider,
   LoreEntry,
   Lorebook,
   Memory,
@@ -23,6 +24,7 @@ import type {
   Provider,
   Settings,
   Story,
+  StorySummary,
 } from '../types';
 import {
   newBranch,
@@ -126,6 +128,8 @@ export interface ImportPayload {
   checkpoints?: Checkpoint[];
   memories?: Memory[];
   providers?: Provider[];
+  imageProviders?: ImageProvider[];
+  storySummaries?: StorySummary[];
   settings?: Settings;
   /** mediaId → data URL, restored into blob storage on commit. */
   media?: Record<ID, string>;
@@ -788,6 +792,8 @@ async function buildBackupImport(
     lorebooks: (body.lorebooks as Lorebook[]) ?? [],
     loreEntries: (body.loreEntries as LoreEntry[]) ?? [],
     providers: (body.providers as Provider[]) ?? [],
+    imageProviders: (body.imageProviders as ImageProvider[]) ?? [],
+    storySummaries: (body.storySummaries as StorySummary[]) ?? [],
     settings: isPlainObject(body.settings) ? (body.settings as unknown as Settings) : undefined,
     media: isPlainObject(body.media) ? (body.media as Record<ID, string>) : undefined,
   };
@@ -805,7 +811,9 @@ async function buildBackupImport(
     `${payload.lorebooks!.length} lorebooks`,
     `${payload.loreEntries!.length} lore entries`,
     `${Object.keys(payload.media ?? {}).length} bundled images`,
-    `${payload.providers!.length} providers (keys not included)`,
+    `${payload.storySummaries!.length} story summaries`,
+    `${payload.providers!.length} text providers (keys not included)`,
+    `${payload.imageProviders!.length} image providers (keys not included)`,
   ];
 
   const result: ParsedImport = {
@@ -831,7 +839,7 @@ async function buildBackupImport(
         'This backup was created without bundled images. Characters and stories will restore, but their pictures will be missing.',
     });
   }
-  if (payload.providers!.some((p) => !p.apiKey)) {
+  if ([...payload.providers!, ...payload.imageProviders!].some((p) => !p.apiKey)) {
     result.issues.push({
       level: 'info',
       message: 'API keys are never included in backups — re-enter them in Settings after restoring.',
@@ -1439,6 +1447,22 @@ export async function commitImport(
     });
     await repo.providers.saveMany(merged);
     counts.providers = merged.length;
+  }
+
+  if (parsed.payload.imageProviders?.length) {
+    const existing = await repo.imageProviders.all();
+    const merged = parsed.payload.imageProviders.map((incoming) => {
+      const current = existing.find((p) => p.id === incoming.id);
+      // Same rule as text providers: a restore must never blank a local key.
+      return { ...incoming, apiKey: current?.apiKey ?? '' };
+    });
+    await repo.imageProviders.saveMany(merged);
+    counts.imageProviders = merged.length;
+  }
+
+  if (parsed.payload.storySummaries?.length) {
+    await repo.storySummaries.saveMany(parsed.payload.storySummaries);
+    counts.storySummaries = parsed.payload.storySummaries.length;
   }
 
   if (parsed.payload.settings) {

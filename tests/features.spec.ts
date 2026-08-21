@@ -4,7 +4,7 @@
  * As with workflow.spec.ts, every persistence claim is checked by reloading
  * the page and reading IndexedDB — never by trusting in-memory state.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import {
   PNG_BYTES,
   boot,
@@ -23,8 +23,11 @@ import {
   reloadApp,
   resetDatabase,
   setupImageProvider,
+  seedFixtures,
+  sendMessage,
   setupProvider,
   sheetAction,
+  startChat,
 } from './helpers';
 
 test.beforeEach(async ({ page }) => {
@@ -45,7 +48,7 @@ test('image generation: scene prompt is built, editable, and the result is store
   page,
 }) => {
   const imageApi = await mockImageAI(page);
-  await seed(page);
+  await seedFixtures(page);
   await setupProvider(page);
   await setupImageProvider(page);
   await startChat(page);
@@ -96,7 +99,7 @@ test('image generation: scene prompt is built, editable, and the result is store
 
 test('image generation: a generated image can become a character avatar', async ({ page }) => {
   await mockImageAI(page);
-  await seed(page);
+  await seedFixtures(page);
   await setupImageProvider(page);
   await startChat(page);
 
@@ -122,7 +125,7 @@ test('image generation: a generated image can become a character avatar', async 
 
 test('image generation reports provider failures instead of failing silently', async ({ page }) => {
   await mockImageAI(page, { fail: true });
-  await seed(page);
+  await seedFixtures(page);
   await setupImageProvider(page);
   await startChat(page);
 
@@ -135,7 +138,7 @@ test('image generation reports provider failures instead of failing silently', a
 });
 
 test('image generation is offered but explains itself with no provider', async ({ page }) => {
-  await seed(page);
+  await seedFixtures(page);
   await startChat(page);
   await page.getByRole('button', { name: 'Add image' }).click();
   await sheetAction(page, 'Generate Image');
@@ -150,7 +153,7 @@ test('image generation is offered but explains itself with no provider', async (
 
 test('media gallery filters generated images and can reuse one', async ({ page }) => {
   await mockImageAI(page);
-  await seed(page);
+  await seedFixtures(page);
   await setupImageProvider(page);
   await startChat(page);
 
@@ -197,7 +200,7 @@ test('media gallery filters generated images and can reuse one', async ({ page }
 test('mobile attach sheet exposes camera, library and files as distinct inputs', async ({
   page,
 }) => {
-  await seed(page);
+  await seedFixtures(page);
   await startChat(page);
   await page.getByRole('button', { name: 'Add image' }).click();
 
@@ -224,7 +227,7 @@ test('mobile attach sheet exposes camera, library and files as distinct inputs',
 /* =============================================================== CAPABILITIES */
 
 test('model capabilities are shown and gate the vision path', async ({ page }) => {
-  await seed(page);
+  await seedFixtures(page);
   await setupProvider(page);
 
   await goto(page, '#/settings');
@@ -256,7 +259,7 @@ test('model capabilities are shown and gate the vision path', async ({ page }) =
 
 test('enabling vision makes images reach the model', async ({ page }) => {
   const api = await mockAI(page, ['Understood.']);
-  await seed(page);
+  await seedFixtures(page);
   await setupProvider(page);
 
   await goto(page, '#/settings');
@@ -287,7 +290,7 @@ test('enabling vision makes images reach the model', async ({ page }) => {
 /* ============================================================ STORY SUMMARY */
 
 test('story summary generates, persists and replaces old history in context', async ({ page }) => {
-  await seed(page);
+  await seedFixtures(page);
   await setupProvider(page);
   await startChat(page);
   await sendMessage(page, 'We rode north to Ashfell and swore an oath at the gate.');
@@ -332,7 +335,7 @@ test('automatic memory can be enabled and creates an editable memory', async ({ 
     'She swore an oath and promised she would never betray the company.',
     '{"title":"The oath","category":"Event","content":"She promised never to betray the company."}',
   ]);
-  await seed(page);
+  await seedFixtures(page);
   await setupProvider(page);
 
   await goto(page, '#/settings');
@@ -365,7 +368,7 @@ test('automatic memory can be enabled and creates an editable memory', async ({ 
 /* ====================================================== IMPORTANT MESSAGES */
 
 test('important messages are kept separate from memories and survive reload', async ({ page }) => {
-  await seed(page);
+  await seedFixtures(page);
   await setupProvider(page);
   await startChat(page);
   await sendMessage(page, 'Remember this exact wording, word for word.');
@@ -394,7 +397,7 @@ test('important messages are kept separate from memories and survive reload', as
 /* ================================================== NEW CHAT FROM MESSAGE */
 
 test('start new chat from here copies history and leaves the original intact', async ({ page }) => {
-  await seed(page);
+  await seedFixtures(page);
   await setupProvider(page);
   await startChat(page);
   await sendMessage(page, 'First beat.');
@@ -425,7 +428,7 @@ test('start new chat from here copies history and leaves the original intact', a
 /* ======================================================== AI SUMMARY EXPORT */
 
 test('export for AI summary produces a briefing in all three formats', async ({ page }) => {
-  await seed(page);
+  await seedFixtures(page);
   await setupProvider(page);
   await startChat(page);
   await sendMessage(page, 'We made camp outside Ashfell.');
@@ -554,7 +557,7 @@ test('character card variants all import: v1, v2, ccv3 PNG, chara PNG, plain JSO
 /* ======================================================= ALTERNATIVES/BRANCH */
 
 test('alternatives and the active selection survive a reload', async ({ page }) => {
-  await seed(page);
+  await seedFixtures(page);
   await setupProvider(page);
   await startChat(page);
   await sendMessage(page, 'Say something.');
@@ -582,7 +585,7 @@ test('alternatives and the active selection survive a reload', async ({ page }) 
 /* ========================================================= LOREBOOK LINKING */
 
 test('a lorebook can be attached to a story and to a character from the UI', async ({ page }) => {
-  await seed(page);
+  await seedFixtures(page);
 
   // Attach to the story.
   await goto(page, '#/stories');
@@ -617,185 +620,76 @@ test('a lorebook can be attached to a story and to a character from the UI', asy
   expect(await attachments.count()).toBeGreaterThanOrEqual(0);
 });
 
-/* ================================================================ HELPERS */
+/* ============================================================ BACKUP SCOPE */
 
-async function seed(page: Page) {
-  await page.evaluate(async () => {
-    const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('nexus-tavern-pro');
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-    const now = Date.now();
-    const put = (store: string, value: unknown) =>
-      new Promise<void>((resolve, reject) => {
-        const tx = db.transaction(store, 'readwrite');
-        const r = tx.objectStore(store).put(value);
-        r.onsuccess = () => resolve();
-        r.onerror = () => reject(r.error);
-      });
+test('backups carry image providers and story summaries, but never API keys', async ({ page }) => {
+  await seedFixtures(page);
+  await setupProvider(page);
+  await setupImageProvider(page);
+  await startChat(page);
+  await sendMessage(page, 'We rode north to Ashfell and swore an oath at the gate.');
+  await expect(page.getByText(/The tavern door creaks/)).toBeVisible({ timeout: 20_000 });
 
-    await put('characters', {
-      id: 'c1',
-      name: 'Sera',
-      displayName: '',
-      nickname: '',
-      age: '31',
-      gender: 'female',
-      pronouns: 'she/her',
-      species: 'human',
-      race: '',
-      occupation: 'innkeeper',
-      role: '',
-      tags: [],
-      shortDescription: 'The innkeeper.',
-      description: 'Warm and watchful.',
-      appearance: 'Dark braided hair, burn-scarred hands, grey wool dress.',
-      physicalTraits: 'Tall, broad-shouldered.',
-      personality: 'Wry and protective.',
-      temperament: '',
-      traits: [],
-      backstory: '',
-      history: '',
-      goals: '',
-      motivations: '',
-      fears: '',
-      secrets: '',
-      likes: '',
-      dislikes: '',
-      hobbies: '',
-      values: '',
-      beliefs: '',
-      scenario: '',
-      greetings: [{ id: 'g1', label: 'Default', content: 'Sera looks up from the bar.' }],
-      defaultGreetingId: 'g1',
-      speakingStyle: '',
-      speechPatterns: '',
-      exampleDialogue: '',
-      systemPrompt: '',
-      authorNote: '',
-      relationships: '',
-      friends: '',
-      enemies: '',
-      family: '',
-      romantic: '',
-      home: 'Ashfell',
-      location: 'the Nexus Tavern',
-      faction: '',
-      world: '',
-      lorebookIds: [],
-      creator: '',
-      creatorNotes: '',
-      version: '1',
-      customFields: [],
-      metadata: {},
-      avatarMediaId: null,
-      avatarUrl: '',
-      favorite: false,
-      createdAt: now,
-      updatedAt: now,
-    });
+  // Give the story a long-run memory worth losing.
+  await page.getByRole('button', { name: 'Chat menu' }).click();
+  await sheetAction(page, 'Story summary');
+  const summarySheet = page.getByRole('dialog');
+  await fieldIn(summarySheet, 'Where things stand').fill('The party has reached Ashfell.');
+  await summarySheet.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByText('Story summary saved').first()).toBeVisible();
 
-    await put('personas', {
-      id: 'p1',
-      name: 'Corin',
-      displayName: '',
-      nickname: '',
-      age: '',
-      gender: '',
-      pronouns: 'they/them',
-      species: '',
-      appearance: 'Travel-stained coat, short red hair.',
-      personality: 'Curious and reckless.',
-      traits: [],
-      backstory: '',
-      occupation: '',
-      goals: '',
-      likes: '',
-      dislikes: '',
-      speechStyle: '',
-      customInstructions: '',
-      tags: [],
-      customFields: [],
-      avatarMediaId: null,
-      avatarUrl: '',
-      isDefault: false,
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    await put('lorebooks', {
-      id: 'b1',
-      name: 'Ashfell Lore',
-      description: 'Seeded.',
-      enabled: true,
-      tags: [],
-      global: false,
-      scanDepth: 0,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await put('loreEntries', {
-      id: 'e1',
-      lorebookId: 'b1',
-      name: 'Ashfell',
-      content: 'The grey city on the volcano.',
-      primaryKeys: ['Ashfell'],
-      secondaryKeys: [],
-      aliases: [],
-      enabled: true,
-      priority: 100,
-      position: 'after-character',
-      depth: 4,
-      scanDepth: 0,
-      matchMode: 'word-boundary',
-      caseSensitive: false,
-      activation: 'keyword',
-      category: '',
-      scope: 'any',
-      comment: '',
-      customFields: [],
-      order: 0,
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    await put('stories', {
-      id: 's1',
-      title: 'The Long Storm',
-      description: 'A seeded story.',
-      scenario: 'Travellers wait out a storm in the Nexus Tavern.',
-      authorNote: '',
-      tags: [],
-      characters: [{ characterId: 'c1', primary: true, note: '', enabled: true }],
-      personaId: 'p1',
-      lorebookIds: [],
-      memoryIds: [],
-      coverMediaId: null,
-      backgroundMediaId: null,
-      defaultChatId: null,
-      settings: {},
-      favorite: false,
-      archived: false,
-      createdAt: now,
-      updatedAt: now,
-    });
-    db.close();
+  await goto(page, '#/transfer');
+  await page.getByRole('tab', { name: 'Backup & Restore' }).click();
+  const backupJson = await captureDownload(page, async () => {
+    await page.getByRole('button', { name: /Download full backup/ }).click();
   });
-  await page.reload();
-  await boot(page);
-}
+  const backup = JSON.parse(backupJson);
+  const body = backup.payload ?? backup.data ?? backup;
 
-async function startChat(page: Page) {
-  await goto(page, '#/stories');
-  await page.getByRole('button', { name: /Start chat|Continue/ }).first().click();
-  await expect(page.locator('.chat-composer')).toBeVisible();
-}
+  // Both provider kinds are described, neither carries a key (spec §49).
+  expect(body.providers).toHaveLength(1);
+  expect(body.imageProviders).toHaveLength(1);
+  expect(body.providers[0].apiKey).toBe('');
+  expect(body.imageProviders[0].apiKey).toBe('');
+  expect(body.imageProviders[0].model).toBe('mock-image-model');
+  expect(backupJson).not.toContain('img-key-1234567890');
+  expect(backupJson).not.toContain('test-key-1234567890');
 
-async function sendMessage(page: Page, text: string) {
-  const composer = field(page, 'Message');
-  await expect(composer).toBeEditable();
-  await composer.fill(text);
-  await page.getByRole('button', { name: 'Send message' }).click();
-  await expect(bubble(page, text).first()).toBeVisible({ timeout: 20_000 });
-}
+  // The long-run memory is in there too.
+  expect(body.storySummaries).toHaveLength(1);
+  expect(body.storySummaries[0].currentSummary).toBe('The party has reached Ashfell.');
+
+  // Erase, restore, and confirm both come back.
+  await goto(page, '#/settings');
+  await page.getByRole('tab', { name: 'Data' }).click();
+  await page.getByRole('button', { name: /Erase all local data/ }).click();
+  const eraseDialog = page.getByRole('dialog');
+  await eraseDialog.getByRole('textbox').first().fill('ERASE');
+  await eraseDialog.getByRole('button', { name: 'Erase everything' }).click();
+  await expect(page.getByText('All local data erased').first()).toBeVisible();
+  expect(await countStore(page, 'imageProviders')).toBe(0);
+  expect(await countStore(page, 'storySummaries')).toBe(0);
+
+  await goto(page, '#/transfer');
+  await page.getByRole('tab', { name: 'Backup & Restore' }).click();
+  await page.getByRole('button', { name: 'Choose backup file' }).click();
+  await page.locator('input[type=file][accept*="json"]').last().setInputFiles({
+    name: 'backup.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(backupJson),
+  });
+  await expect(page.getByText('This backup contains').first()).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Restore', exact: true }).click();
+  await expect(page.getByText('Backup restored').first()).toBeVisible({ timeout: 30_000 });
+
+  await reloadApp(page);
+  const restoredImageProviders = await readStore(page, 'imageProviders');
+  const restoredSummaries = await readStore(page, 'storySummaries');
+  expect(restoredImageProviders).toHaveLength(1);
+  expect(restoredImageProviders[0].model).toBe('mock-image-model');
+  // The key is not in the backup, so the user re-enters it — it must not be
+  // silently restored as something else.
+  expect(restoredImageProviders[0].apiKey).toBe('');
+  expect(restoredSummaries).toHaveLength(1);
+  expect(restoredSummaries[0].currentSummary).toBe('The party has reached Ashfell.');
+});

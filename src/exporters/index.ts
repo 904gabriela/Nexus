@@ -11,6 +11,7 @@ import type {
   Chat,
   Checkpoint,
   ID,
+  ImageProvider,
   LoreEntry,
   Lorebook,
   Memory,
@@ -20,6 +21,7 @@ import type {
   Provider,
   Settings,
   Story,
+  StorySummary,
 } from '../types';
 import { SCHEMA_VERSION } from '../types/factories';
 import * as repo from '../storage/repositories';
@@ -296,11 +298,17 @@ export interface BackupPayload {
   media?: Record<ID, string>;
   mediaIncluded: boolean;
   providers: Provider[];
+  imageProviders: ImageProvider[];
+  /** Long-run memory. Losing this on restore would lose months of story. */
+  storySummaries: StorySummary[];
   settings: Settings;
 }
 
-/** Providers keep their config but never their key (spec §49). */
-export function stripSecrets(providers: Provider[]): Provider[] {
+/**
+ * Providers keep their config but never their key (spec §49). Both provider
+ * kinds go through here — an image provider's key is exactly as sensitive.
+ */
+export function stripSecrets<T extends { apiKey: string }>(providers: T[]): T[] {
   return providers.map((p) => ({ ...p, apiKey: '' }));
 }
 
@@ -327,6 +335,8 @@ export async function buildBackup(options: BackupOptions): Promise<string> {
     loreEntries,
     mediaMetaList,
     providers,
+    imageProviders,
+    storySummaries,
     settings,
   ] = await Promise.all([
     repo.characters.all(),
@@ -342,6 +352,8 @@ export async function buildBackup(options: BackupOptions): Promise<string> {
     repo.loreEntries.all(),
     listMedia(),
     repo.providers.all(),
+    repo.imageProviders.all(),
+    repo.storySummaries.all(),
     repo.settingsRepo.load(),
   ]);
 
@@ -360,6 +372,8 @@ export async function buildBackup(options: BackupOptions): Promise<string> {
     mediaMeta: mediaMetaList,
     mediaIncluded: options.includeMedia,
     providers: stripSecrets(providers),
+    imageProviders: stripSecrets(imageProviders),
+    storySummaries,
     settings: { ...settings },
   };
 

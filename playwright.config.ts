@@ -37,6 +37,10 @@ export default defineConfig({
     {
       name: 'desktop',
       use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 900 } },
+      // The touch-target audit asserts the `pointer: coarse` sizing, which by
+      // design does not apply to a mouse. Running it here would only measure
+      // the desktop rules against phone thresholds.
+      testIgnore: /mobile-ux\.spec\.ts/,
     },
   ],
   webServer: {

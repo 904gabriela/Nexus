@@ -103,7 +103,7 @@ export function MemoriesPage() {
           <button
             type="button"
             className={`chip ${category === 'all' ? 'chip-accent' : ''}`}
-            style={{ cursor: 'pointer', minHeight: 32 }}
+            style={{ cursor: 'pointer' }}
             onClick={() => setCategory('all')}
             aria-pressed={category === 'all'}
           >
@@ -117,7 +117,7 @@ export function MemoriesPage() {
                 key={option}
                 type="button"
                 className={`chip ${category === option ? 'chip-accent' : ''}`}
-                style={{ cursor: 'pointer', minHeight: 32 }}
+                style={{ cursor: 'pointer' }}
                 onClick={() => setCategory(option)}
                 aria-pressed={category === option}
               >
@@ -134,7 +134,7 @@ export function MemoriesPage() {
                 key={option}
                 type="button"
                 className={`chip ${sort === option ? 'chip-accent' : ''}`}
-                style={{ cursor: 'pointer', minHeight: 32 }}
+                style={{ cursor: 'pointer' }}
                 onClick={() => setSort(option)}
                 aria-pressed={sort === option}
               >

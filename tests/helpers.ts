@@ -319,3 +319,189 @@ export async function openMessageMenu(page: Page, text: string) {
   await article.getByRole('button', { name: 'More message actions' }).click();
   await expect(page.locator('.sheet').last()).toBeVisible();
 }
+
+/**
+ * A minimal but complete library — one character, persona, lorebook with an
+ * entry, and a story wiring them together. Written straight into IndexedDB so
+ * specs about other features do not spend a minute re-doing the editors.
+ */
+export async function seedFixtures(page: Page) {
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('nexus-tavern-pro');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const now = Date.now();
+    const put = (store: string, value: unknown) =>
+      new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(store, 'readwrite');
+        const r = tx.objectStore(store).put(value);
+        r.onsuccess = () => resolve();
+        r.onerror = () => reject(r.error);
+      });
+
+    await put('characters', {
+      id: 'c1',
+      name: 'Sera',
+      displayName: '',
+      nickname: '',
+      age: '31',
+      gender: 'female',
+      pronouns: 'she/her',
+      species: 'human',
+      race: '',
+      occupation: 'innkeeper',
+      role: '',
+      tags: [],
+      shortDescription: 'The innkeeper.',
+      description: 'Warm and watchful.',
+      appearance: 'Dark braided hair, burn-scarred hands, grey wool dress.',
+      physicalTraits: 'Tall, broad-shouldered.',
+      personality: 'Wry and protective.',
+      temperament: '',
+      traits: [],
+      backstory: '',
+      history: '',
+      goals: '',
+      motivations: '',
+      fears: '',
+      secrets: '',
+      likes: '',
+      dislikes: '',
+      hobbies: '',
+      values: '',
+      beliefs: '',
+      scenario: '',
+      greetings: [{ id: 'g1', label: 'Default', content: 'Sera looks up from the bar.' }],
+      defaultGreetingId: 'g1',
+      speakingStyle: '',
+      speechPatterns: '',
+      exampleDialogue: '',
+      systemPrompt: '',
+      authorNote: '',
+      relationships: '',
+      friends: '',
+      enemies: '',
+      family: '',
+      romantic: '',
+      home: 'Ashfell',
+      location: 'the Nexus Tavern',
+      faction: '',
+      world: '',
+      lorebookIds: [],
+      creator: '',
+      creatorNotes: '',
+      version: '1',
+      customFields: [],
+      metadata: {},
+      avatarMediaId: null,
+      avatarUrl: '',
+      favorite: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await put('personas', {
+      id: 'p1',
+      name: 'Corin',
+      displayName: '',
+      nickname: '',
+      age: '',
+      gender: '',
+      pronouns: 'they/them',
+      species: '',
+      appearance: 'Travel-stained coat, short red hair.',
+      personality: 'Curious and reckless.',
+      traits: [],
+      backstory: '',
+      occupation: '',
+      goals: '',
+      likes: '',
+      dislikes: '',
+      speechStyle: '',
+      customInstructions: '',
+      tags: [],
+      customFields: [],
+      avatarMediaId: null,
+      avatarUrl: '',
+      isDefault: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await put('lorebooks', {
+      id: 'b1',
+      name: 'Ashfell Lore',
+      description: 'Seeded.',
+      enabled: true,
+      tags: [],
+      global: false,
+      scanDepth: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await put('loreEntries', {
+      id: 'e1',
+      lorebookId: 'b1',
+      name: 'Ashfell',
+      content: 'The grey city on the volcano.',
+      primaryKeys: ['Ashfell'],
+      secondaryKeys: [],
+      aliases: [],
+      enabled: true,
+      priority: 100,
+      position: 'after-character',
+      depth: 4,
+      scanDepth: 0,
+      matchMode: 'word-boundary',
+      caseSensitive: false,
+      activation: 'keyword',
+      category: '',
+      scope: 'any',
+      comment: '',
+      customFields: [],
+      order: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await put('stories', {
+      id: 's1',
+      title: 'The Long Storm',
+      description: 'A seeded story.',
+      scenario: 'Travellers wait out a storm in the Nexus Tavern.',
+      authorNote: '',
+      tags: [],
+      characters: [{ characterId: 'c1', primary: true, note: '', enabled: true }],
+      personaId: 'p1',
+      lorebookIds: [],
+      memoryIds: [],
+      coverMediaId: null,
+      backgroundMediaId: null,
+      defaultChatId: null,
+      settings: {},
+      favorite: false,
+      archived: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    db.close();
+  });
+  await page.reload();
+  await boot(page);
+}
+
+export async function startChat(page: Page) {
+  await goto(page, '#/stories');
+  await page.getByRole('button', { name: /Start chat|Continue/ }).first().click();
+  await expect(page.locator('.chat-composer')).toBeVisible();
+}
+
+export async function sendMessage(page: Page, text: string) {
+  const composer = field(page, 'Message');
+  await expect(composer).toBeEditable();
+  await composer.fill(text);
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect(bubble(page, text).first()).toBeVisible({ timeout: 20_000 });
+}

@@ -82,7 +82,7 @@ export function CharactersPage({
                 className={`chip ${sort === option ? 'chip-accent' : ''}`}
                 onClick={() => setSort(option)}
                 aria-pressed={sort === option}
-                style={{ cursor: 'pointer', minHeight: 32 }}
+                style={{ cursor: 'pointer' }}
               >
                 {option === 'updated' ? 'Recently updated' : option === 'name' ? 'A–Z' : 'Newest'}
               </button>

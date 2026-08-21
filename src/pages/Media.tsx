@@ -211,7 +211,7 @@ export function MediaPage() {
                 key={value}
                 type="button"
                 className={`chip ${filter === value ? 'chip-accent' : ''}`}
-                style={{ cursor: 'pointer', minHeight: 32 }}
+                style={{ cursor: 'pointer' }}
                 aria-pressed={filter === value}
                 onClick={() => setFilter(value)}
               >
