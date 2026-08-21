@@ -203,16 +203,39 @@ const LINES = [
   'I pour another measure and consider the road.',
 ];
 
+/** Captured when the rare keyword is used, since lore correctly stops being
+ * relevant once the mention scrolls out of the scan window. Checking at a stage
+ * boundary tests the wrong moment. */
+let loreFiredAtMention = null;
+let unrelatedStayedOut = null;
+
 async function sendOne(text) {
   await composer.fill(text);
   await sendBtn.click();
   await page.waitForSelector('[aria-label="Generating"]', { state: 'detached', timeout: 30000 });
+  if (/Moonfall/.test(text)) {
+    // Read the inspector rather than guessing which captured request was the
+    // chat one: after a turn the app also calls the provider for automatic
+    // memory and the rolling summary, so the newest body is often upkeep.
+    await page.getByRole('button', { name: 'Chat menu' }).click();
+    await page.waitForTimeout(350);
+    await sheetBtn(/Context Inspector/).click();
+    await page.waitForTimeout(700);
+    await page.locator('.sheet').last().getByRole('tab', { name: /Lore & memory/ }).click();
+    await page.waitForTimeout(400);
+    const loreTab = await page.locator('.sheet').last().innerText();
+    loreFiredAtMention =
+      /Secret Location/.test(loreTab) && /Keyword matched: Moonfall/i.test(loreTab);
+    unrelatedStayedOut = /Guild of Cartographers[\s\S]{0,120}Excluded because/i.test(loreTab);
+    await page.getByRole('button', { name: 'Close context inspector' }).click();
+    await page.waitForTimeout(300);
+  }
   turn += 2; // user + assistant
 }
 
 for (const stage of stages) {
   while (turn < stage) {
-    const line = turn === 148 ? 'We should look for the Moonfall Observatory.' : LINES[turn % LINES.length];
+    const line = turn === Number(process.env.LORE_TURN ?? 148) ? 'We should look for the Moonfall Observatory.' : LINES[turn % LINES.length];
     await sendOne(line);
     if (turn % 50 === 0) process.stdout.write(`   ...${turn} messages\n`);
   }
@@ -261,12 +284,12 @@ if (summaries.length) {
 }
 
 // Lore fired at the point the keyword was used, and is not glued on forever.
-record('lore activated when its rare keyword appeared',
-  Object.values(snapshots).some((s) => /Moonfall/.test(s.loreText)),
-  'checked across stage snapshots');
-record('unrelated lore is not injected at 300',
-  !finalBody.includes('Guild pays for maps'),
-  'the Guild entry was never mentioned in conversation');
+record('lore activated on the turn its rare keyword appeared',
+  loreFiredAtMention === true,
+  'measured at the mention, not at a stage boundary');
+record('unrelated lore was explicitly excluded at the same moment',
+  unrelatedStayedOut === true,
+  'the Guild entry, never mentioned, is listed as excluded with a reason');
 
 const totalStored = (await read('messages')).length;
 record('every message was persisted', totalStored >= turn - 2, `${totalStored} stored`);
