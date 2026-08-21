@@ -26,7 +26,7 @@ import {
 } from '../exporters';
 import { useActions, useAppState } from '../state/store';
 import { Icon } from '../components/ui/Icon';
-import { Banner, EmptyState, Tabs } from '../components/ui/common';
+import { Banner, Tabs } from '../components/ui/common';
 import { Sheet } from '../components/ui/Sheet';
 import { SelectField, Toggle } from '../components/ui/Field';
 import { useConfirm } from '../components/ui/Confirm';
@@ -829,8 +829,4 @@ function BackupCenter() {
       )}
     </>
   );
-}
-
-export function EmptyTransferHint() {
-  return <EmptyState icon="transfer" title="Nothing to transfer" />;
 }

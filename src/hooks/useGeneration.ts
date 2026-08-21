@@ -249,20 +249,14 @@ export function useGeneration() {
         if (!finalText) throw new ProviderError('The model returned an empty response.');
 
         if (target.asAlternative && target.replaceMessageId) {
-          await actions.addAlternative(
+          const alternative = await actions.addAlternative(
             target.replaceMessageId,
             finalText,
             target.instruction ?? '',
             provider.model,
           );
-          const message = state.messages.find((m) => m.id === target.replaceMessageId);
-          if (message) {
-            const alternatives = await import('../storage/repositories').then((m) =>
-              m.alternatives.byMessage(target.replaceMessageId!),
-            );
-            const latest = alternatives.sort((a, b) => b.createdAt - a.createdAt)[0];
-            if (latest) await actions.setActiveAlternative(message.id, latest.id);
-          }
+          // Show the new alternative straight away.
+          await actions.setActiveAlternative(target.replaceMessageId, alternative.id);
         } else if (target.replaceMessageId) {
           const message = state.messages.find((m) => m.id === target.replaceMessageId);
           if (message) {

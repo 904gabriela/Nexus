@@ -420,9 +420,10 @@ export function compileContext(input: CompileInput): CompileResult {
 
   /* --------------------------------------------------------------- lore */
 
+  // History arrives with each message's active alternative already applied.
   const recentTexts = input.history
     .slice(-Math.max(settings.loreScanDepth, 1) * 3)
-    .map((m) => resolveContent(m));
+    .map((m) => m.content);
   if (input.pendingUserText) recentTexts.push(input.pendingUserText);
 
   const loreScan = scanLore({
@@ -530,7 +531,7 @@ export function compileContext(input: CompileInput): CompileResult {
 
   for (let i = consideredHistory.length - 1; i >= 0; i -= 1) {
     const message = consideredHistory[i];
-    const content = resolveContent(message);
+    const content = message.content;
     if (!content.trim() && !message.attachments.length) continue;
     const distanceFromEnd = consideredHistory.length - 1 - i;
     const speaker =
@@ -640,12 +641,6 @@ export function compileContext(input: CompileInput): CompileResult {
     loreMisses: loreScan.misses,
     memoryHits,
   };
-}
-
-/** The active alternative, when one is selected, is what the model sees. */
-export function resolveContent(message: Message, alternativeContent?: string): string {
-  if (message.activeAlternativeId && alternativeContent !== undefined) return alternativeContent;
-  return message.content;
 }
 
 function toApiMessage(

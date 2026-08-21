@@ -297,7 +297,14 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     document.documentElement.style.setProperty('--font-scale', String(state.settings.fontScale));
   }, [state.settings.theme, state.settings.fontScale]);
 
-  const set = useCallback((payload: Partial<AppState>) => dispatch({ type: 'set', payload }), []);
+  const set = useCallback((payload: Partial<AppState>) => {
+    // Keep the ref in sync SYNCHRONOUSLY so a second action in the same
+    // microtask sees the update from the first one. Without this, back-to-back
+    // dispatches (e.g. appendMessage → generate → appendMessage) race and the
+    // later one clobbers the earlier's changes with stale state.
+    stateRef.current = { ...stateRef.current, ...payload };
+    dispatch({ type: 'set', payload });
+  }, []);
 
   /* ----------------------------------------------------------- actions */
 

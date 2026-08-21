@@ -23,7 +23,7 @@ import { useConfirm, deleteConfirm } from '../components/ui/Confirm';
 import { downloadFile, exportFilename, exportLoreEntries, exportLoreEntry } from '../exporters';
 import { relativeTime, truncate } from '../utils/text';
 import { scanLore } from '../lore/matcher';
-import { parseFile, readFile, commitImport, type ParsedImport } from '../importers/pipeline';
+import { parseFile, readFile } from '../importers/pipeline';
 import type { RouteName } from '../state/router';
 
 /* ------------------------------------------------------------- library */
@@ -949,20 +949,5 @@ export function LorebookTester({ lorebookId }: { lorebookId?: string }) {
         </div>
       )}
     </div>
-  );
-}
-
-/** Used by the Import Center to merge entries straight into a chosen book. */
-export async function mergeParsedIntoLorebook(parsed: ParsedImport, lorebookId: string) {
-  return commitImport(
-    {
-      ...parsed,
-      payload: {
-        ...parsed.payload,
-        lorebooks: [],
-        loreEntries: (parsed.payload.loreEntries ?? []).map((entry) => ({ ...entry, lorebookId })),
-      },
-    },
-    { strategy: 'copy' },
   );
 }

@@ -247,8 +247,12 @@ export function ChatPage({
 
   /* ------------------------------------------------------------ memory */
 
-  const rememberSelected = async () => {
-    const chosen = timeline.filter((m) => selected.has(m.id));
+  /**
+   * Summarises the chosen messages into an editable memory draft. Nothing is
+   * saved here — the user reviews and confirms in the memory editor.
+   */
+  const rememberMessages = async (ids: ID[]) => {
+    const chosen = timeline.filter((m) => ids.includes(m.id));
     if (!chosen.length) return;
     setSummarising(true);
     try {
@@ -413,7 +417,7 @@ export function ChatPage({
               type="button"
               className="btn btn-sm btn-primary"
               disabled={!selected.size || summarising}
-              onClick={rememberSelected}
+              onClick={() => rememberMessages([...selected])}
             >
               {summarising ? <span className="spinner" /> : <Icon name="brain" />}
               Remember
@@ -755,7 +759,7 @@ export function ChatPage({
                   onSelect: () => {
                     setSelected(new Set([menuFor.id]));
                     setSelecting(true);
-                    setTimeout(() => void rememberSelectedFor([menuFor.id]), 0);
+                    void rememberMessages([menuFor.id]);
                   },
                 },
                 {
@@ -1070,34 +1074,6 @@ export function ChatPage({
       )}
     </div>
   );
-
-  async function rememberSelectedFor(ids: ID[]) {
-    setSelected(new Set(ids));
-    const chosen = timeline.filter((m) => ids.includes(m.id));
-    if (!chosen.length) return;
-    setSummarising(true);
-    try {
-      const result = await generateMemoryDraft({
-        messages: chosen.map((m) => ({ ...m, content: gen.contentOf(m) })),
-        characters: gen.characters,
-        persona: gen.persona,
-        provider: gen.provider,
-      });
-      setMemoryNote(result.note ?? null);
-      setMemoryDraft(
-        newMemory({
-          title: result.title,
-          content: result.content,
-          category: result.category,
-          sourceMessageIds: ids,
-          sourceChatId: activeChat?.id ?? null,
-          sourceStoryId: activeChat?.storyId ?? null,
-        }),
-      );
-    } finally {
-      setSummarising(false);
-    }
-  }
 }
 
 function ChatBackground({ mediaId }: { mediaId: string }) {

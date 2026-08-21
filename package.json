@@ -7,7 +7,11 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc -b",
+    "test": "playwright test",
+    "test:mobile": "playwright test --project=mobile",
+    "test:desktop": "playwright test --project=desktop"
   },
   "dependencies": {
     "react": "^19.2.8",
