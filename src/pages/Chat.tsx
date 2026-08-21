@@ -31,9 +31,12 @@ import type { RouteName } from '../state/router';
 export function ChatPage({
   chatId,
   navigate,
+  jumpToMessageId,
 }: {
   chatId: string | null;
   navigate: (name: RouteName, param?: string | null, query?: Record<string, string>) => void;
+  /** Set by "View source" on a memory: scroll to this message once loaded. */
+  jumpToMessageId?: string | null;
 }) {
   const state = useAppState();
   const actions = useActions();
@@ -172,6 +175,27 @@ export function ChatPage({
       ? state.chats.filter((c) => c.storyId === activeChat.storyId)
       : [activeChat];
   }, [state.chats, activeChat]);
+
+  /**
+   * A jump requested from outside the chat (currently "View source" on a
+   * memory). Waits for the chat's messages to load so the message's branch can
+   * be resolved, then hands over to the same staged jump as the timeline.
+   */
+  const armedExternalJump = useRef<string | null>(null);
+  useEffect(() => {
+    if (!jumpToMessageId || !activeChat) return;
+    if (armedExternalJump.current === jumpToMessageId) return;
+    const message = state.messages.find((m) => m.id === jumpToMessageId);
+    if (!message) return; // still loading this chat's working set
+    armedExternalJump.current = jumpToMessageId;
+    const target = {
+      chatId: activeChat.id,
+      branchId: message.branchId,
+      messageId: message.id,
+    };
+    pendingJumpRef.current = target;
+    setPendingJump(target);
+  }, [jumpToMessageId, activeChat, state.messages]);
 
   const jumpToMessage = useCallback(
     (target: JumpTarget) => {

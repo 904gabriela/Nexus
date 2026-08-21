@@ -31,11 +31,132 @@ export function normalizeBaseUrl(baseUrl: string): string {
   let url = baseUrl.trim().replace(/\/+$/, '');
   if (!url) throw new ProviderError('This provider has no base URL configured.');
   if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
+  // A pasted endpoint often already includes the path. Strip it back to the
+  // base so "http://host:1234/v1/chat/completions" and "http://host:1234" both
+  // end up as "http://host:1234/v1".
+  url = url.replace(/\/(chat\/completions|completions|models)$/i, '').replace(/\/+$/, '');
   // Accept both ".../v1" and a bare host; append /v1 only when clearly absent.
   if (!/\/v\d+$/i.test(url) && !/\/(api|openai)$/i.test(url)) {
     url = `${url}/v1`;
   }
   return url;
+}
+
+/* --------------------------------------------------------------- timeouts */
+
+/**
+ * Nothing here waits forever. A phone talking to a PC across a LAN is the case
+ * that matters: a firewall that DROPs (rather than REJECTs) leaves `fetch`
+ * hanging with no error and no end, so every request carries its own deadline.
+ */
+const CONNECT_TIMEOUT_MS = 45_000;
+const REQUEST_TIMEOUT_MS = 180_000;
+const MODELS_TIMEOUT_MS = 20_000;
+/** A stream that goes quiet this long is treated as dead. */
+const STALL_TIMEOUT_MS = 120_000;
+
+export interface Deadline {
+  signal: AbortSignal;
+  /** True when *we* aborted on time, as opposed to the user pressing Stop. */
+  timedOut: () => boolean;
+  /** Restart the clock — used per chunk to detect a stalled stream. */
+  bump: (ms?: number) => void;
+  done: () => void;
+}
+
+export function deadline(userSignal: AbortSignal | undefined, ms: number): Deadline {
+  const controller = new AbortController();
+  let timedOut = false;
+  let timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, ms);
+
+  const onUserAbort = () => controller.abort();
+  if (userSignal) {
+    if (userSignal.aborted) controller.abort();
+    else userSignal.addEventListener('abort', onUserAbort, { once: true });
+  }
+
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    bump: (next = ms) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, next);
+    },
+    done: () => {
+      clearTimeout(timer);
+      userSignal?.removeEventListener('abort', onUserAbort);
+    },
+  };
+}
+
+function timeoutError(provider: Provider, seconds: number, what: string): ProviderError {
+  return new ProviderError(
+    `${what} timed out after ${seconds}s. ${lanHint(provider.baseUrl)}`,
+    undefined,
+    'No response before the deadline.',
+  );
+}
+
+/* ------------------------------------------------------- reachability help */
+
+/** Hosts that only exist on the local network. */
+function isLanUrl(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(/^https?:\/\//i.test(url) ? url : `http://${url}`).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return (
+    host === 'localhost' ||
+    host === '::1' ||
+    host.endsWith('.local') ||
+    host.endsWith('.lan') ||
+    host.endsWith('.home') ||
+    /^127\./.test(host) ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+  );
+}
+
+function pageIsHttps(): boolean {
+  return typeof location !== 'undefined' && location.protocol === 'https:';
+}
+
+/**
+ * A browser on an HTTPS page refuses to open a plain-HTTP connection at all —
+ * the request never leaves the device, so there is nothing to diagnose after
+ * the fact. Detect it up front and say so precisely instead of reporting a
+ * generic network failure the user cannot act on.
+ */
+function assertReachable(provider: Provider, url: string): void {
+  if (pageIsHttps() && url.toLowerCase().startsWith('http://')) {
+    throw new ProviderError(
+      'Your browser will block this request: this page is served over HTTPS and the ' +
+        `endpoint is plain HTTP (${provider.baseUrl}). That is the browser's mixed-content ` +
+        'rule and no setting in this app can bypass it.',
+      undefined,
+      'Open this app over http:// on your LAN, or put the AI endpoint behind HTTPS.',
+    );
+  }
+}
+
+function lanHint(baseUrl: string): string {
+  if (!isLanUrl(baseUrl)) {
+    return 'Check the base URL, your connection, and whether the endpoint allows browser requests (CORS).';
+  }
+  return (
+    'For a local model on your PC: confirm the server is listening on the network ' +
+    'rather than only 127.0.0.1, that you used the PC\'s LAN IP, that the port is open ' +
+    'in the firewall, and that the server allows cross-origin requests (CORS).'
+  );
 }
 
 function buildHeaders(provider: Provider): Record<string, string> {
@@ -44,7 +165,7 @@ function buildHeaders(provider: Provider): Record<string, string> {
   if (provider.kind === 'openrouter') {
     // OpenRouter attributes traffic with these; harmless elsewhere.
     if (typeof location !== 'undefined') headers['HTTP-Referer'] = location.origin;
-    headers['X-Title'] = 'Nexus Tavern Pro';
+    headers['X-Title'] = 'Storyline';
   }
   for (const [key, value] of Object.entries(provider.extraHeaders ?? {})) {
     if (key.trim()) headers[key] = value;
@@ -72,23 +193,14 @@ async function readError(response: Response): Promise<string> {
   }
 }
 
+/**
+ * `fetch` reports a blocked request and an unreachable host identically — the
+ * browser deliberately withholds the difference. So this explains both real
+ * possibilities rather than guessing at one.
+ */
 function describeNetworkFailure(provider: Provider, err: unknown): ProviderError {
-  const base = provider.baseUrl;
-  const isLocal = /^https?:\/\/(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(
-    base,
-  );
-  const secureOrigin = typeof location !== 'undefined' && location.protocol === 'https:';
-  let hint = 'Check the base URL, your network connection and any CORS restrictions.';
-  if (isLocal && secureOrigin) {
-    hint =
-      'This page is served over HTTPS but the endpoint is plain HTTP on your LAN — ' +
-      'browsers block that as mixed content. Serve Nexus over HTTP, or put the endpoint behind HTTPS.';
-  } else if (isLocal) {
-    hint =
-      'Make sure the local server is running, reachable from this device, and started with CORS enabled.';
-  }
   return new ProviderError(
-    `Could not reach ${base}. ${hint}`,
+    `Could not reach ${provider.baseUrl}. ${lanHint(provider.baseUrl)}`,
     undefined,
     err instanceof Error ? err.message : String(err),
   );
@@ -143,13 +255,21 @@ function readCapabilities(raw: unknown, id: string): ModelInfo {
 }
 
 export async function fetchModels(provider: Provider, signal?: AbortSignal): Promise<FetchModelsResult> {
-  const url = `${normalizeBaseUrl(provider.baseUrl)}/models`;
+  const base = normalizeBaseUrl(provider.baseUrl);
+  assertReachable(provider, base);
+  const url = `${base}/models`;
+  const clock = deadline(signal, MODELS_TIMEOUT_MS);
   let response: Response;
   try {
-    response = await fetch(url, { headers: buildHeaders(provider), signal });
+    response = await fetch(url, { headers: buildHeaders(provider), signal: clock.signal });
   } catch (err) {
-    if ((err as Error)?.name === 'AbortError') throw err;
+    if ((err as Error)?.name === 'AbortError') {
+      if (clock.timedOut()) throw timeoutError(provider, MODELS_TIMEOUT_MS / 1000, 'Loading models');
+      throw err;
+    }
     throw describeNetworkFailure(provider, err);
+  } finally {
+    clock.done();
   }
   if (!response.ok) {
     const detail = await readError(response);
@@ -272,34 +392,52 @@ function buildBody(options: CompleteOptions, stream: boolean) {
 /** Non-streaming completion. */
 export async function complete(options: CompleteOptions): Promise<string> {
   const { provider } = options;
-  const url = `${normalizeBaseUrl(provider.baseUrl)}/chat/completions`;
+  const base = normalizeBaseUrl(provider.baseUrl);
+  assertReachable(provider, base);
+  const url = `${base}/chat/completions`;
+  const clock = deadline(options.signal, REQUEST_TIMEOUT_MS);
   let response: Response;
   try {
     response = await fetch(url, {
       method: 'POST',
       headers: buildHeaders(provider),
       body: JSON.stringify(buildBody(options, false)),
-      signal: options.signal,
+      signal: clock.signal,
     });
   } catch (err) {
-    if ((err as Error)?.name === 'AbortError') throw err;
+    if ((err as Error)?.name === 'AbortError') {
+      if (clock.timedOut()) throw timeoutError(provider, REQUEST_TIMEOUT_MS / 1000, 'The request');
+      throw err;
+    }
     throw describeNetworkFailure(provider, err);
   }
-  if (!response.ok) throw await httpError(response);
-  const payload = await response.json().catch(() => null);
-  const text =
-    payload?.choices?.[0]?.message?.content ??
-    payload?.choices?.[0]?.text ??
-    payload?.content ??
-    '';
-  if (typeof text !== 'string' || !text) {
-    throw new ProviderError(
-      'The provider returned an empty response.',
-      response.status,
-      JSON.stringify(payload)?.slice(0, 300),
-    );
+
+  // The deadline stays armed through the body read: a server can send headers
+  // promptly and then stall before the JSON arrives.
+  try {
+    if (!response.ok) throw await httpError(response);
+    const payload = await response.json().catch(() => null);
+    const text =
+      payload?.choices?.[0]?.message?.content ??
+      payload?.choices?.[0]?.text ??
+      payload?.content ??
+      '';
+    if (typeof text !== 'string' || !text) {
+      throw new ProviderError(
+        'The provider returned an empty response.',
+        response.status,
+        JSON.stringify(payload)?.slice(0, 300),
+      );
+    }
+    return text;
+  } catch (err) {
+    if ((err as Error)?.name === 'AbortError' && clock.timedOut()) {
+      throw timeoutError(provider, REQUEST_TIMEOUT_MS / 1000, 'The request');
+    }
+    throw err;
+  } finally {
+    clock.done();
   }
-  return text;
 }
 
 async function httpError(response: Response): Promise<ProviderError> {
@@ -336,40 +474,65 @@ export async function streamComplete(options: CompleteOptions): Promise<string> 
     return text;
   }
 
-  const url = `${normalizeBaseUrl(provider.baseUrl)}/chat/completions`;
+  const base = normalizeBaseUrl(provider.baseUrl);
+  assertReachable(provider, base);
+  const url = `${base}/chat/completions`;
+
+  // Two different deadlines: one to get a response at all, then a rolling one
+  // that only fires when the stream goes quiet. A long generation is normal;
+  // two minutes of silence is not.
+  const clock = deadline(options.signal, CONNECT_TIMEOUT_MS);
   let response: Response;
   try {
     response = await fetch(url, {
       method: 'POST',
       headers: { ...buildHeaders(provider), Accept: 'text/event-stream' },
       body: JSON.stringify(buildBody(options, true)),
-      signal: options.signal,
+      signal: clock.signal,
     });
   } catch (err) {
-    if ((err as Error)?.name === 'AbortError') throw err;
+    clock.done();
+    if ((err as Error)?.name === 'AbortError') {
+      if (clock.timedOut()) throw timeoutError(provider, CONNECT_TIMEOUT_MS / 1000, 'Connecting');
+      throw err;
+    }
     throw describeNetworkFailure(provider, err);
   }
 
-  if (!response.ok) throw await httpError(response);
+  if (!response.ok) {
+    clock.done();
+    throw await httpError(response);
+  }
+  clock.bump(STALL_TIMEOUT_MS);
 
   if (!response.body || typeof response.body.getReader !== 'function') {
     // Some environments (and a few proxies) hand back a buffered body.
-    const text = await response.text();
-    const full = parseBufferedStream(text);
-    onToken?.(full, full);
-    return full;
+    try {
+      const text = await response.text();
+      const full = parseBufferedStream(text);
+      onToken?.(full, full);
+      return full;
+    } finally {
+      clock.done();
+    }
   }
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let full = '';
+  // Kept so a body that turns out not to be SSE at all can still be salvaged;
+  // some gateways ignore `stream: true` and answer with a plain completion.
+  let raw = '';
 
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      clock.bump(STALL_TIMEOUT_MS); // bytes arrived — reset the silence clock
+      const text = decoder.decode(value, { stream: true });
+      raw += text;
+      buffer += text;
 
       let boundary = buffer.indexOf('\n');
       while (boundary !== -1) {
@@ -392,6 +555,12 @@ export async function streamComplete(options: CompleteOptions): Promise<string> 
     }
   } catch (err) {
     if ((err as Error)?.name === 'AbortError') {
+      if (clock.timedOut()) {
+        // Silence, not a user stop. Keep the partial text if there is any,
+        // otherwise say plainly that the endpoint went quiet.
+        if (full.trim()) return full;
+        throw timeoutError(provider, STALL_TIMEOUT_MS / 1000, 'The stream');
+      }
       // A stopped generation keeps whatever text already arrived.
       return full;
     }
@@ -401,6 +570,7 @@ export async function streamComplete(options: CompleteOptions): Promise<string> 
       err instanceof Error ? err.message : String(err),
     );
   } finally {
+    clock.done();
     try {
       reader.releaseLock();
     } catch {
@@ -409,6 +579,13 @@ export async function streamComplete(options: CompleteOptions): Promise<string> 
   }
 
   if (!full.trim()) {
+    // Not SSE after all. Read it as a normal completion body before giving up —
+    // reporting "empty response" for a perfectly good reply is worse than slow.
+    const salvaged = parseBufferedStream(raw).trim();
+    if (salvaged) {
+      onToken?.(salvaged, salvaged);
+      return salvaged;
+    }
     throw new ProviderError('The provider streamed an empty response.');
   }
   return full;

@@ -82,7 +82,7 @@ function ProvidersSection() {
   return (
     <>
       <Banner kind="warn" title="About API keys in a browser app">
-        Nexus Tavern runs entirely on your device and talks to providers directly, so your key is
+        Storyline runs entirely on your device and talks to providers directly, so your key is
         stored in this browser's local database and sent to the provider you configure. Anyone with
         access to this device or browser profile can use it. Use a scoped key with a spending limit,
         and never share your screen while a key is revealed. Keys are never included in backups or

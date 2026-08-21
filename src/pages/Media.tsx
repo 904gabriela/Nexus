@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { MediaMeta } from '../types';
 import { useActions, useAppState } from '../state/store';
 import { MediaImage, useMediaUrl } from '../components/media/MediaImage';
@@ -458,6 +458,14 @@ function ReuseSheet({ meta, onClose }: { meta: MediaMeta; onClose: () => void })
         ? state.personas.map((p) => ({ value: p.id, label: p.name || 'Unnamed' }))
         : state.stories.map((s) => ({ value: s.id, label: s.title || 'Untitled' }));
 
+  // With a single candidate there is nothing to choose, so choosing it for the
+  // user removes a step that otherwise leaves Apply disabled for no visible
+  // reason. With several, they still pick.
+  useEffect(() => {
+    setId(options.length === 1 ? options[0].value : '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, options.length]);
+
   const apply = async () => {
     if (!id) return;
     if (target === 'character') {
@@ -511,10 +519,7 @@ function ReuseSheet({ meta, onClose }: { meta: MediaMeta; onClose: () => void })
             className={`chip ${target === value ? 'chip-accent' : ''}`}
             style={{ cursor: 'pointer', minHeight: 40, padding: '0 14px' }}
             aria-pressed={target === value}
-            onClick={() => {
-              setTarget(value);
-              setId('');
-            }}
+            onClick={() => setTarget(value)}
           >
             {label}
           </button>

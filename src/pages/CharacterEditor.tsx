@@ -385,7 +385,7 @@ export function CharacterEditor({
           },
           {
             key: 'export',
-            label: 'Export as Nexus JSON',
+            label: 'Export as JSON',
             description: 'Includes the avatar and attached lorebooks.',
             icon: 'download',
             onSelect: async () => {

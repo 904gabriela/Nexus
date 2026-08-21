@@ -14,6 +14,12 @@
 
 import type { AspectRatio, ImageProvider } from '../types';
 import { ASPECT_RATIOS } from '../types';
+import { deadline } from './client';
+
+/** Diffusion is slow; this is a ceiling, not an expectation. */
+const IMAGE_TIMEOUT_MS = 240_000;
+const IMAGE_MODELS_TIMEOUT_MS = 20_000;
+const IMAGE_DOWNLOAD_TIMEOUT_MS = 60_000;
 
 export class ImageError extends Error {
   readonly status?: number;
@@ -190,26 +196,40 @@ async function post(
   body: unknown,
   signal?: AbortSignal,
 ): Promise<unknown> {
+  // Diffusion can legitimately run for minutes, but not forever.
+  const clock = deadline(signal, IMAGE_TIMEOUT_MS);
   let response: Response;
   try {
     response = await fetch(url, {
       method: 'POST',
       headers: buildHeaders(provider),
       body: JSON.stringify(body),
-      signal,
+      signal: clock.signal,
     });
   } catch (err) {
-    if ((err as Error)?.name === 'AbortError') throw err;
+    clock.done();
+    if ((err as Error)?.name === 'AbortError') {
+      if (clock.timedOut()) {
+        throw new ImageError(
+          `The image provider did not respond within ${IMAGE_TIMEOUT_MS / 1000}s.`,
+        );
+      }
+      throw err;
+    }
     throw new ImageError(
       `Could not reach ${provider.baseUrl}. Check the URL, your connection, and any CORS restrictions.`,
       undefined,
       err instanceof Error ? err.message : String(err),
     );
   }
-  if (!response.ok) throw httpError(response.status, await readError(response));
-  return response.json().catch(() => {
-    throw new ImageError('The image provider returned a response that was not valid JSON.');
-  });
+  try {
+    if (!response.ok) throw httpError(response.status, await readError(response));
+    return await response.json().catch(() => {
+      throw new ImageError('The image provider returned a response that was not valid JSON.');
+    });
+  } finally {
+    clock.done();
+  }
 }
 
 export async function generateImage(options: GenerateImageOptions): Promise<GeneratedImage> {
@@ -281,11 +301,12 @@ export async function generateImage(options: GenerateImageOptions): Promise<Gene
 
   // A URL response still needs fetching, and that request is subject to the
   // provider's CORS policy — surface that clearly rather than failing opaquely.
+  const downloadClock = deadline(signal, IMAGE_DOWNLOAD_TIMEOUT_MS);
   let imageResponse: Response;
   try {
-    imageResponse = await fetch(found.value, { signal });
+    imageResponse = await fetch(found.value, { signal: downloadClock.signal });
   } catch (err) {
-    if ((err as Error)?.name === 'AbortError') throw err;
+    if ((err as Error)?.name === 'AbortError' && !downloadClock.timedOut()) throw err;
     throw new ImageError(
       'The provider returned an image URL that this browser could not download. ' +
         'That is usually a CORS restriction on the image host — choose a provider ' +
@@ -294,11 +315,17 @@ export async function generateImage(options: GenerateImageOptions): Promise<Gene
       found.value,
     );
   }
-  if (!imageResponse.ok) {
-    throw new ImageError(`Downloading the generated image failed with HTTP ${imageResponse.status}.`);
+  try {
+    if (!imageResponse.ok) {
+      throw new ImageError(
+        `Downloading the generated image failed with HTTP ${imageResponse.status}.`,
+      );
+    }
+    const blob = await imageResponse.blob();
+    return { blob, mimeType: blob.type || 'image/png', prompt, model: provider.model };
+  } finally {
+    downloadClock.done();
   }
-  const blob = await imageResponse.blob();
-  return { blob, mimeType: blob.type || 'image/png', prompt, model: provider.model };
 }
 
 export interface ImageTestResult {
@@ -346,17 +373,22 @@ export async function testImageProvider(provider: ImageProvider): Promise<ImageT
 
 export async function fetchImageModels(provider: ImageProvider): Promise<string[]> {
   const base = normalizeBaseUrl(provider);
-  const url = provider.kind === 'gemini' ? `${base}/models` : `${base}/models`;
+  const url = `${base}/models`;
+  const clock = deadline(undefined, IMAGE_MODELS_TIMEOUT_MS);
   let response: Response;
   try {
-    response = await fetch(url, { headers: buildHeaders(provider) });
+    response = await fetch(url, { headers: buildHeaders(provider), signal: clock.signal });
   } catch (err) {
+    clock.done();
     throw new ImageError(
-      `Could not reach ${provider.baseUrl}.`,
+      clock.timedOut()
+        ? `${provider.baseUrl} did not respond within ${IMAGE_MODELS_TIMEOUT_MS / 1000}s.`
+        : `Could not reach ${provider.baseUrl}.`,
       undefined,
       err instanceof Error ? err.message : String(err),
     );
   }
+  clock.done();
   if (!response.ok) throw httpError(response.status, await readError(response));
   const payload = await response.json().catch(() => null);
 

@@ -76,7 +76,7 @@ export function DashboardPage({
     <>
       <div className="page-header">
         <h1>
-          Nexus Tavern Pro
+          Storyline
           <span className="subtitle">Your roleplay library</span>
         </h1>
         <button

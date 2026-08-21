@@ -12,24 +12,32 @@ import { CharacterEditor } from './pages/CharacterEditor';
 import { PersonasPage, PersonaEditor } from './pages/Personas';
 import { LorebooksPage, LorebookEditor } from './pages/Lorebooks';
 import { MemoriesPage } from './pages/Memories';
+import { LibraryPage } from './pages/Library';
 import { TransferPage } from './pages/Transfer';
 import { MediaPage } from './pages/Media';
 import { SettingsPage } from './pages/Settings';
 import { SearchPage } from './pages/Search';
 import { revokeAllUrls } from './media/mediaStore';
 
+/**
+ * `primary` entries form the bottom bar on a phone: Home, Chats, Stories,
+ * Library, Settings. Everything you manage rather than use sits one tap deeper
+ * under Library, so the bar stays readable at 390px and each label means what
+ * it says — the old "More" button went straight to Settings.
+ */
 const NAV: Array<{ route: RouteName; label: string; icon: string; primary: boolean }> = [
   { route: 'dashboard', label: 'Home', icon: 'home', primary: true },
-  { route: 'chat', label: 'Chat', icon: 'chat', primary: true },
+  { route: 'chat', label: 'Chats', icon: 'chat', primary: true },
   { route: 'stories', label: 'Stories', icon: 'book', primary: true },
-  { route: 'characters', label: 'Characters', icon: 'users', primary: true },
+  { route: 'library', label: 'Library', icon: 'grid', primary: true },
+  { route: 'settings', label: 'Settings', icon: 'settings', primary: true },
+  { route: 'characters', label: 'Characters', icon: 'users', primary: false },
   { route: 'personas', label: 'Personas', icon: 'user', primary: false },
   { route: 'lorebooks', label: 'Lorebooks', icon: 'scroll', primary: false },
   { route: 'memories', label: 'Memories', icon: 'brain', primary: false },
   { route: 'transfer', label: 'Import / Export', icon: 'transfer', primary: false },
   { route: 'media', label: 'Media', icon: 'image', primary: false },
   { route: 'search', label: 'Search', icon: 'search', primary: false },
-  { route: 'settings', label: 'More', icon: 'settings', primary: true },
 ];
 
 /** Editor routes own the whole screen, so the bottom bar is hidden there. */
@@ -64,7 +72,7 @@ function Shell() {
     return (
       <div className="app-shell">
         <div className="page">
-          <Banner kind="error" title="Nexus Tavern could not start">
+          <Banner kind="error" title="Storyline could not start">
             {state.loadError} If you are in a private browsing window, try a normal window — some
             browsers block local databases in private mode.
           </Banner>
@@ -87,7 +95,7 @@ function Shell() {
       <div className="app-body">
         <nav className="side-nav" aria-label="Main navigation">
           <div className="side-nav-brand">
-            Nexus Tavern
+            Storyline
             <small>Pro</small>
           </div>
           {NAV.filter((item) => item.route !== 'search').map((item) => (
@@ -159,7 +167,13 @@ function Router({
 }) {
   switch (route.name) {
     case 'chat':
-      return <ChatPage chatId={route.param} navigate={navigate} />;
+      return (
+        <ChatPage
+          chatId={route.param}
+          navigate={navigate}
+          jumpToMessageId={route.query.get('message')}
+        />
+      );
     case 'stories':
       return <StoriesPage navigate={navigate} />;
     case 'story':
@@ -201,11 +215,13 @@ function Router({
         <LorebooksPage navigate={navigate} />
       );
     case 'memories':
-      return <MemoriesPage />;
+      return <MemoriesPage navigate={navigate} />;
     case 'transfer':
       return <TransferPage />;
     case 'media':
       return <MediaPage />;
+    case 'library':
+      return <LibraryPage navigate={navigate} />;
     case 'settings':
       return <SettingsPage />;
     case 'search':

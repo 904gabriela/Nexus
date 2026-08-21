@@ -15,6 +15,7 @@ export type RouteName =
   | 'transfer'
   | 'media'
   | 'settings'
+  | 'library'
   | 'search';
 
 export interface Route {
@@ -38,6 +39,7 @@ const VALID: RouteName[] = [
   'transfer',
   'media',
   'settings',
+  'library',
   'search',
 ];
 

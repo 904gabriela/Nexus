@@ -10,6 +10,7 @@ import { ActionSheet, Sheet } from '../components/ui/Sheet';
 import { useConfirm, deleteConfirm } from '../components/ui/Confirm';
 import { downloadFile, exportFilename, exportMemories, exportMemory } from '../exporters';
 import { relativeTime, truncate } from '../utils/text';
+import type { RouteName } from '../state/router';
 
 const IMPORTANCE_CHIP: Record<MemoryImportance, string> = {
   critical: 'chip-danger',
@@ -18,10 +19,35 @@ const IMPORTANCE_CHIP: Record<MemoryImportance, string> = {
   low: 'chip',
 };
 
-export function MemoriesPage() {
+export function MemoriesPage({
+  navigate,
+}: {
+  navigate: (name: RouteName, param?: string | null, query?: Record<string, string>) => void;
+}) {
   const state = useAppState();
   const actions = useActions();
   const confirm = useConfirm();
+
+  /**
+   * Opens the conversation a memory was distilled from and scrolls to the
+   * message. The source may live in a chat that is not currently loaded, so the
+   * message is looked up in the database rather than in state.
+   */
+  const openSource = async (memory: Memory) => {
+    const [first] = memory.sourceMessageIds;
+    if (!first) return;
+    const repo = await import('../storage/repositories');
+    const message = await repo.messages.get(first);
+    if (!message) {
+      actions.toast({
+        kind: 'warn',
+        title: 'That message no longer exists',
+        detail: 'It was deleted after this memory was created. The memory itself is unaffected.',
+      });
+      return;
+    }
+    navigate('chat', message.chatId, { message: message.id });
+  };
 
   const [view, setView] = useState<'memories' | 'important'>('memories');
   const [query, setQuery] = useState('');
@@ -250,6 +276,18 @@ export function MemoriesPage() {
           menuFor
             ? [
                 { key: 'edit', label: 'Edit', icon: 'edit', onSelect: () => setEditing(menuFor) },
+                {
+                  key: 'source',
+                  label: 'View source',
+                  description: menuFor.sourceMessageIds.length
+                    ? `Jump to the ${menuFor.sourceMessageIds.length} message${
+                        menuFor.sourceMessageIds.length === 1 ? '' : 's'
+                      } this came from.`
+                    : 'This memory was written by hand, so it has no source message.',
+                  icon: 'target',
+                  disabled: !menuFor.sourceMessageIds.length,
+                  onSelect: () => void openSource(menuFor),
+                },
                 {
                   key: 'pin',
                   label: menuFor.pinned ? 'Unpin' : 'Pin',

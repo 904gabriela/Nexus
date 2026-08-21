@@ -39,7 +39,7 @@ export function TransferPage() {
       <div className="page-header">
         <h1>
           Import / Export
-          <span className="subtitle">Move data in and out of Nexus Tavern</span>
+          <span className="subtitle">Move data in and out of Storyline</span>
         </h1>
       </div>
       <div className="page">
@@ -105,7 +105,7 @@ function ImportCenter() {
     <>
       <Banner kind="info" title="What can be imported">
         Character cards (JSON or PNG), personas, lorebooks and world-info files, stories, chat logs,
-        memories, plain text files, and full Nexus backups. Every file is previewed before anything
+        memories, plain text files, and full Storyline backups. Every file is previewed before anything
         is written, and nothing is ever silently overwritten.
       </Banner>
 

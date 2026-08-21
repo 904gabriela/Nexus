@@ -204,7 +204,7 @@ export function detectKind(value: unknown, filename = ''): { kind: ImportKind; f
   // Our own envelope.
   if (value.format === 'nexus-tavern-pro' && typeof value.kind === 'string') {
     const kind = value.kind as ImportKind;
-    if (IMPORT_KIND_LABELS[kind]) return { kind, format: 'Nexus Tavern Pro export' };
+    if (IMPORT_KIND_LABELS[kind]) return { kind, format: 'Storyline export' };
   }
 
   // A raw backup body.

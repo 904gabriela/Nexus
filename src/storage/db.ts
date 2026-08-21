@@ -147,7 +147,7 @@ export function openDB(): Promise<IDBDatabase> {
     request.onblocked = () =>
       reject(
         new StorageError(
-          'The database is blocked by another open tab. Close other Nexus Tavern tabs and retry.',
+          'The database is blocked by another open tab. Close the other Storyline tabs and retry.',
         ),
       );
   });
