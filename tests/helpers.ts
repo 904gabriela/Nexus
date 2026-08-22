@@ -505,3 +505,88 @@ export async function sendMessage(page: Page, text: string) {
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(bubble(page, text).first()).toBeVisible({ timeout: 20_000 });
 }
+
+export interface MockOllama {
+  replies: string[];
+  /** Every body posted to /api/chat, in order. */
+  requests: Array<{ body: any; url: string }>;
+  /** What /api/show reports as the model's window. */
+  contextLength: number;
+}
+
+/**
+ * Intercepts Ollama's native API.
+ *
+ * Ollama is a different dialect from the OpenAI shim — options live in an
+ * `options` object, streaming is newline-delimited JSON rather than SSE, and
+ * the context window is negotiated through /api/show. Capturing the real body
+ * here is what lets a test assert on what the server would actually receive
+ * rather than on what the compiler believes it assembled.
+ */
+export async function mockOllama(
+  page: Page,
+  replies: string[] = ['A mocked reply.'],
+  contextLength = 8192,
+): Promise<MockOllama> {
+  const state: MockOllama = { replies: [...replies], requests: [], contextLength };
+  let index = 0;
+
+  await page.route('**/api/tags', async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        models: [
+          { name: 'llama3.1:latest', details: { parameter_size: '8B', quantization_level: 'Q4' } },
+        ],
+      }),
+    });
+  });
+
+  await page.route('**/api/show', async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        model_info: { 'general.architecture': 'llama', 'llama.context_length': state.contextLength },
+      }),
+    });
+  });
+
+  await page.route('**/api/chat', async (route: Route) => {
+    const body = route.request().postDataJSON();
+    state.requests.push({ body, url: route.request().url() });
+    const reply = state.replies[Math.min(index, state.replies.length - 1)] ?? 'A mocked reply.';
+    index += 1;
+    // Ollama streams NDJSON, one object per line, terminated by done:true.
+    const lines =
+      (reply.match(/.{1,16}/gs) ?? [reply])
+        .map((chunk) => JSON.stringify({ message: { role: 'assistant', content: chunk }, done: false }))
+        .join('\n') + '\n' + JSON.stringify({ message: { role: 'assistant', content: '' }, done: true }) + '\n';
+    await route.fulfill({
+      status: 200,
+      headers: { 'content-type': 'application/x-ndjson' },
+      body: lines,
+    });
+  });
+
+  return state;
+}
+
+/** Configures an Ollama provider through the real Settings UI. */
+export async function setupOllamaProvider(page: Page, contextSize?: number) {
+  await goto(page, '#/settings');
+  await page.getByRole('button', { name: /Add provider|Add another provider/ }).first().click();
+  const dialog = page.getByRole('dialog');
+  await fieldIn(dialog, 'Base URL').fill('http://ollama.test:11434');
+  await dialog.getByRole('button', { name: 'Fetch models' }).click();
+  await expect(dialog.getByText(/Loaded|Found one model/)).toBeVisible({ timeout: 15_000 });
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  if (contextSize !== undefined) {
+    await goto(page, '#/settings');
+    await page.getByRole('tab', { name: 'Context' }).click().catch(() => {});
+    const field = numberField(page, 'Context size (tokens)');
+    await field.fill(String(contextSize)).catch(() => {});
+  }
+}

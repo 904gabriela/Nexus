@@ -6,7 +6,8 @@
  * Tester, so what the tester shows is exactly what the AI receives.
  */
 
-import type { ID, LoreEntry, LoreHit, LoreMiss, Lorebook } from '../types';
+import type { ID, LoreEntry, LoreHit, LoreMiss, LoreTier, Lorebook } from '../types';
+import { LORE_TIER_RANK } from '../types';
 import { escapeRegExp } from '../utils/text';
 
 export interface LoreScanScope {
@@ -23,6 +24,24 @@ export interface LoreScanInput {
   recentTexts: string[];
   /** Extra always-scanned text: scenario, persona, character summaries. */
   ambientText?: string;
+  /**
+   * What the user is sending right now. Matching here is the strongest signal
+   * an entry has: it is the only text we know the roleplay is about.
+   */
+  currentText?: string;
+  /**
+   * Names of the characters in the scene. An entry keyed to someone standing
+   * in the room outranks the same entry keyed to a name in old history.
+   */
+  sceneNames?: string[];
+  /** How many trailing messages count as recent rather than history. */
+  recentWindow?: number;
+  /**
+   * Identifies this turn, so probability rolls are reproducible. Regenerating
+   * the same turn must see the same lore, or the scene drifts for reasons the
+   * user cannot see.
+   */
+  turnSeed?: string;
   lorebooks: Lorebook[];
   entries: LoreEntry[];
   scope: LoreScanScope;
@@ -108,6 +127,61 @@ function attachmentPaths(book: Lorebook, scope: LoreScanScope): string[] {
   return via;
 }
 
+/**
+ * Fields a lorebook brought with it that Nexus has no column for.
+ *
+ * The importer keeps every unrecognised key as a custom field rather than
+ * dropping it, so a SillyTavern-authored book still carries its probability and
+ * group settings — they were simply never read. Reading them here honours the
+ * author's configuration without a schema migration or a re-import.
+ */
+function customValue(entry: LoreEntry, keys: string[]): string | null {
+  for (const field of entry.customFields ?? []) {
+    const key = field.key.trim().toLowerCase().replace(/[_\s-]/g, '');
+    if (keys.some((k) => k.toLowerCase().replace(/[_\s-]/g, '') === key)) {
+      return field.value.trim();
+    }
+  }
+  return null;
+}
+
+function customNumber(entry: LoreEntry, keys: string[], fallback: number): number {
+  const raw = customValue(entry, keys);
+  if (raw === null) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function customFlag(entry: LoreEntry, keys: string[]): boolean {
+  const raw = customValue(entry, keys);
+  return raw === 'true' || raw === '1' || raw === 'yes';
+}
+
+/**
+ * A stable pseudo-random value in [0,100) for an entry in a given turn.
+ *
+ * Probability has to be honoured without making regeneration a lottery: if the
+ * roll were fresh each call, pressing Regenerate could change which lore is in
+ * scope, and the scene would drift for reasons the user cannot see. Seeding on
+ * the entry and the turn keeps a given turn's context reproducible while still
+ * varying across the story.
+ */
+function stableRoll(seed: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) % 10000) / 100;
+}
+
+/** The bands an entry can match in, strongest first. */
+interface Band {
+  tier: LoreTier;
+  text: string;
+  describe: (terms: string[]) => string;
+}
+
 export function scanLore(input: LoreScanInput): LoreScanResult {
   const { entries, lorebooks, scope } = input;
   const bookById = new Map(lorebooks.map((b) => [b.id, b]));
@@ -115,6 +189,7 @@ export function scanLore(input: LoreScanInput): LoreScanResult {
   const misses: LoreMiss[] = [];
 
   const ambient = input.ambientText ?? '';
+  const recentWindow = Math.max(1, input.recentWindow ?? 6);
 
   for (const entry of entries) {
     const book = bookById.get(entry.lorebookId);
@@ -161,15 +236,45 @@ export function scanLore(input: LoreScanInput): LoreScanResult {
         lorebookName: bookName,
         matched: [],
         reason: `Always active (attached via ${via.join(', ')}).`,
+        tier: 'world',
       });
       continue;
     }
 
     const depth = entry.scanDepth || book.scanDepth || input.defaultScanDepth;
     const window = depth > 0 ? input.recentTexts.slice(-depth) : input.recentTexts;
-    const haystack = [...window, ambient].filter(Boolean).join('\n');
 
-    if (!haystack.trim()) {
+    // The same window, split by how much the roleplay currently cares about it.
+    // An entry keyed to "Edgeshot" matching a pasted transcript is a different
+    // claim from one matching the sentence the user just typed, and the split
+    // is what lets the budget keep the second and drop the first.
+    const recent = window.slice(-recentWindow);
+    const older = window.slice(0, Math.max(0, window.length - recentWindow));
+    const bands: Band[] = [
+      {
+        tier: 'scene',
+        text: [input.currentText ?? '', ...(input.sceneNames ?? [])].filter(Boolean).join('\n'),
+        describe: (t) => `Keyword matched: ${t.join(', ')} (in the current scene or message)`,
+      },
+      {
+        tier: 'recent',
+        text: recent.join('\n'),
+        describe: (t) =>
+          `Keyword matched: ${t.join(', ')} (in the last ${recent.length} message(s))`,
+      },
+      {
+        tier: 'story',
+        text: ambient,
+        describe: (t) => `Keyword matched: ${t.join(', ')} (in the story's own setup)`,
+      },
+      {
+        tier: 'history',
+        text: older.join('\n'),
+        describe: (t) => `Keyword matched: ${t.join(', ')} (only in older history)`,
+      },
+    ];
+
+    if (!bands.some((b) => b.text.trim())) {
       misses.push({ entry, lorebookName: bookName, reason: 'Nothing in the scan window yet.' });
       continue;
     }
@@ -184,8 +289,18 @@ export function scanLore(input: LoreScanInput): LoreScanResult {
       continue;
     }
 
-    const matchedPrimary = matchTerms(primaryTerms, entry, haystack);
-    if (!matchedPrimary.length) {
+    // Strongest band wins; a match anywhere still counts, it just ranks lower.
+    let winner: { band: Band; matched: string[] } | null = null;
+    for (const band of bands) {
+      if (!band.text.trim()) continue;
+      const matched = matchTerms(primaryTerms, entry, band.text);
+      if (matched.length) {
+        winner = { band, matched };
+        break;
+      }
+    }
+
+    if (!winner) {
       misses.push({
         entry,
         lorebookName: bookName,
@@ -195,20 +310,24 @@ export function scanLore(input: LoreScanInput): LoreScanResult {
     }
 
     if (entry.secondaryKeys.length) {
-      const matchedSecondary = matchTerms(entry.secondaryKeys, entry, haystack);
+      // Secondary keys gate on the whole window: they qualify the match rather
+      // than locating it.
+      const whole = [...window, ambient, input.currentText ?? ''].filter(Boolean).join('\n');
+      const matchedSecondary = matchTerms(entry.secondaryKeys, entry, whole);
       if (!matchedSecondary.length) {
         misses.push({
           entry,
           lorebookName: bookName,
-          reason: `Primary keyword "${matchedPrimary[0]}" matched, but no secondary keyword did.`,
+          reason: `Primary keyword "${winner.matched[0]}" matched, but no secondary keyword did.`,
         });
         continue;
       }
       hits.push({
         entry,
         lorebookName: bookName,
-        matched: [...matchedPrimary, ...matchedSecondary],
-        reason: `Keywords matched: ${[...matchedPrimary, ...matchedSecondary].join(', ')}`,
+        matched: [...winner.matched, ...matchedSecondary],
+        reason: winner.band.describe([...winner.matched, ...matchedSecondary]),
+        tier: winner.band.tier,
       });
       continue;
     }
@@ -216,19 +335,90 @@ export function scanLore(input: LoreScanInput): LoreScanResult {
     hits.push({
       entry,
       lorebookName: bookName,
-      matched: matchedPrimary,
-      reason: `Keyword matched: ${matchedPrimary.join(', ')}`,
+      matched: winner.matched,
+      reason: winner.band.describe(winner.matched),
+      tier: winner.band.tier,
     });
   }
 
-  hits.sort((a, b) => b.entry.priority - a.entry.priority || a.entry.order - b.entry.order);
+  // Relevance first, then the author's own priority within a tier. This is the
+  // ordering the entry limit and the token budget both cut from the bottom of.
+  hits.sort(
+    (a, b) =>
+      LORE_TIER_RANK[b.tier] - LORE_TIER_RANK[a.tier] ||
+      b.entry.priority - a.entry.priority ||
+      a.entry.order - b.entry.order,
+  );
+
+  const seed = input.turnSeed ?? '';
+  const surviving: LoreHit[] = [];
+
+  // Probability, as the lorebook author set it. Rolled from a stable seed so a
+  // regeneration of the same turn sees the same lore.
+  for (const hit of hits) {
+    const probability = customNumber(hit.entry, ['probability'], 100);
+    if (probability >= 100 || hit.entry.activation === 'always') {
+      surviving.push(hit);
+      continue;
+    }
+    const roll = stableRoll(`${hit.entry.id}:${seed}`);
+    if (roll < probability) {
+      surviving.push(hit);
+    } else {
+      misses.push({
+        entry: hit.entry,
+        lorebookName: hit.lorebookName,
+        reason: `Matched, but did not pass its ${probability}% probability this turn.`,
+      });
+    }
+  }
+
+  // Groups are mutually exclusive: among entries sharing a group name, the
+  // heaviest wins and the rest stand down. An entry marked as an override is
+  // exempt, which is how an author pins one member of a group.
+  const groupWinner = new Map<string, LoreHit>();
+  const kept: LoreHit[] = [];
+  for (const hit of surviving) {
+    const group = customValue(hit.entry, ['group']);
+    if (!group || customFlag(hit.entry, ['groupOverride'])) {
+      kept.push(hit);
+      continue;
+    }
+    const weight = customNumber(hit.entry, ['groupWeight'], 100);
+    const current = groupWinner.get(group);
+    if (!current || weight > customNumber(current.entry, ['groupWeight'], 100)) {
+      if (current) {
+        misses.push({
+          entry: current.entry,
+          lorebookName: current.lorebookName,
+          reason: `Outweighed by another entry in group "${group}".`,
+        });
+      }
+      groupWinner.set(group, hit);
+    } else {
+      misses.push({
+        entry: hit.entry,
+        lorebookName: hit.lorebookName,
+        reason: `Outweighed by another entry in group "${group}".`,
+      });
+    }
+  }
+  for (const winner of groupWinner.values()) kept.push(winner);
+  kept.sort(
+    (a, b) =>
+      LORE_TIER_RANK[b.tier] - LORE_TIER_RANK[a.tier] ||
+      b.entry.priority - a.entry.priority ||
+      a.entry.order - b.entry.order,
+  );
+  hits.length = 0;
+  hits.push(...kept);
 
   if (input.maxEntries > 0 && hits.length > input.maxEntries) {
     for (const dropped of hits.slice(input.maxEntries)) {
       misses.push({
         entry: dropped.entry,
         lorebookName: dropped.lorebookName,
-        reason: `Matched, but exceeded the ${input.maxEntries}-entry lore limit (priority ${dropped.entry.priority}).`,
+        reason: `Matched at ${dropped.tier} relevance, but exceeded the ${input.maxEntries}-entry lore limit (priority ${dropped.entry.priority}).`,
       });
     }
     return { hits: hits.slice(0, input.maxEntries), misses };

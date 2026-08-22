@@ -6,10 +6,12 @@ import { Sheet } from '../ui/Sheet';
 import { Icon } from '../ui/Icon';
 import { Banner, CopyButton, Tabs } from '../ui/common';
 import { truncate } from '../../utils/text';
+import { formatRequest, getLastRequest } from '../../ai/requestLog';
 
 const KIND_LABEL: Record<string, string> = {
   system: 'System',
   global: 'Global',
+  scene: 'Scene & presence',
   character: 'Character',
   persona: 'Persona',
   story: 'Story',
@@ -35,7 +37,9 @@ export function ContextInspector({
   open: boolean;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<'included' | 'excluded' | 'lore' | 'raw'>('included');
+  const [tab, setTab] = useState<'included' | 'excluded' | 'lore' | 'raw' | 'request'>(
+    'included',
+  );
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const grouped = useMemo(() => {
@@ -112,6 +116,7 @@ export function ContextInspector({
           { id: 'excluded', label: 'Excluded', badge: compiled.excluded.length },
           { id: 'lore', label: 'Lore & memory' },
           { id: 'raw', label: 'Raw' },
+          { id: 'request', label: 'Provider request' },
         ]}
         active={tab}
         onChange={setTab}
@@ -243,6 +248,8 @@ export function ContextInspector({
         </>
       )}
 
+      {tab === 'request' && <RequestView />}
+
       {tab === 'raw' && (
         <>
           <p className="small muted">
@@ -254,5 +261,61 @@ export function ContextInspector({
         </>
       )}
     </Sheet>
+  );
+}
+
+
+/**
+ * The body that actually left the app, as JSON.
+ *
+ * The Assembled tab shows what the compiler built; this shows what the server
+ * received. They are meant to agree, and every roleplay failure worth debugging
+ * so far has lived in the gap between them — a context size the model could not
+ * honour, a prompt truncated at the head, options that never made the trip.
+ */
+function RequestView() {
+  const request = getLastRequest();
+  const json = formatRequest(request);
+
+  if (!request) {
+    return (
+      <Banner kind="info" title="No request yet">
+        Send a message and this will show the exact JSON body posted to the provider,
+        including the context window it was told to use.
+      </Banner>
+    );
+  }
+
+  const options = (request.body as any)?.options ?? {};
+  const messages = (request.body as any)?.messages ?? [];
+
+  return (
+    <>
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div className="small muted">{request.dialect === 'ollama' ? 'Ollama native API' : 'OpenAI-compatible API'}</div>
+        <div className="small" style={{ wordBreak: 'break-all' }}>{request.url}</div>
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+          <span className="chip">{messages.length} messages</span>
+          {typeof options.num_ctx === 'number' && (
+            <span className="chip chip-success">num_ctx {options.num_ctx.toLocaleString()}</span>
+          )}
+          {typeof options.num_predict === 'number' && (
+            <span className="chip">num_predict {options.num_predict}</span>
+          )}
+          {request.modelLimit && (
+            <span className="chip">model holds {request.modelLimit.toLocaleString()}</span>
+          )}
+        </div>
+        {request.clamped && (
+          <div className="small muted" style={{ marginTop: 8 }}>
+            The configured context size was larger than this model can hold, so it was
+            reduced. Without that, the server would have truncated the prompt itself —
+            starting from the beginning, where the scene and persona live.
+          </div>
+        )}
+      </div>
+      <CopyButton text={json} label="Copy provider request" className="btn" />
+      <pre className="ctx-raw" style={{ marginTop: 10 }}>{json}</pre>
+    </>
   );
 }

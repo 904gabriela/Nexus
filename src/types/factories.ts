@@ -17,7 +17,7 @@ import type {
   Story,
   StorySummary,
 } from './index';
-import { defaultCapabilities } from './index';
+import { defaultCapabilities, emptyScene } from './index';
 import { uid } from '../utils/uid';
 
 export const SCHEMA_VERSION = 4;
@@ -243,6 +243,7 @@ export function newChat(partial: Partial<Chat> = {}): Chat {
     direction: '',
     lorebookIds: [],
     orderCounter: 0,
+    scene: emptyScene(),
     createdAt: t,
     updatedAt: t,
     ...partial,

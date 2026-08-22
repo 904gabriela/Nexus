@@ -794,6 +794,12 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
                   characterId: character?.id ?? null,
                   content: opening,
                   order: 0,
+                  // The opening is prior context by definition: it was written
+                  // before this chat existed. Marking it says so to the
+                  // compiler, which otherwise reads a pasted transcript as a
+                  // turn the assistant just took — and imitates it, including
+                  // the user's own lines.
+                  historical: true,
                 }),
               );
               chat.orderCounter = 1;

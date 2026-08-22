@@ -14,6 +14,13 @@ import type {
 } from '../types';
 import { defaultCapabilities } from '../types';
 import { inferCapabilities } from '../types/factories';
+import {
+  ASSUMED_CONTEXT,
+  fetchOllamaContextWindow,
+  resolveUsableBudget,
+  type UsableBudget,
+} from './contextWindow';
+import { recordRequest } from './requestLog';
 
 /**
  * Why a request failed, in terms the UI can act on. `fetch` deliberately
@@ -703,6 +710,12 @@ function buildBody(options: CompleteOptions, stream: boolean) {
   if (!body.model) {
     throw new ProviderError('No model is selected for this provider. Pick one in Settings.');
   }
+  recordRequest({
+    at: Date.now(),
+    url: `${normalizeBaseUrl(provider.baseUrl)}/chat/completions`,
+    dialect: 'openai',
+    body,
+  });
   return body;
 }
 
@@ -787,8 +800,18 @@ async function httpError(response: Response): Promise<ProviderError> {
  * SSE, and takes its sampling options in an `options` object instead of at the
  * top level, so it cannot share the OpenAI request builder.
  */
-async function streamOllama(options: CompleteOptions): Promise<string> {
-  const { provider, onToken, settings = {} } = options;
+/**
+ * Builds the exact Ollama body, including the context window.
+ *
+ * Exported so the inspector and the tests can see the real payload without
+ * making a network call — the whole point of this path is that what is shown
+ * and what is sent are the same object.
+ */
+export async function buildOllamaBody(
+  options: CompleteOptions,
+  stream: boolean,
+): Promise<{ url: string; body: Record<string, unknown>; budget: UsableBudget }> {
+  const { provider, settings = {} } = options;
   const model = options.model || provider.model;
   if (!model) {
     throw new ProviderError(
@@ -798,20 +821,52 @@ async function streamOllama(options: CompleteOptions): Promise<string> {
       'MODEL_NOT_SELECTED',
     );
   }
-  const url = `${ollamaRoot(provider.baseUrl)}/api/chat`;
-  const body = {
+
+  const maxTokens = settings.maxTokens ?? provider.maxTokens;
+  // Ask the model what it can hold rather than trusting the UI figure. Sending
+  // a num_ctx larger than the model's window makes Ollama truncate silently,
+  // and it truncates the head — where the system prompt is.
+  const window = await fetchOllamaContextWindow(provider, model);
+  const budget = resolveUsableBudget({
+    requested: settings.contextSize ?? ASSUMED_CONTEXT,
+    modelLimit: window.limit,
+    reserveForResponse: maxTokens || 0,
+    reported: window.reported,
+  });
+
+  const body: Record<string, unknown> = {
     model,
     messages: options.messages,
-    stream: true,
+    stream,
     options: {
       temperature: settings.temperature ?? provider.temperature,
       top_p: settings.topP ?? provider.topP,
-      num_predict: settings.maxTokens ?? provider.maxTokens,
+      num_predict: maxTokens,
+      // Without this Ollama uses its own default and quietly drops whatever
+      // does not fit, starting from the beginning of the prompt.
+      num_ctx: budget.numCtx,
       // Ollama calls these by their llama.cpp names.
       repeat_penalty:
         1 + ((settings.frequencyPenalty ?? provider.frequencyPenalty) || 0),
     },
   };
+
+  return { url: `${ollamaRoot(provider.baseUrl)}/api/chat`, body, budget };
+}
+
+async function streamOllama(options: CompleteOptions): Promise<string> {
+  const { provider, onToken } = options;
+  const model = options.model || provider.model;
+  const { url, body, budget } = await buildOllamaBody(options, true);
+  recordRequest({
+    at: Date.now(),
+    url,
+    dialect: 'ollama',
+    body,
+    numCtx: budget.numCtx,
+    modelLimit: budget.modelLimit,
+    clamped: budget.clamped,
+  });
 
   const clock = deadline(options.signal, CONNECT_TIMEOUT_MS);
   let response: Response;
@@ -903,9 +958,12 @@ async function streamOllama(options: CompleteOptions): Promise<string> {
 export async function streamComplete(options: CompleteOptions): Promise<string> {
   const { provider, onToken } = options;
   const wantsStream = options.settings?.streaming ?? provider.streaming;
-  // Ollama's own endpoint is preferred when the provider is configured as
-  // Ollama; its OpenAI shim is not enabled on every build.
-  if (provider.kind === 'ollama') {
+  // Ollama's own endpoint is preferred whenever the address looks like Ollama,
+  // not only when the type was set by hand: a provider added as "Local / LAN"
+  // pointing at :11434 is still Ollama, and its OpenAI shim has nowhere to put
+  // num_ctx — so routing on the declared kind alone sent exactly the users who
+  // needed the window negotiated down the one path that cannot express it.
+  if (isOllama(provider)) {
     if (!wantsStream) {
       const text = await streamOllama({ ...options, onToken: undefined });
       onToken?.(text, text);

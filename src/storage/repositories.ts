@@ -1,3 +1,4 @@
+import { emptyScene } from '../types';
 import {
   STORES,
   dbDelete,
@@ -45,7 +46,14 @@ function hydrateStory(story: Story): Story {
 }
 
 function hydrateChat(chat: Chat): Chat {
-  return { ...chat, direction: chat.direction ?? '' };
+  return {
+    ...chat,
+    direction: chat.direction ?? '',
+    // Chats written before scene state existed get an empty one, which the
+    // compiler reads as "presence is undeclared" and falls back to the primary
+    // character rather than assuming the whole cast is in the room.
+    scene: { ...emptyScene(), ...(chat.scene ?? {}) },
+  };
 }
 
 export const characters = {

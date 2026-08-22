@@ -8,6 +8,7 @@ import type {
   MediaMeta,
   Message,
   Persona,
+  Provider,
   Story,
 } from '../types';
 import {
@@ -30,8 +31,14 @@ import {
   shouldAutoSummarize,
 } from '../memory/storySummary';
 import { newStorySummary } from '../types/factories';
-import { ProviderError, streamComplete } from '../ai/client';
+import { ProviderError, isOllama, streamComplete } from '../ai/client';
 import { compileContext, type CompileInput, type CompileResult } from '../context/compiler';
+import {
+  ASSUMED_CONTEXT,
+  fetchOllamaContextWindow,
+  resolveUsableBudget,
+  type UsableBudget,
+} from '../ai/contextWindow';
 import { resolveTimeline } from '../services/timeline';
 import { getMediaBlob, blobToDataUrl, saveMedia } from '../media/mediaStore';
 import { ImageError, generateImage } from '../ai/imageClient';
@@ -52,6 +59,35 @@ export interface GenerationState {
   streamingText: string;
   streamingFor: ID | null;
   error: string | null;
+}
+
+/**
+ * What may actually be spent on this generation.
+ *
+ * Ollama can be asked what the loaded model holds, so it is asked. Everything
+ * else keeps the configured number, because a remote provider rejects an
+ * oversized request loudly instead of truncating it in silence.
+ */
+async function resolveGenerationBudget(
+  provider: Provider,
+  generation: { contextSize?: number; maxTokens?: number },
+): Promise<UsableBudget> {
+  const requested = generation.contextSize ?? ASSUMED_CONTEXT;
+  const reserve = generation.maxTokens ?? 0;
+  if (!isOllama(provider)) {
+    return resolveUsableBudget({
+      requested,
+      modelLimit: requested,
+      reserveForResponse: reserve,
+    });
+  }
+  const window = await fetchOllamaContextWindow(provider, provider.model);
+  return resolveUsableBudget({
+    requested,
+    modelLimit: window.limit,
+    reserveForResponse: reserve,
+    reported: window.reported,
+  });
 }
 
 /** Resolves attachment blobs to data URLs for vision-capable providers. */
@@ -142,6 +178,8 @@ export function useGeneration() {
          */
         chat?: Chat | null;
         story?: Story | null;
+        /** The real window, once negotiated with the provider. */
+        budgetOverride?: number;
       } = {},
     ): CompileInput => ({
       settings: state.settings,
@@ -158,6 +196,11 @@ export function useGeneration() {
       pendingAttachments: options.pendingAttachments,
       instruction: options.instruction,
       respondingCharacterId: options.respondingCharacterId,
+      // Presence comes from the chat being generated for, not the one this
+      // callback closed over — the same staleness that used to drop the newest
+      // turn would otherwise compile the previous chat's scene.
+      scene: (options.chat !== undefined ? options.chat : activeChat)?.scene ?? null,
+      budgetOverride: options.budgetOverride,
       visionEnabled: capabilities.vision,
       imageResolver: options.imageMap
         ? (attachment) => (attachment.mediaId ? options.imageMap!.get(attachment.mediaId) : undefined)
@@ -332,6 +375,14 @@ export function useGeneration() {
           ? await buildImageMap(history, [])
           : undefined;
 
+        const generation = effectiveGeneration(liveChat, liveStory, provider);
+
+        // Find out what the model can actually hold before building anything.
+        // Compiling to the configured number and letting the server sort it out
+        // is what silently deleted the system prompt — Ollama truncates from the
+        // head, so the persona and the scene were the first things to go.
+        const usable = await resolveGenerationBudget(provider, generation);
+
         const compiled = compileContext(
           buildCompileInput(history, {
             instruction: target.instruction,
@@ -339,18 +390,26 @@ export function useGeneration() {
             imageMap,
             chat: liveChat,
             story: liveStory,
+            budgetOverride: usable.promptBudget,
           }),
         );
 
-        if (compiled.overBudget) {
+        if (usable.clamped) {
+          actions.toast({
+            kind: 'warn',
+            title: 'Context size reduced to fit the model',
+            detail:
+              `This chat asks for ${usable.requested.toLocaleString()} tokens, but ` +
+              `${provider.model} can hold ${usable.modelLimit.toLocaleString()}. ` +
+              `Building to ${usable.promptBudget.toLocaleString()} so nothing is silently dropped.`,
+          });
+        } else if (compiled.overBudget) {
           actions.toast({
             kind: 'warn',
             title: 'Context is over budget',
             detail: `${compiled.totalTokens} estimated tokens vs a ${compiled.budget} budget. Older messages and low-priority items were trimmed.`,
           });
         }
-
-        const generation = effectiveGeneration(liveChat, liveStory, provider);
 
         // Append a live placeholder so streaming text has somewhere to land.
         if (!target.replaceMessageId && !target.asAlternative) {

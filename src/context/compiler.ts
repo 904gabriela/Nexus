@@ -21,11 +21,16 @@ import type {
   Memory,
   Message,
   Persona,
+  SceneState,
   Settings,
   Story,
   StorySummary,
 } from '../types';
+import { LORE_TIER_RANK } from '../types';
+import type { LoreTier } from '../types';
 import { scanLore } from '../lore/matcher';
+import { describeControl, describeScene, resolveScene, type ResolvedScene } from './scene';
+import { truncate } from '../utils/text';
 import { IMAGE_TOKEN_COST, estimateTokens } from './tokens';
 
 export interface CompileInput {
@@ -46,6 +51,16 @@ export interface CompileInput {
   instruction?: string;
   /** Which character is being asked to reply, in a multi-character story. */
   respondingCharacterId?: string | null;
+  /**
+   * Who and what is in the scene right now. Absent means undeclared, which
+   * resolves to the focal character alone rather than the whole cast.
+   */
+  scene?: SceneState | null;
+  /**
+   * The real usable prompt window, negotiated with the provider. Overrides the
+   * configured context size, which is an aspiration rather than a capability.
+   */
+  budgetOverride?: number;
   /** Long-run memory. When present, older history folds into this. */
   summary?: StorySummary | null;
   /** Resolves an attachment to a data URL for vision-capable providers. */
@@ -200,12 +215,51 @@ const IMPORTANCE_RANK: Record<Memory['importance'], number> = {
   low: 1,
 };
 
+/**
+ * How far back lore may look, and how many entries may land, whatever the
+ * settings say. These are guard rails on a runaway configuration rather than
+ * opinions about lorebook size: the database stays as large as the author
+ * wants, the per-request slice does not.
+ */
+const MAX_LORE_SCAN = 40;
+const MAX_LORE_ENTRIES = 40;
+/** Trailing messages that count as the live conversation. */
+const RECENT_WINDOW = 6;
+
+/**
+ * Kinds that survive any budget squeeze.
+ *
+ * Lore, memories, scenario and story blurb are all droppable: losing them costs
+ * colour. Losing the persona or the scene costs the model its grip on who is
+ * speaking and who is present, which is the failure this whole pass exists to
+ * prevent.
+ */
+const UNDROPPABLE = new Set<ContextPart['kind']>(['system', 'scene', 'persona', 'instruction']);
+
+/**
+ * Where a lore hit sits in the trimming order.
+ *
+ * Relevance dominates the author's own priority — an entry that matched only in
+ * old history ranks below one about someone in the room, whatever number the
+ * lorebook gave it — but the whole band stays below the persona and the scene.
+ * Lore is world knowledge; it must never outrank who is in the room, and it
+ * must always remain droppable when the budget runs out.
+ */
+function lorePriority(hit: { tier: LoreTier; entry: { priority: number } }): number {
+  return 620 + LORE_TIER_RANK[hit.tier] * 25 + Math.min(Math.max(hit.entry.priority, 0), 99) / 5;
+}
+
 /** Priority tiers, higher survives trimming (spec §44). */
 const PRIORITY = {
   system: 1000,
+  /** Presence and control. Above everything the world merely knows. */
+  scene: 970,
+  /** A cast member who is not in the scene: recognisable, not detailed. */
+  absentCharacter: 640,
   global: 950,
+  /** The user's own identity. Outranks every character description. */
+  persona: 920,
   character: 900,
-  persona: 850,
   story: 800,
   scenario: 790,
   pinnedMemory: 780,
@@ -266,20 +320,32 @@ function compileContextInner(input: CompileInput): CompileResult {
   const { settings, story, chat, characters, persona } = input;
 
   const activeCharacters = characters.filter(Boolean);
-  const responding =
-    activeCharacters.find((c) => c.id === input.respondingCharacterId) ?? activeCharacters[0] ?? null;
+
+  // Presence is resolved before anything else: it decides which characters are
+  // described in full, which are sketched, and who may speak at all.
+  const scene: ResolvedScene = resolveScene({
+    scene: input.scene ?? chat?.scene ?? null,
+    cast: activeCharacters,
+    respondingCharacterId: input.respondingCharacterId,
+  });
+  const responding = scene.primary;
 
   const charName = responding ? responding.displayName || responding.name : 'the character';
   const userName = persona ? persona.displayName || persona.name : 'User';
   const macroVars = { char: charName, user: userName, scenario: story?.scenario ?? '' };
   const macro = (text: string) => applyMacros(text, macroVars);
 
+  // The negotiated window wins over the configured one. A Context size of
+  // 513,856 is a wish; what the model can actually hold is a fact, and building
+  // to the wish is what got the prompt silently truncated at the server.
+  const configured =
+    chat?.settings.contextSize ?? story?.settings.contextSize ?? settings.contextBudget ?? 8192;
+  // The override has already had the reply's share taken out of it, so the
+  // reserve is only applied to the configured figure — subtracting it from both
+  // would charge for the reply twice.
   const budget = Math.max(
     512,
-    (chat?.settings.contextSize ??
-      story?.settings.contextSize ??
-      settings.contextBudget ??
-      8192) - (settings.reserveForResponse ?? 0),
+    input.budgetOverride ?? configured - (settings.reserveForResponse ?? 0),
   );
 
   /* ------------------------------------------------------- gather parts */
@@ -312,25 +378,75 @@ function compileContextInner(input: CompileInput): CompileResult {
     );
   }
 
-  // Multi-character stories get a roster plus a directive about who speaks.
-  if (activeCharacters.length > 1) {
-    const roster = activeCharacters.map((c) => `- ${c.displayName || c.name}`).join('\n');
+  // Presence and control, stated once, in a tier that cannot be trimmed.
+  // Both blocks are emitted for every chat, including one-character chats:
+  // the rule that the model must not write the user used to live inside a
+  // multi-character branch, so the commonest configuration had no rule at all.
+  parts.push(
+    part(
+      'scene',
+      'Current scene',
+      'scene',
+      macro(describeScene(scene, userName)),
+      scene.declared
+        ? 'Scene state declared for this chat.'
+        : 'No scene declared — presence falls back to the focal character.',
+      PRIORITY.scene,
+    ),
+  );
+  // A pasted transcript is a record of what happened, not a turn just taken.
+  // Without saying so, the model reads it as its own most recent output and
+  // imitates it wholesale — including the user's lines, and including every
+  // character who happened to be named in it.
+  if (input.history.some((m) => m.historical)) {
     parts.push(
       part(
-        'cast',
-        'Cast',
-        'character',
-        `The following characters are present in this scene:\n${roster}\n\n` +
-          `You are currently writing as ${charName}. You may reference the others, ` +
-          `but never write dialogue or actions for ${userName}.`,
-        `${activeCharacters.length} active characters in this story.`,
-        PRIORITY.character,
+        'historical-frame',
+        'Earlier roleplay',
+        'scene',
+        'Part of the conversation below is a record of earlier roleplay, not ' +
+          'events happening now. Treat the names in it as the story’s past. ' +
+          'Who is in the scene is defined above, not by who appears in that record.',
+        'The history contains messages carried in from earlier play.',
+        PRIORITY.scene - 10,
       ),
     );
   }
 
+  parts.push(
+    part(
+      'control',
+      'Who controls whom',
+      'scene',
+      macro(describeControl(scene, userName)),
+      'The persona is the user; the model narrates everyone else present.',
+      PRIORITY.scene - 5,
+    ),
+  );
+
+  // Characters in the scene are described in full. Characters who merely exist
+  // in this story get a one-line sketch: enough to be recognisable if the story
+  // brings them in, not enough to crowd out the scene that is actually running.
   activeCharacters.forEach((character, index) => {
     const isResponder = character.id === responding?.id;
+    const isPresent = scene.present.some((c) => c.id === character.id);
+    if (!isPresent) {
+      const sketch = character.shortDescription.trim() || character.description.trim();
+      parts.push(
+        part(
+          `character:${character.id}`,
+          `Character — ${character.displayName || character.name} (not in the scene)`,
+          'character',
+          macro(
+            `# ${character.displayName || character.name} (not present)\n` +
+              (sketch ? truncate(sketch, 240) : 'Part of this world; not in the current scene.'),
+          ),
+          'In the cast but not in the scene — summarised rather than described.',
+          PRIORITY.absentCharacter - index,
+        ),
+      );
+      return;
+    }
     parts.push(
       part(
         `character:${character.id}`,
@@ -339,7 +455,7 @@ function compileContextInner(input: CompileInput): CompileResult {
         macro(describeCharacter(character, true)),
         isResponder
           ? 'The character generating this reply.'
-          : `Active co-star #${index + 1} in this story.`,
+          : `Present in the scene (#${index + 1}).`,
         isResponder ? PRIORITY.character : PRIORITY.character - 10 - index,
       ),
     );
@@ -370,10 +486,13 @@ function compileContextInner(input: CompileInput): CompileResult {
     }
   });
 
-  // Per-story character notes.
+  // Per-story character notes, for characters in the scene. A note about how
+  // someone stands in this story is scene context; for someone who is not here
+  // it is backstory, and backstory that reads like current state is what makes
+  // an absent character feel available.
   for (const link of story?.characters ?? []) {
     if (!link.enabled || !link.note.trim()) continue;
-    const character = activeCharacters.find((c) => c.id === link.characterId);
+    const character = scene.present.find((c) => c.id === link.characterId);
     if (!character) continue;
     parts.push(
       part(
@@ -524,13 +643,29 @@ function compileContextInner(input: CompileInput): CompileResult {
   /* --------------------------------------------------------------- lore */
 
   // History arrives with each message's active alternative already applied.
-  const recentTexts = input.history
-    .slice(-Math.max(settings.loreScanDepth, 1) * 3)
-    .map((m) => m.content);
-  if (input.pendingUserText) recentTexts.push(input.pendingUserText);
+  //
+  // The window is bounded for its own sake. A scan depth of 80,000 multiplied
+  // out to a slice of the entire history, so every name in a pasted transcript
+  // — Edgeshot, Deku, half of class 1-A — activated its own entry as though the
+  // roleplay were about them. Depth still controls how far back to look; it no
+  // longer controls whether looking back is bounded at all.
+  const scanDepth = Math.min(Math.max(settings.loreScanDepth || 8, 1), MAX_LORE_SCAN);
+  const recentTexts = input.history.slice(-scanDepth).map((m) => m.content);
 
   const loreScan = scanLore({
     recentTexts,
+    // The user's unsent message is the strongest evidence of what this turn is
+    // about, so it is scanned as its own band rather than appended to history.
+    currentText: input.pendingUserText ?? '',
+    sceneNames: [
+      ...scene.present.map((c) => c.displayName || c.name),
+      scene.location,
+      scene.situation,
+    ].filter(Boolean),
+    recentWindow: RECENT_WINDOW,
+    // The turn is identified by the newest message, so a regeneration of the
+    // same turn rolls the same probabilities.
+    turnSeed: input.history.at(-1)?.id ?? chat?.id ?? '',
     ambientText: [story?.scenario ?? '', persona?.personality ?? ''].filter(Boolean).join('\n'),
     lorebooks: input.lorebooks,
     entries: input.loreEntries,
@@ -540,20 +675,55 @@ function compileContextInner(input: CompileInput): CompileResult {
       chatLorebookIds: chat?.lorebookIds ?? [],
       characterLorebookIds: activeCharacters.flatMap((c) => c.lorebookIds),
     },
-    defaultScanDepth: settings.loreScanDepth,
-    maxEntries: settings.maxLoreEntries,
+    defaultScanDepth: scanDepth,
+    maxEntries: Math.min(Math.max(settings.maxLoreEntries || 12, 1), MAX_LORE_ENTRIES),
   });
+
+  /**
+   * Entries destined for the message list rather than the system prompt.
+   * `at-depth` means "N turns from the end", which is a position in the
+   * conversation and cannot be expressed by sorting the system block.
+   */
+  const atDepthLore: Array<{ depth: number; content: string }> = [];
 
   for (const hit of loreScan.hits) {
     const heading = hit.entry.name ? `## ${hit.entry.name}` : '';
+    const content = macro([heading, hit.entry.content].filter(Boolean).join('\n'));
+
+    if (hit.entry.position === 'at-depth') {
+      atDepthLore.push({ depth: Math.max(0, hit.entry.depth || 0), content });
+      // Still recorded as a part so the inspector accounts for its tokens.
+      parts.push(
+        part(
+          `lore:${hit.entry.id}`,
+          `Lore — ${hit.entry.name || 'Untitled entry'} (${hit.lorebookName})`,
+          'lore',
+          '',
+          `${hit.reason} — injected ${hit.entry.depth} message(s) from the end.`,
+          lorePriority(hit),
+        ),
+      );
+      continue;
+    }
+
+    // Position decides where in the system block an entry lands. It was stored
+    // and shown in the editor but never read, so an author who placed a rule
+    // before the character description got it after, every time.
+    const positional =
+      hit.entry.position === 'before-character'
+        ? PRIORITY.character + 30
+        : hit.entry.position === 'author-note'
+          ? PRIORITY.authorNote - 1
+          : lorePriority(hit);
+
     parts.push(
       part(
         `lore:${hit.entry.id}`,
         `Lore — ${hit.entry.name || 'Untitled entry'} (${hit.lorebookName})`,
         'lore',
-        macro([heading, hit.entry.content].filter(Boolean).join('\n')),
+        content,
         hit.reason,
-        PRIORITY.lore + Math.min(hit.entry.priority, 99),
+        positional,
       ),
     );
   }
@@ -709,8 +879,12 @@ function compileContextInner(input: CompileInput): CompileResult {
     const dropped = new Set<string>();
     for (const candidate of sorted) {
       if (totalFixed + pendingTokens <= budget) break;
-      // Never drop the top tier — without it the model has no instructions.
-      if (candidate.priority >= PRIORITY.persona) continue;
+      // Never drop what the roleplay cannot run without. This is a rule about
+      // what a part *is*, not where it happened to land in the ordering: a
+      // numeric cliff silently reclassifies things whenever a priority moves,
+      // and the parts that must survive are exactly the ones that say who the
+      // user is, who is in the room, and what the model must not do.
+      if (UNDROPPABLE.has(candidate.kind)) continue;
       dropped.add(candidate.id);
       totalFixed -= candidate.tokens;
       excluded.push({
@@ -755,6 +929,17 @@ function compileContextInner(input: CompileInput): CompileResult {
         input,
       ),
     );
+  }
+
+  // `at-depth` lore is spliced into the conversation, counting back from the
+  // newest message. Deepest first so that inserting one does not shift the
+  // index the next was measured against.
+  for (const item of [...atDepthLore].sort((a, b) => b.depth - a.depth)) {
+    const index = Math.max(
+      systemPrompt.trim() ? 1 : 0,
+      payload.length - Math.max(0, item.depth),
+    );
+    payload.splice(index, 0, { role: 'system', content: item.content });
   }
 
   return {

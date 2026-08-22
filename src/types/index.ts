@@ -356,6 +356,13 @@ export interface Message extends Timestamped {
   activeAlternativeId: ID | null;
   error?: string;
   model?: string;
+  /**
+   * A record of earlier play rather than a turn taken in this chat — a seeded
+   * opening, or a transcript pasted in to continue from. It still reads as
+   * conversation, but the names inside it describe the story's past, so the
+   * compiler frames it as history instead of letting it imply a cast.
+   */
+  historical?: boolean;
 }
 
 export interface MessageAlternative extends Timestamped {
@@ -396,6 +403,50 @@ export interface Chat extends Timestamped {
   lorebookIds: ID[];
   /** Next value for Message.order. */
   orderCounter: number;
+  /**
+   * Who and what is actually in the scene right now.
+   *
+   * Distinct from the story's cast, which is only the list of characters this
+   * world may draw on. Conflating the two is what let a character who was
+   * merely mentioned in old history walk into the room and start speaking.
+   */
+  scene: SceneState;
+}
+
+/**
+ * The current moment of a roleplay, as opposed to everything the world knows.
+ *
+ * Presence is stated, never inferred. A name occurring in a fifteen-thousand
+ * word transcript is evidence that a character exists, not that they are
+ * standing in the room, and the compiler is required to keep that distinction
+ * visible to the model.
+ */
+export interface SceneState {
+  /** Where the scene is taking place, in prose. */
+  location: string;
+  /** What is happening right now. */
+  situation: string;
+  /** Characters physically in the scene. Empty means "fall back to primary". */
+  presentCharacterIds: ID[];
+  /** The focal NPC. A default for who replies, not a limit on who may. */
+  primaryCharacterId: ID | null;
+  /** Optional immediate goal or open question driving the scene. */
+  objective: string;
+  /** Temporary, scene-local state per character id — injuries, mood, secrets. */
+  characterStates: Record<ID, string>;
+  updatedAt: number;
+}
+
+export function emptyScene(): SceneState {
+  return {
+    location: '',
+    situation: '',
+    presentCharacterIds: [],
+    primaryCharacterId: null,
+    objective: '',
+    characterStates: {},
+    updatedAt: 0,
+  };
 }
 
 /* --------------------------------------------------------------- provider */
@@ -581,6 +632,7 @@ export interface ContextPart {
   kind:
     | 'system'
     | 'global'
+    | 'scene'
     | 'character'
     | 'persona'
     | 'story'
@@ -610,11 +662,41 @@ export interface CompiledContext {
   memoryHits: MemoryHit[];
 }
 
+/**
+ * Where a lore entry earned its place, highest relevance first.
+ *
+ * A keyword hit is not one fact but several: the same name can appear in the
+ * user's current message, in a message from twenty turns ago, or in a pasted
+ * transcript nobody is talking about any more. Ranking them identically is
+ * what let a fifteen-thousand-word history drown the running scene.
+ */
+export type LoreTier =
+  /** Matched a character who is in the scene, or the current user message. */
+  | 'scene'
+  /** Matched in the last few turns of conversation. */
+  | 'recent'
+  /** Matched the story's own scenario or a story-specific character note. */
+  | 'story'
+  /** Matched only in older history. */
+  | 'history'
+  /** Always-on world rules with no keyword at all. */
+  | 'world';
+
+export const LORE_TIER_RANK: Record<LoreTier, number> = {
+  scene: 5,
+  recent: 4,
+  story: 3,
+  history: 2,
+  world: 1,
+};
+
 export interface LoreHit {
   entry: LoreEntry;
   lorebookName: string;
   matched: string[];
   reason: string;
+  /** Why this entry matters now, not merely that it matched. */
+  tier: LoreTier;
 }
 
 export interface LoreMiss {
