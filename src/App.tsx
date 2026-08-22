@@ -1,5 +1,7 @@
 import { useEffect } from 'react';
 import { AppStoreProvider, useAppState, useStore } from './state/store';
+import { compileStats } from './context/compiler';
+import { renderStats, resetRenderStats } from './utils/perf';
 import { ConfirmProvider } from './components/ui/Confirm';
 import { useRoute, type RouteName } from './state/router';
 import { Icon } from './components/ui/Icon';
@@ -42,6 +44,21 @@ const NAV: Array<{ route: RouteName; label: string; icon: string; primary: boole
 
 /** Editor routes own the whole screen, so the bottom bar is hidden there. */
 const FULLSCREEN: RouteName[] = ['chat', 'character', 'persona', 'story', 'lorebook'];
+
+// A read-only window onto the counters, so a real browser session can measure
+// what typing and opening a chat actually cost.
+if (typeof window !== 'undefined') {
+  (window as unknown as Record<string, unknown>).__nexusPerf = {
+    compileStats,
+    renderStats,
+    reset: () => {
+      resetRenderStats();
+      compileStats.calls = 0;
+      compileStats.totalMs = 0;
+      compileStats.lastMs = 0;
+    },
+  };
+}
 
 export default function App() {
   return (

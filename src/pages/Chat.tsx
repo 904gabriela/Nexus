@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Attachment, Chat, ID, Memory, Message } from '../types';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { Attachment, Chat, ID, Memory, Message, MessageAlternative } from '../types';
 import { newMemory } from '../types/factories';
 import {
   effectiveGeneration,
@@ -24,11 +24,129 @@ import { useConfirm, deleteConfirm } from '../components/ui/Confirm';
 import { MediaImage, useMediaUrl } from '../components/media/MediaImage';
 import { IMAGE_ACCEPT_ATTR, MediaError, saveMedia } from '../media/mediaStore';
 import { generateMemoryDraft } from '../memory/summarizer';
-import { formatTokens } from '../context/tokens';
+import { estimateTokens, formatTokens } from '../context/tokens';
+import type { CompileResult } from '../context/compiler';
+import { onIdle } from '../utils/idle';
 import { downloadFile, exportChat, exportFilename, chatToTranscript } from '../exporters';
 import { uid } from '../utils/uid';
 import { truncate } from '../utils/text';
+import { renderStats } from '../utils/perf';
+import { clearDraft, getDraft, setDraft, useDraft } from '../state/composerDraft';
 import type { RouteName } from '../state/router';
+
+/** Shared empty list, so a message with no alternatives keeps a stable prop. */
+const NO_ALTERNATIVES: MessageAlternative[] = [];
+
+/** How many messages are mounted at once, and how many more each step adds. */
+const WINDOW_STEP = 60;
+
+/**
+ * The token chip, which is the only part of the header that cares about the
+ * draft. It subscribes to the draft itself and adds the draft's own estimate to
+ * an already-compiled total, so the number stays live without the chat screen
+ * — and therefore the message list — rerendering on every keystroke.
+ */
+const TokenChip = memo(function TokenChip({
+  baseTokens,
+  budget,
+  overBudget,
+  onOpen,
+}: {
+  baseTokens: number;
+  budget: number;
+  overBudget: boolean;
+  onOpen: () => void;
+}) {
+  const draft = useDraft();
+  const total = baseTokens + (draft ? estimateTokens(draft) : 0);
+  const pct = Math.min(100, Math.round((total / Math.max(1, budget)) * 100));
+  const over = overBudget || total > budget;
+  return (
+    <button
+      type="button"
+      className="btn btn-ghost btn-sm"
+      onClick={onOpen}
+      aria-label={`Context: ${total} of ${budget} tokens. Open inspector.`}
+      title="Context inspector"
+    >
+      <span className={over ? 'chip chip-danger' : pct > 80 ? 'chip chip-warn' : 'chip'}>
+        {formatTokens(total)}
+      </span>
+    </button>
+  );
+});
+
+/**
+ * The composer, which owns the text being typed.
+ *
+ * Everything this needs is either its own state or a stable prop, so a
+ * keystroke rerenders this component and nothing else. It deliberately does not
+ * receive the chat, the timeline or the compiled context — taking any of them
+ * would put the message list back in the keystroke path.
+ */
+const ComposerInput = memo(function ComposerInput({
+  placeholder,
+  sendOnEnter,
+  generating,
+  hasAttachments,
+  onSend,
+  onStop,
+}: {
+  placeholder: string;
+  sendOnEnter: boolean;
+  generating: boolean;
+  hasAttachments: boolean;
+  onSend: () => void;
+  onStop: () => void;
+}) {
+  renderStats.composer += 1;
+  const draft = useDraft();
+  const textareaRef = useAutoResize(draft);
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== 'Enter') return;
+    const shouldSend = sendOnEnter ? !event.shiftKey : event.ctrlKey || event.metaKey;
+    if (shouldSend) {
+      event.preventDefault();
+      onSend();
+    }
+  };
+
+  return (
+    <>
+      <textarea
+        ref={textareaRef}
+        className="composer-input"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={onKeyDown}
+        placeholder={placeholder}
+        rows={1}
+        aria-label="Message"
+      />
+      {generating ? (
+        <button
+          type="button"
+          className="composer-btn composer-btn-stop"
+          onClick={onStop}
+          aria-label="Stop generating"
+        >
+          <Icon name="stop" />
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="composer-btn composer-btn-send"
+          onClick={onSend}
+          disabled={!draft.trim() && !hasAttachments}
+          aria-label="Send message"
+        >
+          <Icon name="send" />
+        </button>
+      )}
+    </>
+  );
+});
 
 export function ChatPage({
   chatId,
@@ -51,12 +169,17 @@ export function ChatPage({
   const cameraInput = useRef<HTMLInputElement>(null);
   const filesInput = useRef<HTMLInputElement>(null);
   const atBottomRef = useRef(true);
+  /** True once the opening scroll has landed and the view is the reader's. */
+  const settledRef = useRef(false);
   /** Mirrors pendingJump for effects that must not re-run when it changes. */
   const pendingJumpRef = useRef<JumpTarget | null>(null);
 
-  const [draft, setDraft] = useState('');
   const [pending, setPending] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
+  // send() is a stable callback, so it reads the attachments through a ref
+  // rather than closing over a value that changes identity every render.
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
 
   const [menuFor, setMenuFor] = useState<Message | null>(null);
   const [editing, setEditing] = useState<Message | null>(null);
@@ -91,7 +214,6 @@ export function ChatPage({
   const [pendingJump, setPendingJump] = useState<JumpTarget | null>(null);
   const [highlighted, setHighlighted] = useState<ID | null>(null);
 
-  const textareaRef = useAutoResize(draft);
 
   useEffect(() => {
     if (chatId && chatId !== state.activeChatId) void actions.openChat(chatId);
@@ -114,14 +236,124 @@ export function ChatPage({
     // Jump to the end when a chat or branch is opened — unless a timeline jump
     // is steering the scroll, in which case it owns where we land.
     if (pendingJumpRef.current) return;
-    const timer = setTimeout(() => scrollToBottom('auto'), 60);
+    settledRef.current = false;
+    const timer = setTimeout(() => {
+      scrollToBottom('auto');
+      // Two frames: one for the scroll, one for the layout it causes.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        settledRef.current = true;
+      }));
+    }, 60);
     return () => clearTimeout(timer);
   }, [state.activeChatId, activeChat?.activeBranchId, scrollToBottom]);
+
+  /*
+   * The compiled context, built off the critical path.
+   *
+   * It is only ever *displayed* — the token chip and the inspector — while
+   * generation compiles its own from the live store. Opening a chat should not
+   * wait for a lore scan and a token estimate of the whole history, so this
+   * happens once the thread is free, and never from the text being typed: the
+   * draft's own tokens are added where the number is shown.
+   */
+  const [compiled, setCompiled] = useState<CompileResult | null>(null);
+  const previewRef = useRef(gen.previewContext);
+  previewRef.current = gen.previewContext;
+
+  useEffect(() => {
+    if (state.chatLoading) return;
+    // Nothing displays the number unless the chip is on or the inspector is
+    // open, and compiling for a reader who is not there is pure cost.
+    if (!state.settings.showTokenCounts) return;
+    // While the inspector is open it owns the compiled value — it built one
+    // that includes the unsent draft, and this pass would quietly replace it
+    // with one that does not.
+    if (showContext) return;
+    return onIdle(() => setCompiled(previewRef.current({ pendingAttachments: pendingRef.current })));
+  }, [state.chatLoading, state.settings.showTokenCounts, showContext, timeline, pending, gen.previewContext]);
+
+  // Opening the inspector is an explicit request for the number, so it is worth
+  // compiling right then if the idle pass has not run yet.
+  const toggleSelected = useCallback((id: ID) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const setAlternative = useCallback(
+    (messageId: ID, alternativeId: ID | null) =>
+      void actions.setActiveAlternative(messageId, alternativeId),
+    [actions],
+  );
+
+  /*
+   * Opening the inspector is an explicit request to see what would be sent, so
+   * it always recompiles and — unlike the background pass — includes the text
+   * currently in the composer, since an unsent draft can trigger lore of its
+   * own. Doing this here rather than on every keystroke is the whole point:
+   * the scan happens once, when someone asks to see it.
+   */
+  const openContextInspector = useCallback(() => {
+    setCompiled(
+      previewRef.current({
+        pendingUserText: getDraft(),
+        pendingAttachments: pendingRef.current,
+      }),
+    );
+    setShowContext(true);
+  }, []);
+
+
+  /*
+   * Only a recent window of the conversation is mounted.
+   *
+   * A chat is read from the bottom, so the newest messages are the ones that
+   * must be there instantly; older ones are mounted as they are scrolled
+   * towards. This is what keeps opening a 5,000-message roleplay the same cost
+   * as opening a short one. The timeline itself is untouched, so branches,
+   * alternatives and checkpoints all still see the whole history.
+   */
+  const [windowSize, setWindowSize] = useState(WINDOW_STEP);
+  const growthRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    setWindowSize(WINDOW_STEP);
+  }, [activeChat?.id, activeChat?.activeBranchId]);
+
+  const visible = useMemo(
+    () => (timeline.length > windowSize ? timeline.slice(timeline.length - windowSize) : timeline),
+    [timeline, windowSize],
+  );
+  const hiddenCount = timeline.length - visible.length;
+
+  const showEarlier = useCallback(() => {
+    const node = scrollRef.current;
+    // Remember the height so the view can be pinned to the same message once
+    // the older ones are inserted above it.
+    growthRef.current = node ? node.scrollHeight - node.scrollTop : null;
+    setWindowSize((size) => size + WINDOW_STEP);
+  }, []);
+
+  useLayoutEffect(() => {
+    const node = scrollRef.current;
+    if (!node || growthRef.current == null) return;
+    node.scrollTop = node.scrollHeight - growthRef.current;
+    growthRef.current = null;
+  }, [visible.length]);
 
   const onScroll = () => {
     const node = scrollRef.current;
     if (!node) return;
     atBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
+    // Reaching towards the top mounts the previous chunk before it is needed,
+    // so scrolling back through a long story stays continuous. Armed only once
+    // the opening scroll has settled, or opening would immediately mount a
+    // second chunk nobody asked for.
+    if (!settledRef.current) return;
+    if (node.scrollTop < 600 && hiddenCount > 0 && growthRef.current == null) showEarlier();
   };
 
   /* ------------------------------------------------- jumping to a message */
@@ -138,6 +370,14 @@ export function ChatPage({
       void actions.switchBranch(pendingJump.branchId);
       return;
     }
+    // The target may be older than the mounted window, in which case it must be
+    // mounted before it can be scrolled to.
+    const index = timeline.findIndex((m) => m.id === pendingJump.messageId);
+    if (index >= 0 && timeline.length - index > windowSize) {
+      setWindowSize(timeline.length - index + WINDOW_STEP);
+      return;
+    }
+
     const target = scrollRef.current?.querySelector<HTMLElement>(
       `[data-message-id="${pendingJump.messageId}"]`,
     );
@@ -158,7 +398,7 @@ export function ChatPage({
     setHighlighted(pendingJump.messageId);
     pendingJumpRef.current = null;
     setPendingJump(null);
-  }, [pendingJump, activeChat, timeline, actions]);
+  }, [pendingJump, activeChat, timeline, actions, windowSize]);
 
   // Owned by its own effect: clearing pendingJump above re-runs that one, and a
   // fade-out timer living there would cancel itself in the cleanup.
@@ -254,13 +494,13 @@ export function ChatPage({
 
   /* ------------------------------------------------------------- send */
 
-  const send = async () => {
-    const text = draft.trim();
-    if (!text && !pending.length) return;
+  const send = useCallback(async () => {
+    const text = getDraft().trim();
+    if (!text && !pendingRef.current.length) return;
     if (!activeChat) return;
 
-    setDraft('');
-    const attachments = pending;
+    clearDraft();
+    const attachments = pendingRef.current;
     setPending([]);
     atBottomRef.current = true;
 
@@ -277,25 +517,26 @@ export function ChatPage({
     }
 
     await gen.generate({});
-  };
-
-  const onComposerKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key !== 'Enter') return;
-    const shouldSend = state.settings.sendOnEnter ? !event.shiftKey : event.ctrlKey || event.metaKey;
-    if (shouldSend) {
-      event.preventDefault();
-      void send();
-    }
-  };
+  }, [activeChat, actions, gen]);
 
   /* --------------------------------------------------- message actions */
 
+  const alternativesByMessage = useMemo(() => {
+    const map = new Map<ID, MessageAlternative[]>();
+    for (const alt of state.alternatives) {
+      const list = map.get(alt.messageId);
+      if (list) list.push(alt);
+      else map.set(alt.messageId, [alt]);
+    }
+    return map;
+  }, [state.alternatives]);
+
   const alternativesFor = useCallback(
-    (messageId: ID) => state.alternatives.filter((a) => a.messageId === messageId),
-    [state.alternatives],
+    (messageId: ID) => alternativesByMessage.get(messageId) ?? NO_ALTERNATIVES,
+    [alternativesByMessage],
   );
 
-  const quickAction = async (action: QuickAction, message: Message) => {
+  const quickAction = useCallback(async (action: QuickAction, message: Message) => {
     switch (action) {
       case 'copy': {
         const ok = await copyText(gen.contentOf(message));
@@ -319,7 +560,8 @@ export function ChatPage({
         await removeMessage(message);
         break;
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actions, gen, confirm, state.settings]);
 
   const regenerate = async (message: Message, asAlternative: boolean, instructionText = '') => {
     atBottomRef.current = true;
@@ -415,11 +657,7 @@ export function ChatPage({
     );
   }
 
-  const compiled = gen.previewContext({
-    pendingUserText: draft,
-    pendingAttachments: pending,
-  });
-  const usedPct = Math.min(100, Math.round((compiled.totalTokens / Math.max(1, compiled.budget)) * 100));
+  renderStats.screen += 1;
 
   const branchCount = state.branches.length;
   const chatCheckpoints = state.checkpoints.filter((c) => c.chatId === activeChat.id);
@@ -457,17 +695,12 @@ export function ChatPage({
           </span>
         </div>
         {state.settings.showTokenCounts && (
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={() => setShowContext(true)}
-            aria-label={`Context: ${compiled.totalTokens} of ${compiled.budget} tokens. Open inspector.`}
-            title="Context inspector"
-          >
-            <span className={compiled.overBudget ? 'chip chip-danger' : usedPct > 80 ? 'chip chip-warn' : 'chip'}>
-              {formatTokens(compiled.totalTokens)}
-            </span>
-          </button>
+          <TokenChip
+            baseTokens={compiled?.totalTokens ?? 0}
+            budget={compiled?.budget ?? 0}
+            overBudget={compiled?.overBudget ?? false}
+            onOpen={openContextInspector}
+          />
         )}
         <button
           type="button"
@@ -481,6 +714,12 @@ export function ChatPage({
 
       <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
         <div className="chat-messages">
+          {hiddenCount > 0 && (
+            <button type="button" className="btn btn-sm btn-block" onClick={showEarlier}>
+              <Icon name="clock" />
+              Show earlier messages ({hiddenCount})
+            </button>
+          )}
           {!timeline.length ? (
             <EmptyState
               icon="chat"
@@ -492,7 +731,7 @@ export function ChatPage({
               }
             />
           ) : (
-            timeline.map((message) => (
+            visible.map((message) => (
               <MessageItem
                 key={message.id}
                 message={message}
@@ -503,23 +742,14 @@ export function ChatPage({
                 alternatives={alternativesFor(message.id)}
                 content={gen.contentOf(message)}
                 streaming={gen.streamingFor === message.id}
-                streamingText={gen.streamingText}
+                streamingText={gen.streamingFor === message.id ? gen.streamingText : ''}
                 selecting={selecting}
                 selected={selected.has(message.id)}
                 highlighted={highlighted === message.id}
-                onToggleSelect={(id) =>
-                  setSelected((current) => {
-                    const next = new Set(current);
-                    if (next.has(id)) next.delete(id);
-                    else next.add(id);
-                    return next;
-                  })
-                }
+                onToggleSelect={toggleSelected}
                 onOpenMenu={setMenuFor}
                 onQuickAction={quickAction}
-                onSetAlternative={(messageId, alternativeId) =>
-                  actions.setActiveAlternative(messageId, alternativeId)
-                }
+                onSetAlternative={setAlternative}
                 onViewImage={setLightbox}
                 showTimestamps={false}
               />
@@ -660,12 +890,7 @@ export function ChatPage({
             onChange={(e) => void addFiles(e.target.files)}
           />
 
-          <textarea
-            ref={textareaRef}
-            className="composer-input"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={onComposerKeyDown}
+          <ComposerInput
             placeholder={
               gen.provider
                 ? state.settings.sendOnEnter
@@ -673,36 +898,24 @@ export function ChatPage({
                   : 'Message…'
                 : 'Set up an AI provider in Settings to generate replies'
             }
-            rows={1}
-            aria-label="Message"
+            sendOnEnter={state.settings.sendOnEnter}
+            generating={gen.generating}
+            hasAttachments={pending.length > 0}
+            onSend={send}
+            onStop={gen.stop}
           />
-
-          {gen.generating ? (
-            <button
-              type="button"
-              className="composer-btn composer-btn-stop"
-              onClick={gen.stop}
-              aria-label="Stop generating"
-            >
-              <Icon name="stop" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="composer-btn composer-btn-send"
-              onClick={send}
-              disabled={!draft.trim() && !pending.length}
-              aria-label="Send message"
-            >
-              <Icon name="send" />
-            </button>
-          )}
         </div>
       </div>
 
       {/* ------------------------------------------------------ overlays */}
 
-      <ContextInspector compiled={compiled} open={showContext} onClose={() => setShowContext(false)} />
+      {compiled && (
+        <ContextInspector
+          compiled={compiled}
+          open={showContext}
+          onClose={() => setShowContext(false)}
+        />
+      )}
 
       <ImageGenPanel
         open={imageGen}
@@ -831,9 +1044,11 @@ export function ChatPage({
           {
             key: 'context',
             label: 'Context Inspector',
-            description: `${formatTokens(compiled.totalTokens)} / ${formatTokens(compiled.budget)} tokens`,
+            description: compiled
+              ? `${formatTokens(compiled.totalTokens)} / ${formatTokens(compiled.budget)} tokens`
+              : 'Working out the context…',
             icon: 'layers',
-            onSelect: () => setShowContext(true),
+            onSelect: openContextInspector,
           },
           {
             key: 'timeline',

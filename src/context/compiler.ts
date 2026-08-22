@@ -241,7 +241,28 @@ function part(
   };
 }
 
+/**
+ * How often the context has been assembled, and how long it took.
+ *
+ * Compiling is the most expensive synchronous work in the app — it scans every
+ * lorebook, ranks memories and estimates tokens for the whole history. Counting
+ * it is what makes "typing must not rebuild the context" an assertion rather
+ * than an intention, so the counter is part of the app rather than a test hook.
+ */
+export const compileStats = { calls: 0, totalMs: 0, lastMs: 0 };
+
 export function compileContext(input: CompileInput): CompileResult {
+  const started = performance.now();
+  try {
+    return compileContextInner(input);
+  } finally {
+    compileStats.calls += 1;
+    compileStats.lastMs = performance.now() - started;
+    compileStats.totalMs += compileStats.lastMs;
+  }
+}
+
+function compileContextInner(input: CompileInput): CompileResult {
   const { settings, story, chat, characters, persona } = input;
 
   const activeCharacters = characters.filter(Boolean);

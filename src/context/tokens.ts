@@ -9,7 +9,21 @@
 export function estimateTokens(text: string): number {
   if (!text) return 0;
   const chars = text.length;
-  const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+  // Counted in place rather than with trim().split(): compiling a long story
+  // calls this once per message, per lore entry and per memory, and the two
+  // intermediate arrays each call were a measurable part of opening a chat.
+  let words = 0;
+  let inWord = false;
+  for (let i = 0; i < chars; i += 1) {
+    const code = text.charCodeAt(i);
+    const whitespace = code === 32 || (code >= 9 && code <= 13);
+    if (whitespace) {
+      inWord = false;
+    } else if (!inWord) {
+      inWord = true;
+      words += 1;
+    }
+  }
   const byChars = chars / 3.8;
   const byWords = words * 1.35;
   return Math.max(1, Math.round((byChars + byWords) / 2));

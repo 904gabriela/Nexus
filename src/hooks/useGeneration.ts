@@ -81,6 +81,16 @@ export function useGeneration() {
 
   const [generating, setGenerating] = useState(false);
   const [streamingText, setStreamingText] = useState('');
+  /** Pending frame for coalesced streaming updates; null when none is queued. */
+  const streamFrameRef = useRef<number | null>(null);
+
+  /** Drops any queued frame so a finished stream cannot paint over the result. */
+  const flushStreamFrame = () => {
+    if (streamFrameRef.current !== null) {
+      cancelAnimationFrame(streamFrameRef.current);
+      streamFrameRef.current = null;
+    }
+  };
   const [streamingFor, setStreamingFor] = useState<ID | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -310,6 +320,7 @@ export function useGeneration() {
       const controller = new AbortController();
       abortRef.current = controller;
       setGenerating(true);
+      flushStreamFrame();
       setStreamingText('');
       streamingTextRef.current = '';
       setError(null);
@@ -359,10 +370,19 @@ export function useGeneration() {
           signal: controller.signal,
           onToken: (_chunk, full) => {
             streamingTextRef.current = full;
-            setStreamingText(full);
+            // A fast local model can emit tokens far quicker than the screen
+            // refreshes. Painting each one costs a render nobody can see, and
+            // on a phone that is what makes the rest of the UI stop
+            // responding mid-reply, so updates are coalesced to one a frame.
+            if (streamFrameRef.current !== null) return;
+            streamFrameRef.current = requestAnimationFrame(() => {
+              streamFrameRef.current = null;
+              setStreamingText(streamingTextRef.current);
+            });
           },
         });
 
+        flushStreamFrame();
         const finalText = text.trim();
         if (!finalText) throw new ProviderError('The model returned an empty response.');
 
@@ -427,6 +447,7 @@ export function useGeneration() {
         }
       } finally {
         abortRef.current = null;
+        flushStreamFrame();
         setGenerating(false);
         setStreamingText('');
         setStreamingFor(null);

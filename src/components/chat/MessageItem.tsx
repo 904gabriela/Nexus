@@ -5,6 +5,7 @@ import { Icon } from '../ui/Icon';
 import { useLongPress } from '../ui/common';
 import { formatDate } from '../../utils/text';
 import { speakerFor } from '../../hooks/useGeneration';
+import { renderStats } from '../../utils/perf';
 
 export interface MessageItemProps {
   message: Message;
@@ -57,6 +58,7 @@ export const MessageItem = memo(function MessageItem({
   showTimestamps,
   highlighted,
 }: MessageItemProps) {
+  renderStats.message += 1;
   const { name, character, persona: author } = speakerFor(
     message,
     characters,

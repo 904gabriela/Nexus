@@ -1084,6 +1084,13 @@ textarea {
   gap: 8px;
   align-items: flex-start;
   animation: fade-in 0.16s ease;
+  /* A long roleplay puts hundreds of bubbles in the scroller, and every one of
+     them was being laid out again whenever anything above changed height — the
+     composer growing by a line, for instance. Off-screen messages skip layout
+     and paint entirely; the estimate keeps the scrollbar honest until one is
+     scrolled into view and measured for real. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
 }
 
 .msg-user {
