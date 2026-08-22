@@ -369,3 +369,172 @@ test('TEST 11: the recorded request matches what was posted', async ({ page }) =
   // Independently of the debug hook, the payload itself must carry the window.
   expect(posted.options.num_ctx).toBeGreaterThanOrEqual(2048);
 });
+
+/* ============================================ the oversized-context failure */
+
+/**
+ * The configuration that timed out against a real llama3.1: a 131,072-token
+ * model, a chat asking for 173,700 tokens with a 32,000-token reply allowance,
+ * a long transcript and a large lorebook. The old code answered that by telling
+ * Ollama to allocate its entire window, which never returned a first token
+ * before the connect deadline.
+ */
+async function seedOversizedCase(page: Page) {
+  await seedHospitalScene(page, { transcriptRepeats: 200, castKirishima: true });
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const put = (store: string, v: unknown) =>
+      new Promise<void>((r) => {
+        const q = db.transaction(store, 'readwrite').objectStore(store).put(v);
+        q.onsuccess = () => r();
+      });
+    const chat: any = await new Promise((r) => {
+      const q = db.transaction('chats', 'readonly').objectStore('chats').get('hospital-chat');
+      q.onsuccess = () => r(q.result);
+    });
+    chat.settings = { contextSize: 173700, maxTokens: 32000 };
+    await put('chats', chat);
+
+    const now = Date.now();
+    for (let i = 0; i < 300; i += 1) {
+      await put('loreEntries', {
+        id: `bulk-${i}`,
+        lorebookId: 'mha',
+        name: `World fact ${i}`,
+        content: `Filler world detail number ${i}. `.repeat(20),
+        primaryKeys: ['Edgeshot', 'Midoriya', 'Kirishima'],
+        secondaryKeys: [],
+        aliases: [],
+        enabled: true,
+        priority: 90,
+        position: 'after-character',
+        depth: 4,
+        scanDepth: 0,
+        matchMode: 'word-boundary',
+        caseSensitive: false,
+        activation: 'normal',
+        category: '',
+        scope: '',
+        comment: '',
+        customFields: [],
+        order: i,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    db.close();
+  });
+  await page.reload();
+  await boot(page);
+}
+
+async function sendTurn(page: Page, ollama: MockOllama, text: string) {
+  await goto(page, '#/chat/hospital-chat');
+  await expect(page.locator('.chat-composer')).toBeVisible({ timeout: 20_000 });
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await expect(composer).toBeEditable();
+  const before = ollama.requests.length;
+  await composer.fill(text);
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect.poll(() => ollama.requests.length, { timeout: 40_000 }).toBeGreaterThan(before);
+  return ollama.requests.at(-1)!.body;
+}
+
+/** Rough token count of the whole payload, independent of the app's estimator. */
+function payloadTokens(body: any): number {
+  const chars = body.messages.reduce(
+    (sum: number, m: any) =>
+      sum + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length),
+    0,
+  );
+  return Math.round(chars / 3.8);
+}
+
+test.describe('the oversized-context case that timed out against llama3.1', () => {
+  test('a 131k model does not produce a 99k prompt or a 131k window', async ({ page }) => {
+    const ollama = await mockOllama(page, ['Bakugo scowls.'], 131072);
+    await setupOllamaProvider(page);
+    await seedOversizedCase(page);
+    const body = await sendTurn(page, ollama, '*my face lits up mischievously*\n\n"oh? is that so?"');
+
+    // Capacity is a ceiling, not a target.
+    expect(body.options.num_ctx).toBeLessThan(32_000);
+    expect(body.options.num_ctx).toBeGreaterThanOrEqual(2048);
+    // And the prompt itself stays inside a practical budget.
+    expect(payloadTokens(body)).toBeLessThan(20_000);
+  });
+
+  test('the reply allowance is capped and stays separate from the input budget', async ({
+    page,
+  }) => {
+    const ollama = await mockOllama(page, ['Bakugo scowls.'], 131072);
+    await setupOllamaProvider(page);
+    await seedOversizedCase(page);
+    const body = await sendTurn(page, ollama, 'Hello.');
+
+    // 32,000 was configured; a roleplay turn cannot use that and paying for it
+    // on every message is what made the window enormous.
+    expect(body.options.num_predict).toBeLessThanOrEqual(2048);
+    expect(body.options.num_predict).toBeGreaterThan(0);
+    // num_ctx must still hold prompt *and* reply.
+    expect(body.options.num_ctx).toBeGreaterThan(body.options.num_predict);
+  });
+
+  test('the scene, the persona rule and recent turns survive the trim', async ({ page }) => {
+    const ollama = await mockOllama(page, ['Bakugo scowls.'], 131072);
+    await setupOllamaProvider(page);
+    await seedOversizedCase(page);
+    const body = await sendTurn(page, ollama, '*I giggle mischievously.*');
+    const system = body.messages.find((m: any) => m.role === 'system').content;
+
+    expect(system).toMatch(/Present:.*Katsuki Bakugo/);
+    expect(system).toMatch(/Never write Reiko Ryuusui's dialogue/);
+    expect(system).toMatch(/Continue the scene/);
+    // The newest turn is the last message and is intact.
+    expect(body.messages.at(-1).role).toBe('user');
+    expect(body.messages.at(-1).content).toContain('giggle');
+  });
+
+  test('old transcript is dropped before recent turns are', async ({ page }) => {
+    const ollama = await mockOllama(page, ['Bakugo scowls.'], 131072);
+    await setupOllamaProvider(page);
+    await seedOversizedCase(page);
+    const body = await sendTurn(page, ollama, 'Hello.');
+
+    // 200 transcript turns were seeded; only a window of them may be sent.
+    const assistantTurns = body.messages.filter((m: any) => m.role === 'assistant').length;
+    expect(assistantTurns).toBeLessThan(200);
+    expect(assistantTurns).toBeGreaterThan(0);
+  });
+
+  test('a 300-entry lorebook does not arrive whole', async ({ page }) => {
+    const ollama = await mockOllama(page, ['Bakugo scowls.'], 131072);
+    await setupOllamaProvider(page);
+    await seedOversizedCase(page);
+    const body = await sendTurn(page, ollama, 'Hello.');
+    const system = body.messages.find((m: any) => m.role === 'system').content;
+
+    const admitted = new Set(system.match(/World fact \d+/g) ?? []).size;
+    expect(admitted).toBeLessThanOrEqual(40);
+  });
+});
+
+test('the request instructs continuation rather than acknowledgement', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  await seedHospitalScene(page);
+  const body = await sendTurn(page, ollama, '*my face lits up mischievously*\n\n"oh? is that so?"');
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+
+  // Continuation, control and presence — the three things a short user turn
+  // needs the model to already know.
+  expect(system).toMatch(/Continue the scene from where it stands/);
+  expect(system).toMatch(/not a cue to acknowledge it and stop/);
+  expect(system).toMatch(/Never write Reiko Ryuusui's dialogue, actions, thoughts, or decisions/);
+  expect(system).toMatch(/You narrate the world and play everyone present except Reiko Ryuusui/);
+  // And no word-count quota was smuggled in.
+  expect(system).not.toMatch(/\b\d{3,}\s*words\b/i);
+});

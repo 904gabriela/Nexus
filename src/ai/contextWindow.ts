@@ -25,6 +25,15 @@ export const MIN_CONTEXT = 2048;
 /** Used when the model will not say and nothing else is known. */
 export const ASSUMED_CONTEXT = 8192;
 
+/**
+ * What an ordinary roleplay turn should cost, whatever the model could hold.
+ *
+ * Enough for the rules, the scene, the present cast, a few dozen turns of
+ * conversation and the lore those turns actually touch. Past this, more prompt
+ * buys continuity nobody asked for at a cost in latency everybody feels.
+ */
+export const DEFAULT_PRACTICAL_INPUT = 12288;
+
 export interface ContextWindow {
   /** Tokens the model can actually hold, as reported or assumed. */
   limit: number;
@@ -35,20 +44,30 @@ export interface ContextWindow {
 }
 
 export interface UsableBudget {
-  /** What to send as num_ctx: the whole window, prompt plus reply. */
-  numCtx: number;
   /** What the compiler may spend on the prompt. */
   promptBudget: number;
-  /** Held back for the reply. */
+  /** Held back for the reply — num_predict, never part of the prompt budget. */
   reserved: number;
   /** The model's own ceiling. */
   modelLimit: number;
-  /** What the user asked for, before clamping. */
+  /** What the configuration asked for, before any clamping. */
   requested: number;
   /** True when the request was larger than the model can hold. */
   clamped: boolean;
+  /** True when a practical ceiling, rather than the model, decided the budget. */
+  capped: boolean;
   reported: boolean;
 }
+
+/**
+ * Headroom between what we estimate and what the model's tokeniser counts.
+ *
+ * The estimate here is a heuristic, not a tokeniser, and it runs about 12%
+ * light on prose. Sizing the window exactly to the estimate would mean an
+ * occasional real overflow, which is the one failure mode this whole path
+ * exists to prevent.
+ */
+export const TOKEN_MARGIN = 512;
 
 const cache = new Map<string, ContextWindow>();
 
@@ -144,31 +163,77 @@ export async function fetchOllamaContextWindow(
  * not a promise: the model's own window always wins, because exceeding it does
  * not produce an error, it produces silent truncation.
  */
+/**
+ * Works out what may actually be spent on the prompt.
+ *
+ * A model that can hold 131,072 tokens is not asking to be given 131,072
+ * tokens. Treating capacity as a target produced a prompt budget of 99,072 for
+ * an ordinary roleplay turn, and — worse — told Ollama to allocate the whole
+ * window, which is slow enough on consumer hardware to blow the connect
+ * deadline before a single token comes back. Capacity is a ceiling; the budget
+ * is whichever is smallest of what was asked for, what the model can hold, and
+ * what a roleplay turn actually needs.
+ */
 export function resolveUsableBudget(input: {
   requested: number;
   modelLimit: number;
-  /** Tokens to hold back for the reply (num_predict / max tokens). */
+  /** Tokens held back for the reply (num_predict). */
   reserveForResponse: number;
+  /** Practical ceiling on prompt size, whatever the model could hold. */
+  practicalMax?: number;
   reported?: boolean;
 }): UsableBudget {
   const modelLimit = Math.max(MIN_CONTEXT, Math.floor(input.modelLimit) || ASSUMED_CONTEXT);
   const requested = Math.max(MIN_CONTEXT, Math.floor(input.requested) || ASSUMED_CONTEXT);
-  const numCtx = Math.min(requested, modelLimit);
+  const practicalMax = Math.max(
+    MIN_CONTEXT,
+    Math.floor(input.practicalMax || 0) || DEFAULT_PRACTICAL_INPUT,
+  );
 
-  // The reply shares the window with the prompt. Reserve enough for a full
-  // response but never so much that the prompt cannot hold a scene.
+  // The reply's share is set by num_predict, but a reserve larger than the
+  // window is a configuration error rather than an instruction: cap it so the
+  // prompt always keeps room for a scene.
   const reserved = Math.min(
     Math.max(0, Math.floor(input.reserveForResponse) || 0),
-    Math.floor(numCtx / 2),
+    Math.floor(modelLimit / 2),
+  );
+
+  const fromModel = modelLimit - reserved - TOKEN_MARGIN;
+  const fromRequest = requested - reserved;
+  const promptBudget = Math.max(
+    MIN_CONTEXT,
+    Math.min(fromRequest, fromModel, practicalMax),
   );
 
   return {
-    numCtx,
-    promptBudget: Math.max(MIN_CONTEXT - reserved, numCtx - reserved),
+    promptBudget,
     reserved,
     modelLimit,
     requested,
-    clamped: requested > modelLimit,
+    clamped: fromRequest > fromModel,
+    capped: promptBudget === practicalMax && practicalMax < Math.min(fromRequest, fromModel),
     reported: input.reported ?? false,
   };
+}
+
+/**
+ * The window to ask Ollama for, given what the prompt actually came to.
+ *
+ * Sized to the work in hand rather than the model's maximum: allocating a
+ * 131,072-token KV cache to serve a four-thousand-token prompt costs seconds of
+ * startup on consumer hardware and buys nothing.
+ */
+export function windowForPrompt(input: {
+  promptTokens: number;
+  reserveForResponse: number;
+  modelLimit: number;
+}): number {
+  const needed =
+    Math.max(0, Math.floor(input.promptTokens)) +
+    Math.max(0, Math.floor(input.reserveForResponse)) +
+    TOKEN_MARGIN;
+  return Math.min(
+    Math.max(MIN_CONTEXT, needed),
+    Math.max(MIN_CONTEXT, Math.floor(input.modelLimit) || ASSUMED_CONTEXT),
+  );
 }

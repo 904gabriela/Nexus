@@ -25,6 +25,11 @@ export interface RecordedRequest {
   modelLimit?: number;
   /** True when the requested context size exceeded what the model can hold. */
   clamped?: boolean;
+  /** Estimated tokens per section of the prompt, largest first. */
+  breakdown?: Array<{ label: string; tokens: number }>;
+  /** Totals, so the window can be read against what actually went into it. */
+  promptTokens?: number;
+  outputBudget?: number;
 }
 
 let last: RecordedRequest | null = null;

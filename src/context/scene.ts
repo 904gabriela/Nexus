@@ -165,5 +165,14 @@ export function describeControl(scene: ResolvedScene, personaName: string): stri
   if (scene.primary) {
     lines.push(`${nameOf(scene.primary)} is the focus of this scene.`);
   }
+  lines.push(
+    '',
+    `Continue the scene from where it stands. A short turn from ${personaName} is an ` +
+      'invitation to play out what happens next, not a cue to acknowledge it and stop: ' +
+      'respond to what was actually said or done, let it land, and carry the moment ' +
+      'forward far enough to leave something for them to answer.',
+    'Narration, physical action, inner reaction and dialogue are all available. Use ' +
+      'whichever the moment calls for — length and shape follow the scene, not a quota.',
+  );
   return lines.join('\n');
 }

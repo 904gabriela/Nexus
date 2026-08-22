@@ -17,8 +17,7 @@ import { inferCapabilities } from '../types/factories';
 import {
   ASSUMED_CONTEXT,
   fetchOllamaContextWindow,
-  resolveUsableBudget,
-  type UsableBudget,
+  windowForPrompt,
 } from './contextWindow';
 import { recordRequest } from './requestLog';
 
@@ -691,6 +690,15 @@ export interface CompleteOptions {
   model?: string;
   signal?: AbortSignal;
   onToken?: (chunk: string, full: string) => void;
+  /**
+   * Estimated size of the prompt being sent. The Ollama window is sized from
+   * this rather than from the model's maximum: allocating a 131,072-token KV
+   * cache to serve a four-thousand-token prompt costs seconds of startup and
+   * buys nothing.
+   */
+  promptTokens?: number;
+  /** Per-section token estimates, for the inspector's breakdown. */
+  breakdown?: Array<{ label: string; tokens: number }>;
 }
 
 function buildBody(options: CompleteOptions, stream: boolean) {
@@ -810,7 +818,7 @@ async function httpError(response: Response): Promise<ProviderError> {
 export async function buildOllamaBody(
   options: CompleteOptions,
   stream: boolean,
-): Promise<{ url: string; body: Record<string, unknown>; budget: UsableBudget }> {
+): Promise<{ url: string; body: Record<string, unknown>; modelLimit: number }> {
   const { provider, settings = {} } = options;
   const model = options.model || provider.model;
   if (!model) {
@@ -823,15 +831,15 @@ export async function buildOllamaBody(
   }
 
   const maxTokens = settings.maxTokens ?? provider.maxTokens;
-  // Ask the model what it can hold rather than trusting the UI figure. Sending
-  // a num_ctx larger than the model's window makes Ollama truncate silently,
-  // and it truncates the head — where the system prompt is.
   const window = await fetchOllamaContextWindow(provider, model);
-  const budget = resolveUsableBudget({
-    requested: settings.contextSize ?? ASSUMED_CONTEXT,
+
+  // Sized to the prompt in hand plus the reply it is allowed to produce, capped
+  // by what the model can hold. num_ctx and num_predict stay separate concerns:
+  // one is how much the model may read, the other how much it may write.
+  const numCtx = windowForPrompt({
+    promptTokens: options.promptTokens ?? settings.contextSize ?? ASSUMED_CONTEXT,
+    reserveForResponse: maxTokens ?? 0,
     modelLimit: window.limit,
-    reserveForResponse: maxTokens || 0,
-    reported: window.reported,
   });
 
   const body: Record<string, unknown> = {
@@ -844,28 +852,32 @@ export async function buildOllamaBody(
       num_predict: maxTokens,
       // Without this Ollama uses its own default and quietly drops whatever
       // does not fit, starting from the beginning of the prompt.
-      num_ctx: budget.numCtx,
+      num_ctx: numCtx,
       // Ollama calls these by their llama.cpp names.
       repeat_penalty:
         1 + ((settings.frequencyPenalty ?? provider.frequencyPenalty) || 0),
     },
   };
 
-  return { url: `${ollamaRoot(provider.baseUrl)}/api/chat`, body, budget };
+  return { url: `${ollamaRoot(provider.baseUrl)}/api/chat`, body, modelLimit: window.limit };
 }
 
 async function streamOllama(options: CompleteOptions): Promise<string> {
   const { provider, onToken } = options;
   const model = options.model || provider.model;
-  const { url, body, budget } = await buildOllamaBody(options, true);
+  const { url, body, modelLimit } = await buildOllamaBody(options, true);
+  const numCtx = (body.options as Record<string, unknown>).num_ctx as number;
   recordRequest({
     at: Date.now(),
     url,
     dialect: 'ollama',
     body,
-    numCtx: budget.numCtx,
-    modelLimit: budget.modelLimit,
-    clamped: budget.clamped,
+    numCtx,
+    modelLimit,
+    clamped: numCtx >= modelLimit,
+    breakdown: options.breakdown,
+    promptTokens: options.promptTokens,
+    outputBudget: (body.options as Record<string, unknown>).num_predict as number,
   });
 
   const clock = deadline(options.signal, CONNECT_TIMEOUT_MS);

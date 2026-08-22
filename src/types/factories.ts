@@ -373,6 +373,8 @@ export function defaultSettings(): Settings {
       'and never break the fourth wall or speak as the user unless explicitly asked.',
     globalInstructions: '',
     contextBudget: 8192,
+    maxPromptTokens: 12288,
+    maxResponseTokens: 2048,
     reserveForResponse: 1024,
     loreScanDepth: 8,
     maxLoreEntries: 20,

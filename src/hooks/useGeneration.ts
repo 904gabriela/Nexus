@@ -35,6 +35,7 @@ import { ProviderError, isOllama, streamComplete } from '../ai/client';
 import { compileContext, type CompileInput, type CompileResult } from '../context/compiler';
 import {
   ASSUMED_CONTEXT,
+  DEFAULT_PRACTICAL_INPUT,
   fetchOllamaContextWindow,
   resolveUsableBudget,
   type UsableBudget,
@@ -71,14 +72,22 @@ export interface GenerationState {
 async function resolveGenerationBudget(
   provider: Provider,
   generation: { contextSize?: number; maxTokens?: number },
+  settings: { contextBudget?: number; maxPromptTokens?: number },
 ): Promise<UsableBudget> {
-  const requested = generation.contextSize ?? ASSUMED_CONTEXT;
+  // The per-chat override wins, then the global Context size, then the default.
+  // The client used to fall back to its own constant here while the compiler
+  // read the global setting, so the two could disagree about how big the prompt
+  // was allowed to be.
+  const requested = generation.contextSize ?? settings.contextBudget ?? ASSUMED_CONTEXT;
   const reserve = generation.maxTokens ?? 0;
+  const practicalMax = settings.maxPromptTokens || DEFAULT_PRACTICAL_INPUT;
+
   if (!isOllama(provider)) {
     return resolveUsableBudget({
       requested,
       modelLimit: requested,
       reserveForResponse: reserve,
+      practicalMax,
     });
   }
   const window = await fetchOllamaContextWindow(provider, provider.model);
@@ -86,8 +95,20 @@ async function resolveGenerationBudget(
     requested,
     modelLimit: window.limit,
     reserveForResponse: reserve,
+    practicalMax,
     reported: window.reported,
   });
+}
+
+/** Token cost per section, so an oversized prompt can be attributed. */
+function summariseTokens(compiled: CompileResult): Array<{ label: string; tokens: number }> {
+  const byKind = new Map<string, number>();
+  for (const part of compiled.parts) {
+    byKind.set(part.kind, (byKind.get(part.kind) ?? 0) + part.tokens);
+  }
+  return [...byKind.entries()]
+    .map(([label, tokens]) => ({ label, tokens }))
+    .sort((a, b) => b.tokens - a.tokens);
 }
 
 /** Resolves attachment blobs to data URLs for vision-capable providers. */
@@ -375,13 +396,22 @@ export function useGeneration() {
           ? await buildImageMap(history, [])
           : undefined;
 
-        const generation = effectiveGeneration(liveChat, liveStory, provider);
+        const configured = effectiveGeneration(liveChat, liveStory, provider);
+        // A reply allowance has to be held inside the context window, so an
+        // enormous one is paid for on every message whether or not the model
+        // ever writes that much. Cap it to what a roleplay turn can actually
+        // use; the setting still lowers it, it just cannot inflate the window.
+        const outputCeiling = state.settings.maxResponseTokens || 2048;
+        const generation = {
+          ...configured,
+          maxTokens: Math.min(configured.maxTokens ?? outputCeiling, outputCeiling),
+        };
 
         // Find out what the model can actually hold before building anything.
         // Compiling to the configured number and letting the server sort it out
         // is what silently deleted the system prompt — Ollama truncates from the
         // head, so the persona and the scene were the first things to go.
-        const usable = await resolveGenerationBudget(provider, generation);
+        const usable = await resolveGenerationBudget(provider, generation, state.settings);
 
         const compiled = compileContext(
           buildCompileInput(history, {
@@ -394,14 +424,28 @@ export function useGeneration() {
           }),
         );
 
-        if (usable.clamped) {
+        if ((configured.maxTokens ?? 0) > generation.maxTokens) {
           actions.toast({
             kind: 'warn',
-            title: 'Context size reduced to fit the model',
+            title: 'Response length capped',
             detail:
-              `This chat asks for ${usable.requested.toLocaleString()} tokens, but ` +
-              `${provider.model} can hold ${usable.modelLimit.toLocaleString()}. ` +
-              `Building to ${usable.promptBudget.toLocaleString()} so nothing is silently dropped.`,
+              `This chat allows ${configured.maxTokens!.toLocaleString()} tokens per reply. ` +
+              `That allowance is reserved inside the context window on every message, so it ` +
+              `is capped at ${generation.maxTokens.toLocaleString()} — raise "Longest reply" ` +
+              `in Settings if you genuinely need more.`,
+          });
+        }
+        if (usable.clamped || usable.capped) {
+          actions.toast({
+            kind: 'warn',
+            title: 'Prompt budget reduced',
+            detail: usable.clamped
+              ? `This chat is configured for ${usable.requested.toLocaleString()} tokens, but ` +
+                `${provider.model} holds ${usable.modelLimit.toLocaleString()}. Building the ` +
+                `prompt to ${usable.promptBudget.toLocaleString()} tokens.`
+              : `Building the prompt to ${usable.promptBudget.toLocaleString()} tokens — enough ` +
+                `for the scene and recent turns. A larger prompt costs latency without ` +
+                `improving the reply.`,
           });
         } else if (compiled.overBudget) {
           actions.toast({
@@ -426,6 +470,8 @@ export function useGeneration() {
           provider,
           messages: compiled.messages,
           settings: generation,
+          promptTokens: compiled.totalTokens,
+          breakdown: summariseTokens(compiled),
           signal: controller.signal,
           onToken: (_chunk, full) => {
             streamingTextRef.current = full;

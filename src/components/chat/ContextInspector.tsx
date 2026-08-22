@@ -306,6 +306,32 @@ function RequestView() {
             <span className="chip">model holds {request.modelLimit.toLocaleString()}</span>
           )}
         </div>
+        {!!request.breakdown?.length && (
+          <table className="ctx-breakdown" style={{ width: '100%', marginTop: 10 }}>
+            <tbody>
+              {request.breakdown.map((row) => (
+                <tr key={row.label}>
+                  <td className="small muted">{KIND_LABEL[row.label] ?? row.label}</td>
+                  <td className="small" style={{ textAlign: 'right' }}>
+                    {formatTokens(row.tokens)}
+                  </td>
+                </tr>
+              ))}
+              <tr>
+                <td className="small"><strong>Total input</strong></td>
+                <td className="small" style={{ textAlign: 'right' }}>
+                  <strong>{formatTokens(request.promptTokens ?? 0)}</strong>
+                </td>
+              </tr>
+              <tr>
+                <td className="small muted">Output budget (num_predict)</td>
+                <td className="small" style={{ textAlign: 'right' }}>
+                  {formatTokens(request.outputBudget ?? 0)}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        )}
         {request.clamped && (
           <div className="small muted" style={{ marginTop: 8 }}>
             The configured context size was larger than this model can hold, so it was

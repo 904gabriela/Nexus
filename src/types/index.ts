@@ -571,6 +571,20 @@ export interface Settings {
   globalSystemPrompt: string;
   globalInstructions: string;
   contextBudget: number;
+  /**
+   * Practical ceiling on prompt size, whatever the model could hold. A model
+   * with a 131,072-token window is not asking for a 131,072-token prompt: past
+   * a point more prompt buys continuity nobody asked for at a cost in latency
+   * everybody feels.
+   */
+  maxPromptTokens: number;
+  /**
+   * Practical ceiling on a single reply. num_predict has to fit inside the
+   * window alongside the prompt, so a 32,000-token reply reservation makes the
+   * server allocate a 32,000-token cache for a turn that will use a fraction of
+   * it — paid for in startup latency on every message.
+   */
+  maxResponseTokens: number;
   reserveForResponse: number;
   loreScanDepth: number;
   maxLoreEntries: number;
