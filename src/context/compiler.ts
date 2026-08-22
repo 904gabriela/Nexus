@@ -435,7 +435,11 @@ function compileContextInner(input: CompileInput): CompileResult {
         'scene',
         'Part of the conversation below is a record of earlier roleplay, not ' +
           'events happening now. Treat the names in it as the story’s past. ' +
-          'Who is in the scene is defined above, not by who appears in that record.',
+          'Who is in the scene is defined above, not by who appears in that record.\n\n' +
+          `That record was written as a whole scene, so it contains lines for ` +
+          `${userName} as well as for the cast. That is how it was set down, not a ` +
+          `pattern to continue: from here ${userName}'s words, actions and choices ` +
+          `belong to the user alone.`,
         'The history contains messages carried in from earlier play.',
         PRIORITY.scene - 10,
       ),
@@ -967,7 +971,7 @@ function compileContextInner(input: CompileInput): CompileResult {
   for (const hp of keptHistory) {
     const message = messageById.get(hp.id);
     if (!message) continue;
-    payload.push(toApiMessage(message, hp.content, input));
+    payload.push(toApiMessage(message, attribute(message, hp.content, scene), input));
   }
 
   if (input.pendingUserText || input.pendingAttachments?.length) {
@@ -1006,6 +1010,30 @@ function compileContextInner(input: CompileInput): CompileResult {
     loreMisses: loreScan.misses,
     memoryHits,
   };
+}
+
+
+/**
+ * Names the speaker of an assistant turn, on the wire.
+ *
+ * The compiler has always worked out who was speaking, but only to label the
+ * row in the Context Inspector — the message that actually left carried
+ * `{ role: 'assistant', content }` and nothing else. In a scene with more than
+ * one character that throws away the only thing distinguishing one voice from
+ * another, and the model has to guess who it just was.
+ *
+ * A transcript carried over from an earlier session is left alone: it already
+ * labels its own speakers inline, and prefixing one name onto a passage
+ * containing several would be a lie about its contents.
+ */
+function attribute(message: Message, content: string, scene: ResolvedScene): string {
+  if (message.role !== 'assistant' || message.historical) return content;
+  if (scene.present.length < 2) return content;
+  const speaker = scene.present.find((c) => c.id === message.characterId);
+  if (!speaker) return content;
+  const name = speaker.displayName || speaker.name;
+  if (!name || content.trimStart().startsWith(`${name}:`)) return content;
+  return `${name}: ${content}`;
 }
 
 function toApiMessage(

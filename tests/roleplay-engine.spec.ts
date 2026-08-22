@@ -628,3 +628,66 @@ test('characters may read the user without the model deciding for them', async (
   expect(system).toMatch(/You may have characters read Reiko Ryuusui/);
   expect(system).toMatch(/Never state what Reiko Ryuusui actually thinks, intends, or does next/);
 });
+
+/* ==================================================== speaker attribution */
+
+test('an assistant turn names its speaker when the scene holds more than one', async ({
+  page,
+}) => {
+  const ollama = await mockOllama(page, ['Kirishima grins.'], 8192);
+  await setupOllamaProvider(page);
+  await seedHospitalScene(page, {
+    castKirishima: true,
+    presentCharacterIds: ['bakugo', 'kirishima'],
+  });
+
+  // Two turns, so the second request carries the first as attributed history.
+  await sendTurn(page, ollama, 'Hello you two.');
+  const body = await sendTurn(page, ollama, 'And you?');
+
+  const assistant = body.messages.filter((m: any) => m.role === 'assistant');
+  expect(assistant.length).toBeGreaterThan(0);
+  // The reply Nexus stored is attributed to whoever spoke it, so the model can
+  // tell one voice from another instead of guessing.
+  const attributed = assistant.some((m: any) =>
+    /^(Katsuki Bakugo|Eijiro Kirishima):/.test(String(m.content)),
+  );
+  expect(attributed).toBe(true);
+});
+
+test('a carried-over transcript is not given a single speaker label', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  await seedHospitalScene(page, {
+    castKirishima: true,
+    presentCharacterIds: ['bakugo', 'kirishima'],
+  });
+  const body = await sendTurn(page, ollama, 'Hello.');
+
+  // The seeded transcript is historical and labels its own speakers inline;
+  // stamping one name on a passage containing several would misdescribe it.
+  const transcript = body.messages.find(
+    (m: any) => m.role === 'assistant' && String(m.content).includes('the fire') === false &&
+      String(m.content).includes('Bakugo: "Tch."'),
+  );
+  if (transcript) {
+    expect(String(transcript.content).startsWith('Katsuki Bakugo:')).toBe(false);
+  }
+});
+
+test('the prompt reconciles a transcript that contains the user’s own lines', async ({
+  page,
+}) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  await seedHospitalScene(page);
+  const body = await sendTurn(page, ollama, '*I giggle mischievously.*');
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+
+  // The carried-over scene shows the assistant writing Reiko; the rule says not
+  // to. Left unreconciled the model has to choose between them, and a hedged,
+  // generic reply is one way it can choose.
+  expect(system).toMatch(/contains lines for Reiko Ryuusui as well as for the cast/);
+  expect(system).toMatch(/not a\s+pattern to continue/);
+  expect(system).toMatch(/belong to the user alone/);
+});
