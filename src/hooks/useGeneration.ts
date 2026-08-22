@@ -427,25 +427,27 @@ export function useGeneration() {
         if ((configured.maxTokens ?? 0) > generation.maxTokens) {
           actions.toast({
             kind: 'warn',
-            title: 'Response length capped',
+            title: `Reply limit set to ${generation.maxTokens.toLocaleString()} tokens`,
             detail:
-              `This chat allows ${configured.maxTokens!.toLocaleString()} tokens per reply. ` +
-              `That allowance is reserved inside the context window on every message, so it ` +
-              `is capped at ${generation.maxTokens.toLocaleString()} — raise "Longest reply" ` +
-              `in Settings if you genuinely need more.`,
+              `This chat asks for ${configured.maxTokens!.toLocaleString()}. A reply allowance is ` +
+              `held open inside the context window on every message, so a large one is paid for ` +
+              `on every turn whether or not it is used. Change "Longest reply" in Settings to ` +
+              `raise the cap.`,
           });
         }
         if (usable.clamped || usable.capped) {
           actions.toast({
             kind: 'warn',
-            title: 'Prompt budget reduced',
+            title: `Prompt built to ${usable.promptBudget.toLocaleString()} tokens`,
             detail: usable.clamped
-              ? `This chat is configured for ${usable.requested.toLocaleString()} tokens, but ` +
-                `${provider.model} holds ${usable.modelLimit.toLocaleString()}. Building the ` +
-                `prompt to ${usable.promptBudget.toLocaleString()} tokens.`
-              : `Building the prompt to ${usable.promptBudget.toLocaleString()} tokens — enough ` +
-                `for the scene and recent turns. A larger prompt costs latency without ` +
-                `improving the reply.`,
+              ? `This chat is configured for ${usable.requested.toLocaleString()} tokens of ` +
+                `prompt; ${provider.model} can hold ${usable.modelLimit.toLocaleString()} in ` +
+                `total, shared with the reply. The prompt is built to fit rather than being ` +
+                `truncated by the server.`
+              : `${provider.model} could hold ${usable.modelLimit.toLocaleString()}, but a ` +
+                `roleplay turn does not need it: the scene, the cast and recent turns fit in ` +
+                `${usable.promptBudget.toLocaleString()}. A larger prompt costs latency on every ` +
+                `message. Change "Prompt budget" in Settings to raise it.`,
           });
         } else if (compiled.overBudget) {
           actions.toast({

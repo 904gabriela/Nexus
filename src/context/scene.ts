@@ -153,6 +153,9 @@ export function describeControl(scene: ResolvedScene, personaName: string): stri
   const lines = [
     '## Who controls whom',
     `${personaName} is the user. Never write ${personaName}'s dialogue, actions, thoughts, or decisions.`,
+    `You may have characters read ${personaName} — notice an expression, guess at a mood, ` +
+      `brace for what might be coming — but that is their reading, not a fact about ` +
+      `${personaName}. Never state what ${personaName} actually thinks, intends, or does next.`,
   ];
   if (speakable.length) {
     lines.push(

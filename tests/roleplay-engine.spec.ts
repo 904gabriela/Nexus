@@ -538,3 +538,93 @@ test('the request instructs continuation rather than acknowledgement', async ({ 
   // And no word-count quota was smuggled in.
   expect(system).not.toMatch(/\b\d{3,}\s*words\b/i);
 });
+
+/* ================================ a transcript too large to fit, kept in part */
+
+/**
+ * Roleplay carried over by pasting a previous session arrives as one enormous
+ * message. It cannot fit any budget, and dropping it whole took the exchange
+ * the user's next turn was answering — leaving the model a scene heading and a
+ * single line of input, which is exactly as generic as it sounds.
+ */
+async function seedPastedTranscript(page: Page) {
+  await seedHospitalScene(page);
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const filler =
+      '*The afternoon light moved across the floor as they talked about nothing much.* '.repeat(900);
+    const ending =
+      '\n\nReiko: "I would bite you, you know. That is normal where I am from."\n' +
+      'Bakugo: "...in private... it is not a problem."';
+    await new Promise<void>((r) => {
+      const q = db
+        .transaction('messages', 'readwrite')
+        .objectStore('messages')
+        .put({
+          id: 'transcript-0',
+          chatId: 'hospital-chat',
+          branchId: 'hospital-branch',
+          role: 'assistant',
+          characterId: 'bakugo',
+          content: filler + ending,
+          attachments: [],
+          order: 0,
+          model: '',
+          tokens: 0,
+          favorite: false,
+          activeAlternativeId: null,
+          historical: true,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+      q.onsuccess = () => r();
+    });
+    db.close();
+  });
+  await page.reload();
+  await boot(page);
+}
+
+test('an over-long transcript keeps its ending instead of vanishing', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 131072);
+  await setupOllamaProvider(page);
+  await seedPastedTranscript(page);
+  const body = await sendTurn(page, ollama, '*my face lits up mischievously*\n\n"oh? is that so?"');
+  const all = body.messages.map((m: any) => String(m.content)).join('\n');
+
+  // The exchange the user's turn is answering has to be there, or there is
+  // nothing for the reply to be specific about.
+  expect(all).toContain('I would bite you');
+  expect(all).toContain('in private... it is not a problem');
+  // It arrives as an excerpt, not whole.
+  expect(all).toContain('earlier part of this message omitted');
+  // And the budget still holds.
+  expect(payloadTokens(body)).toBeLessThan(20_000);
+});
+
+test('the excerpt is the end of the transcript, not the beginning', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 131072);
+  await setupOllamaProvider(page);
+  await seedPastedTranscript(page);
+  const body = await sendTurn(page, ollama, 'Hello.');
+  const assistant = body.messages.find((m: any) => m.role === 'assistant');
+
+  // The tail carries the recent exchange; the head is what gets elided.
+  const content = String(assistant.content);
+  expect(content.indexOf('I would bite you')).toBeGreaterThan(content.length / 2);
+  expect(content.startsWith('[…earlier part')).toBe(true);
+});
+
+test('characters may read the user without the model deciding for them', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  await seedHospitalScene(page);
+  const body = await sendTurn(page, ollama, '*I giggle mischievously.*');
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+
+  expect(system).toMatch(/You may have characters read Reiko Ryuusui/);
+  expect(system).toMatch(/Never state what Reiko Ryuusui actually thinks, intends, or does next/);
+});

@@ -200,6 +200,35 @@ export function describePersona(persona: Persona): string {
     .join('\n\n');
 }
 
+/** Below this an excerpt is too small to carry a scene, so nothing is kept. */
+const MIN_EXCERPT_TOKENS = 192;
+
+/**
+ * The end of an over-long message, cut at a paragraph where possible.
+ *
+ * Roleplay continued from a pasted transcript arrives as one enormous message
+ * whose *last* few hundred words are the exchange the next turn answers. Taking
+ * the tail keeps that; taking the head or dropping the message keeps nothing
+ * that matters.
+ */
+function tailExcerpt(content: string, budgetTokens: number): string | null {
+  if (budgetTokens < MIN_EXCERPT_TOKENS) return null;
+  // The estimator averages ~3.8 characters a token on prose; leave headroom.
+  const chars = Math.max(0, Math.floor(budgetTokens * 3.4));
+  if (chars <= 0 || content.length <= chars) return null;
+
+  let cut = content.length - chars;
+  // Prefer a paragraph break, then a sentence, so the excerpt starts cleanly.
+  const paragraph = content.indexOf('\n\n', cut);
+  if (paragraph !== -1 && paragraph - cut < chars / 3) cut = paragraph + 2;
+  else {
+    const sentence = content.search(/[.!?*"]\s/u) === -1 ? -1 : content.indexOf('. ', cut);
+    if (sentence !== -1 && sentence - cut < chars / 4) cut = sentence + 2;
+  }
+
+  return `[…earlier part of this message omitted…]\n\n${content.slice(cut)}`;
+}
+
 function memoryReason(memory: Memory): string {
   if (memory.pinned) return 'Pinned';
   if (memory.importance === 'critical') return 'Critical importance';
@@ -862,6 +891,29 @@ function compileContextInner(input: CompileInput): CompileResult {
   for (let i = historyParts.length - 1; i >= 0; i -= 1) {
     const hp = historyParts[i];
     if (historyBudget - hp.tokens < 0 && keptHistory.length > 0) {
+      // A message too large to fit used to be dropped whole. For a roleplay
+      // continued by pasting a transcript, that single message *is* the entire
+      // previous story — so the turn the user is actually replying to went
+      // missing, and the model was left with a scene heading and one line of
+      // input. Keep the end of it instead: the tail is the part the current
+      // turn refers to.
+      const excerpt = tailExcerpt(hp.content, historyBudget);
+      if (excerpt) {
+        const tokens = estimateTokens(excerpt);
+        historyBudget -= tokens;
+        keptHistory.unshift({
+          ...hp,
+          content: excerpt,
+          tokens,
+          reason: 'Too large for the budget — kept the most recent part.',
+        });
+        excluded.push({
+          ...hp,
+          included: false,
+          reason: 'Only the end of this message fitted the context budget.',
+        });
+        continue;
+      }
       excluded.push({ ...hp, included: false, reason: 'Trimmed — older than the context budget.' });
       continue;
     }
