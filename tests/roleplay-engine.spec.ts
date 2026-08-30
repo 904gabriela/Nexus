@@ -691,3 +691,30 @@ test('the prompt reconciles a transcript that contains the user’s own lines', 
   expect(system).toMatch(/not a\s+pattern to continue/);
   expect(system).toMatch(/belong to the user alone/);
 });
+
+/* ================================================== message-pipeline trace */
+
+test('every sent message carries its provenance', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  await seedHospitalScene(page);
+  await sendTurn(page, ollama, '*I giggle mischievously.*');
+
+  // Read the trace through the view the user actually has, so the test covers
+  // the whole chain rather than an internal structure nobody can see.
+  await page.getByRole('button', { name: /Context|Inspector/i }).first().click();
+  await page.getByRole('tab', { name: 'Provider request' }).click();
+
+  const rows = page.locator('.ctx-part');
+  await expect(rows.first()).toBeVisible({ timeout: 10_000 });
+
+  // Row zero is the assembled system prompt, and the turn just sent is traced
+  // as a user message — the two ends of the pipeline the user needs to see.
+  const labels = await page.locator('.ctx-part-label').allInnerTexts();
+  // Row zero is the assembled prompt; the newest turn is the user's and comes
+  // last; the carried-over transcript is attributed and flagged historical.
+  expect(labels[0]).toContain('#0 · system');
+  expect(labels.at(-1)).toMatch(/· user · Reiko Ryuusui/);
+  expect(labels.some((l) => l.includes('historical'))).toBe(true);
+  expect(labels.some((l) => /· assistant · Katsuki Bakugo/.test(l))).toBe(true);
+});

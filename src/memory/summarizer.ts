@@ -147,6 +147,9 @@ export async function generateMemoryDraft(input: SummarizeInput): Promise<Memory
 
   try {
     const reply = await complete({
+      // Background work: never let it overwrite the inspector's view of the
+      // roleplay request.
+      purpose: 'utility',
       provider: input.provider,
       signal: input.signal,
       settings: { temperature: 0.3, maxTokens: 400, streaming: false },

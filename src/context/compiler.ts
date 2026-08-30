@@ -20,6 +20,7 @@ import type {
   MemoryHit,
   Memory,
   Message,
+  MessagePipelineRow,
   Persona,
   SceneState,
   Settings,
@@ -892,6 +893,8 @@ function compileContextInner(input: CompileInput): CompileResult {
   let historyBudget = budget - fixedTokens - pendingTokens;
 
   const keptHistory: ContextPart[] = [];
+  /** Part ids that were shortened, and what they originally cost. */
+  const excerpted = new Map<string, number>();
   for (let i = historyParts.length - 1; i >= 0; i -= 1) {
     const hp = historyParts[i];
     if (historyBudget - hp.tokens < 0 && keptHistory.length > 0) {
@@ -904,6 +907,7 @@ function compileContextInner(input: CompileInput): CompileResult {
       const excerpt = tailExcerpt(hp.content, historyBudget);
       if (excerpt) {
         const tokens = estimateTokens(excerpt);
+        excerpted.set(hp.id, hp.tokens);
         historyBudget -= tokens;
         keptHistory.unshift({
           ...hp,
@@ -965,25 +969,84 @@ function compileContextInner(input: CompileInput): CompileResult {
     .join('\n\n---\n\n');
 
   const payload: ChatCompletionMessage[] = [];
-  if (systemPrompt.trim()) payload.push({ role: 'system', content: systemPrompt });
+  const pipeline: MessagePipelineRow[] = [];
+  const trace = (
+    row: Omit<MessagePipelineRow, 'index' | 'head' | 'tail'>,
+    content: string,
+  ) => {
+    pipeline.push({
+      ...row,
+      index: payload.length - 1,
+      head: content.slice(0, 150),
+      tail: content.length > 150 ? content.slice(-300) : '',
+    });
+  };
+
+  if (systemPrompt.trim()) {
+    payload.push({ role: 'system', content: systemPrompt });
+    trace(
+      {
+        apiRole: 'system',
+        storedRole: null,
+        sender: 'Nexus (assembled prompt)',
+        characterId: null,
+        historical: false,
+        excerpted: false,
+        originalTokens: estimateTokens(systemPrompt),
+        finalTokens: estimateTokens(systemPrompt),
+      },
+      systemPrompt,
+    );
+  }
 
   const messageById = new Map(consideredHistory.map((m) => [`history:${m.id}`, m]));
   for (const hp of keptHistory) {
     const message = messageById.get(hp.id);
     if (!message) continue;
-    payload.push(toApiMessage(message, attribute(message, hp.content, scene), input));
+    const attributed = attribute(message, hp.content, scene);
+    payload.push(toApiMessage(message, attributed, input));
+    trace(
+      {
+        apiRole: message.role,
+        storedRole: message.role,
+        sender:
+          message.role === 'user'
+            ? userName
+            : activeCharacters.find((c) => c.id === message.characterId)?.name ?? charName,
+        characterId: message.characterId ?? null,
+        historical: Boolean(message.historical),
+        excerpted: excerpted.has(hp.id),
+        originalTokens: excerpted.get(hp.id) ?? hp.tokens,
+        finalTokens: estimateTokens(attributed),
+      },
+      attributed,
+    );
   }
 
   if (input.pendingUserText || input.pendingAttachments?.length) {
+    const text = input.pendingUserText ?? '';
     payload.push(
       toApiMessage(
         {
           role: 'user',
           attachments: input.pendingAttachments ?? [],
         } as Message,
-        input.pendingUserText ?? '',
+        text,
         input,
       ),
+    );
+    trace(
+      {
+        apiRole: 'user',
+        storedRole: null,
+        sender: `${userName} (this turn)`,
+        characterId: null,
+        historical: false,
+        excerpted: false,
+        originalTokens: estimateTokens(text),
+        finalTokens: estimateTokens(text),
+      },
+      text,
     );
   }
 
@@ -1001,6 +1064,7 @@ function compileContextInner(input: CompileInput): CompileResult {
   return {
     systemPrompt,
     messages: payload,
+    pipeline,
     parts: allParts,
     excluded,
     totalTokens,

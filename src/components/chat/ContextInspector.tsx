@@ -248,7 +248,7 @@ export function ContextInspector({
         </>
       )}
 
-      {tab === 'request' && <RequestView />}
+      {tab === 'request' && <RequestView expanded={expanded} toggle={toggle} />}
 
       {tab === 'raw' && (
         <>
@@ -273,7 +273,13 @@ export function ContextInspector({
  * so far has lived in the gap between them — a context size the model could not
  * honour, a prompt truncated at the head, options that never made the trip.
  */
-function RequestView() {
+function RequestView({
+  expanded,
+  toggle,
+}: {
+  expanded: Set<string>;
+  toggle: (id: string) => void;
+}) {
   const request = getLastRequest();
   const json = formatRequest(request);
 
@@ -340,6 +346,63 @@ function RequestView() {
           </div>
         )}
       </div>
+      {!!request.pipeline?.length && (
+        <>
+          <h3 className="section-title">
+            Message pipeline
+            <span className="chip">{request.pipeline.length} sent</span>
+          </h3>
+          <p className="small muted" style={{ marginTop: -4 }}>
+            Every message in the order the provider received it, next to where it came from.
+          </p>
+          {request.pipeline.map((row) => (
+            <div className="ctx-part" key={`pipe-${row.index}`}>
+              <button
+                type="button"
+                className="ctx-part-head"
+                onClick={() => toggle(`pipe-${row.index}`)}
+                aria-expanded={expanded.has(`pipe-${row.index}`)}
+              >
+                <Icon
+                  name={expanded.has(`pipe-${row.index}`) ? 'chevronDown' : 'chevronRight'}
+                  width={15}
+                  height={15}
+                />
+                <span className="ctx-part-label">
+                  #{row.index} · {row.apiRole} · {row.sender}
+                  <span className="ctx-part-reason">
+                    {[
+                      row.storedRole && row.storedRole !== row.apiRole
+                        ? `stored as ${row.storedRole}`
+                        : null,
+                      row.characterId ? `characterId ${row.characterId}` : null,
+                      row.historical ? 'historical' : null,
+                      row.excerpted
+                        ? `excerpted from ${formatTokens(row.originalTokens)}`
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ') || 'live turn'}
+                  </span>
+                </span>
+                <span className="chip">{formatTokens(row.finalTokens)}</span>
+              </button>
+              {expanded.has(`pipe-${row.index}`) && (
+                <div className="ctx-part-body">
+                  <div className="small muted">Begins:</div>
+                  {row.head}
+                  {row.tail && (
+                    <>
+                      <div className="small muted" style={{ marginTop: 8 }}>Ends:</div>
+                      {row.tail}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </>
+      )}
       <CopyButton text={json} label="Copy provider request" className="btn" />
       <pre className="ctx-raw" style={{ marginTop: 10 }}>{json}</pre>
     </>

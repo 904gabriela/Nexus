@@ -474,6 +474,7 @@ export function useGeneration() {
           settings: generation,
           promptTokens: compiled.totalTokens,
           breakdown: summariseTokens(compiled),
+          pipeline: compiled.pipeline,
           signal: controller.signal,
           onToken: (_chunk, full) => {
             streamingTextRef.current = full;

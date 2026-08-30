@@ -11,6 +11,8 @@
  * accumulate a history that would keep whole prompts alive in memory.
  */
 
+import type { MessagePipelineRow } from '../types';
+
 export interface RecordedRequest {
   /** Wall-clock time the request was built. */
   at: number;
@@ -30,20 +32,33 @@ export interface RecordedRequest {
   /** Totals, so the window can be read against what actually went into it. */
   promptTokens?: number;
   outputBudget?: number;
+  /** Provenance for each message sent, in the order sent. */
+  pipeline?: MessagePipelineRow[];
+  /**
+   * What the request was for. Summarisation and auto-memory go through the same
+   * client, so without this the last thing recorded after a roleplay turn could
+   * be a background utility call — and the inspector would faithfully show the
+   * wrong payload.
+   */
+  purpose?: 'chat' | 'utility';
 }
 
 let last: RecordedRequest | null = null;
+let lastChat: RecordedRequest | null = null;
 
 export function recordRequest(request: RecordedRequest): void {
   last = request;
+  if ((request.purpose ?? 'chat') === 'chat') lastChat = request;
 }
 
+/** The last roleplay generation, falling back to whatever was last sent. */
 export function getLastRequest(): RecordedRequest | null {
-  return last;
+  return lastChat ?? last;
 }
 
 export function clearLastRequest(): void {
   last = null;
+  lastChat = null;
 }
 
 /** Pretty-prints the recorded body for the inspector and for copying. */

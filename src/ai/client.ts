@@ -9,6 +9,7 @@
 import type {
   ChatCompletionMessage,
   GenerationSettings,
+  MessagePipelineRow,
   ModelInfo,
   Provider,
 } from '../types';
@@ -699,6 +700,10 @@ export interface CompleteOptions {
   promptTokens?: number;
   /** Per-section token estimates, for the inspector's breakdown. */
   breakdown?: Array<{ label: string; tokens: number }>;
+  /** Provenance for each message, so the assembly itself is inspectable. */
+  pipeline?: MessagePipelineRow[];
+  /** Background work marks itself so it cannot masquerade as the roleplay. */
+  purpose?: 'chat' | 'utility';
 }
 
 function buildBody(options: CompleteOptions, stream: boolean) {
@@ -723,6 +728,7 @@ function buildBody(options: CompleteOptions, stream: boolean) {
     url: `${normalizeBaseUrl(provider.baseUrl)}/chat/completions`,
     dialect: 'openai',
     body,
+    purpose: options.purpose ?? 'chat',
   });
   return body;
 }
@@ -875,7 +881,9 @@ async function streamOllama(options: CompleteOptions): Promise<string> {
     numCtx,
     modelLimit,
     clamped: numCtx >= modelLimit,
+    purpose: options.purpose ?? 'chat',
     breakdown: options.breakdown,
+    pipeline: options.pipeline,
     promptTokens: options.promptTokens,
     outputBudget: (body.options as Record<string, unknown>).num_predict as number,
   });

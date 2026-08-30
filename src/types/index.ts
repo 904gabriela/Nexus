@@ -664,9 +664,38 @@ export interface ContextPart {
   priority: number;
 }
 
+/**
+ * One message as it reaches the provider, next to where it came from.
+ *
+ * A prompt can be correct in every section and still fail because of how the
+ * conversation itself was assembled — a turn dropped, a speaker unattributed, a
+ * transcript excerpted from the wrong end. This row is what makes that
+ * inspectable without exporting the payload and reading it by hand.
+ */
+export interface MessagePipelineRow {
+  /** Position in the array actually sent. */
+  index: number;
+  apiRole: MessageRole;
+  /** The role as stored, which for a synthesised turn has no counterpart. */
+  storedRole: MessageRole | null;
+  /** Who Nexus believes spoke: a character name, the persona, or the system. */
+  sender: string;
+  characterId: ID | null;
+  /** Carried over from earlier play rather than taken in this chat. */
+  historical: boolean;
+  /** True when only part of the stored message was sent. */
+  excerpted: boolean;
+  originalTokens: number;
+  finalTokens: number;
+  head: string;
+  tail: string;
+}
+
 export interface CompiledContext {
   systemPrompt: string;
   messages: ChatCompletionMessage[];
+  /** Provenance for each message sent, in the order sent. */
+  pipeline: MessagePipelineRow[];
   parts: ContextPart[];
   excluded: ContextPart[];
   totalTokens: number;
