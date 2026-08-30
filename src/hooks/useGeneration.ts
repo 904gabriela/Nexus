@@ -152,7 +152,10 @@ export function useGeneration() {
   const [error, setError] = useState<string | null>(null);
 
   const story = useMemo(() => storyOf(state, activeChat), [state, activeChat]);
-  const characters = useMemo(() => charactersOf(state, story), [state, story]);
+  const characters = useMemo(
+    () => charactersOf(state, story, activeChat),
+    [state, story, activeChat],
+  );
   const persona = useMemo(() => personaOf(state, activeChat, story), [state, activeChat, story]);
   const provider = useMemo(() => activeProvider(state), [state]);
   const imageProvider = useMemo(() => activeImageProvider(state), [state]);
@@ -267,7 +270,7 @@ export function useGeneration() {
     const chat = current.chats.find((c) => c.id === current.activeChatId) ?? null;
     if (!chat) return;
     const currentStory = storyOf(current, chat);
-    const currentCharacters = charactersOf(current, currentStory);
+    const currentCharacters = charactersOf(current, currentStory, chat);
     const currentPersona = personaOf(current, chat, currentStory);
     const currentProvider = activeProvider(current);
     const line = resolveTimeline(current.messages, current.branches, chat.activeBranchId);

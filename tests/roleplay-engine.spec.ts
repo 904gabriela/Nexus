@@ -866,3 +866,47 @@ test('an imported chat log builds its cast from the named speakers', async ({ pa
   // And the whole log is marked as prior play rather than turns taken here.
   expect(messages.every((m: any) => m.historical === true)).toBe(true);
 });
+
+test('a chat with no story still has a cast when its scene names one', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Patrick sets the glass down.'], 8192);
+  await setupOllamaProvider(page);
+  await seedHospitalScene(page);
+
+  // The shape an imported chat arrives in: characters exist in the library, but
+  // the chat belongs to no story. The cast used to be empty regardless.
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const chat: any = await new Promise((r) => {
+      const q = db.transaction('chats', 'readonly').objectStore('chats').get('hospital-chat');
+      q.onsuccess = () => r(q.result);
+    });
+    chat.storyId = null;
+    chat.scene = {
+      location: 'A quiet kitchen',
+      situation: 'Late, and he has only just come in.',
+      presentCharacterIds: ['bakugo'],
+      primaryCharacterId: 'bakugo',
+      objective: '',
+      characterStates: {},
+      updatedAt: Date.now(),
+    };
+    await new Promise<void>((r) => {
+      const q = db.transaction('chats', 'readwrite').objectStore('chats').put(chat);
+      q.onsuccess = () => r();
+    });
+    db.close();
+  });
+  await page.reload();
+  await boot(page);
+
+  const body = await sendTurn(page, ollama, 'You are late.');
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+
+  // The character is in the room and described, with no story involved.
+  expect(system).toMatch(/Present:.*Katsuki Bakugo/);
+  expect(system).toContain('Explosive hero student.');
+  expect(system).toMatch(/Never write Reiko Ryuusui's dialogue/);
+});

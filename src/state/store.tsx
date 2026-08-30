@@ -1401,12 +1401,38 @@ export function storyOf(state: AppState, chat: Chat | null): Story | null {
   return state.stories.find((s) => s.id === chat.storyId) ?? null;
 }
 
-export function charactersOf(state: AppState, story: Story | null): Character[] {
-  if (!story) return [];
-  return story.characters
-    .filter((link) => link.enabled)
-    .map((link) => state.characters.find((c) => c.id === link.characterId))
-    .filter(Boolean) as Character[];
+/**
+ * The cast available to a chat.
+ *
+ * A story's cast when there is a story, plus anyone the chat's own scene names.
+ * The scene half matters because a chat can exist without a story — an imported
+ * log, or a chat started straight from a character — and such a chat used to
+ * have no cast at all, however many characters the library held. The compiler
+ * then had nobody to describe and nobody to put in the room, and the model was
+ * left reconstructing the character from prose. The persona has always had a
+ * global default to fall back on; characters had nothing.
+ */
+export function charactersOf(
+  state: AppState,
+  story: Story | null,
+  chat?: Chat | null,
+): Character[] {
+  const found: Character[] = [];
+  const seen = new Set<ID>();
+  const add = (id: ID | null | undefined) => {
+    if (!id || seen.has(id)) return;
+    const character = state.characters.find((c) => c.id === id);
+    if (!character) return;
+    seen.add(id);
+    found.push(character);
+  };
+
+  for (const link of story?.characters ?? []) {
+    if (link.enabled) add(link.characterId);
+  }
+  add(chat?.scene?.primaryCharacterId);
+  for (const id of chat?.scene?.presentCharacterIds ?? []) add(id);
+  return found;
 }
 
 export function personaOf(state: AppState, chat: Chat | null, story: Story | null): Persona | null {
