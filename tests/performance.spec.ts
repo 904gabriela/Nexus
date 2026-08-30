@@ -186,7 +186,23 @@ test('older messages are still reachable by scrolling back', async ({ page }) =>
   await seedLongChat(page, 300);
   await goto(page, '#/chat/ch1');
   await expect(page.locator('[data-testid="message-bubble"]').first()).toBeVisible();
-  await page.waitForTimeout(1000);
+  // Wait for the opening scroll to land rather than guessing at a delay. A
+  // fixed pause is long enough on an idle machine and not on a busy one, and a
+  // click that arrives mid-scroll is intercepted by whichever message happens
+  // to be passing under it.
+  await page.waitForFunction(
+    () => {
+      const el = document.querySelector('.chat-scroll');
+      if (!el) return false;
+      const w = window as unknown as { __lastTop?: number; __stable?: number };
+      const settled = el.scrollTop === w.__lastTop;
+      w.__stable = settled ? (w.__stable ?? 0) + 1 : 0;
+      w.__lastTop = el.scrollTop;
+      return (w.__stable ?? 0) >= 3;
+    },
+    undefined,
+    { timeout: 20_000, polling: 100 },
+  );
 
   const before = (await counters(page)).mounted;
   await page.getByRole('button', { name: /Show earlier messages/ }).click();
