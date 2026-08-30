@@ -718,3 +718,96 @@ test('every sent message carries its provenance', async ({ page }) => {
   expect(labels.some((l) => l.includes('historical'))).toBe(true);
   expect(labels.some((l) => /· assistant · Katsuki Bakugo/.test(l))).toBe(true);
 });
+
+/* ============================== the conversation must not be sieved for size */
+
+/**
+ * The shape from a real failing request: long assistant prose alternating with
+ * one-line user turns. The budget used to reject every long reply and accept
+ * every short question, handing the model six of the user's turns in a row with
+ * the answers missing.
+ */
+async function seedUnevenConversation(page: Page, pairs: number) {
+  await seedHospitalScene(page);
+  await page.evaluate(async (n) => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const put = (v: unknown) =>
+      new Promise<void>((r) => {
+        const q = db.transaction('messages', 'readwrite').objectStore('messages').put(v);
+        q.onsuccess = () => r();
+      });
+    const now = Date.now();
+    // Clear the seeded transcript so only this conversation is present.
+    await new Promise<void>((r) => {
+      const q = db.transaction('messages', 'readwrite').objectStore('messages').delete('transcript-0');
+      q.onsuccess = () => r();
+      q.onerror = () => r();
+    });
+    for (let i = 0; i < n; i += 1) {
+      await put({
+        id: `u${i}`, chatId: 'hospital-chat', branchId: 'hospital-branch', role: 'user',
+        characterId: null, content: `Question number ${i}?`, attachments: [], order: i * 2,
+        model: '', tokens: 0, favorite: false, activeAlternativeId: null,
+        createdAt: now + i * 2, updatedAt: now + i * 2,
+      });
+      await put({
+        id: `a${i}`, chatId: 'hospital-chat', branchId: 'hospital-branch', role: 'assistant',
+        characterId: 'bakugo',
+        content: `Answer number ${i}. ` + 'He spoke at length about the matter. '.repeat(120),
+        attachments: [], order: i * 2 + 1, model: '', tokens: 0, favorite: false,
+        activeAlternativeId: null, createdAt: now + i * 2 + 1, updatedAt: now + i * 2 + 1,
+      });
+    }
+    const chat: any = await new Promise((r) => {
+      const q = db.transaction('chats', 'readonly').objectStore('chats').get('hospital-chat');
+      q.onsuccess = () => r(q.result);
+    });
+    chat.orderCounter = n * 2;
+    await new Promise<void>((r) => {
+      const q = db.transaction('chats', 'readwrite').objectStore('chats').put(chat);
+      q.onsuccess = () => r();
+    });
+    db.close();
+  }, pairs);
+  await page.reload();
+  await boot(page);
+}
+
+test('history is a contiguous window, never a sieve of whatever fits', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  await seedUnevenConversation(page, 12);
+  const body = await sendTurn(page, ollama, 'And now?');
+
+  const roles: string[] = body.messages.map((m: any) => m.role);
+  // No run of user turns with the replies between them missing.
+  let run = 0;
+  let longestUserRun = 0;
+  for (const role of roles) {
+    run = role === 'user' ? run + 1 : 0;
+    longestUserRun = Math.max(longestUserRun, run);
+  }
+  expect(longestUserRun).toBeLessThanOrEqual(2);
+
+  // And no question arrives orphaned: the reply that followed it is present,
+  // whole or excerpted. An excerpt keeps the end of a message, so the answer's
+  // opening words may be gone while the turn itself is there.
+  const assistantTurns = body.messages.filter((m: any) => m.role === 'assistant').length;
+  const userTurns = body.messages.filter((m: any) => m.role === 'user').length;
+  expect(assistantTurns).toBeGreaterThanOrEqual(userTurns - 1);
+});
+
+test('the newest exchange survives even when older ones cannot', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  await seedUnevenConversation(page, 12);
+  const body = await sendTurn(page, ollama, 'And now?');
+  const text = body.messages.map((m: any) => String(m.content)).join('\n');
+
+  // Trimming takes from the far end of the conversation, not the near one.
+  expect(text).toContain('Answer number 11.');
+  expect(body.messages.at(-1).content).toContain('And now?');
+});

@@ -922,8 +922,20 @@ function compileContextInner(input: CompileInput): CompileResult {
         });
         continue;
       }
-      excluded.push({ ...hp, included: false, reason: 'Trimmed — older than the context budget.' });
-      continue;
+      // Everything older stops here. Skipping this message and carrying on to
+      // older ones sieves the conversation instead of windowing it: long
+      // assistant turns get rejected while the one-line questions between them
+      // fit, and the model is handed six of the user's questions in a row with
+      // the answers missing. A shorter unbroken conversation is worth far more
+      // than a longer one full of holes.
+      for (let j = i; j >= 0; j -= 1) {
+        excluded.push({
+          ...historyParts[j],
+          included: false,
+          reason: 'Trimmed — older than the context budget.',
+        });
+      }
+      break;
     }
     historyBudget -= hp.tokens;
     keptHistory.unshift(hp);
