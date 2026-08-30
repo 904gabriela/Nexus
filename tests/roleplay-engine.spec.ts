@@ -910,3 +910,55 @@ test('a chat with no story still has a cast when its scene names one', async ({ 
   expect(system).toContain('Explosive hero student.');
   expect(system).toMatch(/Never write Reiko Ryuusui's dialogue/);
 });
+
+test('an export that marks sides with a boolean still gets roles and a cast', async ({ page }) => {
+  await goto(page, '#/transfer');
+  await page.locator('input[type=file]').first().setInputFiles({
+    name: 'boolean-sides.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        title: 'The Saint',
+        messages: [
+          { is_user: true, author: 'Reiko', text: 'You are late.' },
+          { is_user: false, author: 'Patrick Moretti', text: 'He set the glass down.' },
+          { is_user: true, author: 'Reiko', text: 'Again.' },
+          { is_user: false, author: 'Patrick Moretti', text: 'A long pause.' },
+        ],
+      }),
+    ),
+  });
+
+  await expect(page.getByText(/Import preview/)).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('button', { name: 'Confirm import' }).click();
+  await page.waitForTimeout(800);
+
+  // The boolean decides the role; the author field names the character.
+  const messages = await readStore(page, 'messages');
+  expect(messages.filter((m: any) => m.role === 'user')).toHaveLength(2);
+  expect(messages.filter((m: any) => m.role === 'assistant')).toHaveLength(2);
+  const characters = await readStore(page, 'characters');
+  expect(characters.map((c: any) => c.name)).toContain('Patrick Moretti');
+});
+
+test('a file with no speaker field says which keys it does have', async ({ page }) => {
+  await goto(page, '#/transfer');
+  await page.locator('input[type=file]').first().setInputFiles({
+    name: 'anonymous.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        messages: [
+          { role: 'user', content: 'Hello.' },
+          { role: 'assistant', content: 'Hello yourself.' },
+        ],
+      }),
+    ),
+  });
+
+  // The warning has to be actionable: naming the keys present turns a dead end
+  // into the one fact needed to support the format.
+  await expect(page.getByText(/Each message carries: role, content/)).toBeVisible({
+    timeout: 15_000,
+  });
+});

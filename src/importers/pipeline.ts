@@ -720,13 +720,51 @@ async function buildChatImport(
   /** Speaker name per imported assistant message, where the file named one. */
   const speakerOf = new Map<ID, string>();
   let order = 0;
+  /** Keys seen on the first message, reported when no speaker can be found. */
+  let sampleKeys: string[] = [];
   for (const raw of rawMessages) {
     if (!isPlainObject(raw)) continue;
-    const named = firstOf(raw.name, raw.sender, raw.from, raw.character, raw.char_name);
+    if (!sampleKeys.length) sampleKeys = Object.keys(raw);
+    // Exports disagree about what to call the speaker, so try every spelling
+    // seen in the wild before giving up. None of this parses prose — it only
+    // reads fields the file already provides.
+    const named = firstOf(
+      raw.name,
+      raw.sender,
+      raw.from,
+      raw.character,
+      raw.char_name,
+      raw.characterName,
+      raw.author,
+      raw.speaker,
+      raw.speakerName,
+      raw.bot_name,
+      raw.botName,
+      raw.participant,
+      raw.persona,
+    );
+    // A boolean side-marker is the other common shape, and it decides the role
+    // even when the file also names the speaker.
+    const flagged =
+      typeof raw.is_user === 'boolean'
+        ? raw.is_user
+        : typeof raw.isUser === 'boolean'
+          ? raw.isUser
+          : typeof raw.user === 'boolean'
+            ? raw.user
+            : null;
     const roleRaw = firstOf(raw.role, raw.sender, raw.from, raw.name).toLowerCase();
     const role: Message['role'] =
-      roleRaw === 'user' || roleRaw === 'human' ? 'user' : roleRaw === 'system' ? 'system' : 'assistant';
-    const content = firstOf(raw.content, raw.text, raw.message, raw.mes);
+      flagged === true
+        ? 'user'
+        : flagged === false
+          ? 'assistant'
+          : roleRaw === 'user' || roleRaw === 'human'
+            ? 'user'
+            : roleRaw === 'system'
+              ? 'system'
+              : 'assistant';
+    const content = firstOf(raw.content, raw.text, raw.message, raw.mes, raw.body, raw.value);
     if (!content.trim()) continue;
     const message = newMessage(chat.id, branch.id, { role, content, order });
     // An imported log is a record of play that already happened. Saying so is
@@ -823,7 +861,10 @@ async function buildChatImport(
       message:
         'This file does not name who is speaking, so no characters could be created. ' +
         'The chat will import, but until you add a character and put them in the scene the ' +
-        'model has no description of who it is playing.',
+        'model has no description of who it is playing.' +
+        (sampleKeys.length
+          ? ` Each message carries: ${sampleKeys.join(', ')}.`
+          : ''),
     });
   }
   return result;
