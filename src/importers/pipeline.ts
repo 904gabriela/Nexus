@@ -46,6 +46,7 @@ import {
   normalizePersona,
   normalizeStory,
 } from './normalize';
+import { emptyScene } from '../types';
 import { readCharacterCardFromPng } from './pngMetadata';
 import * as repo from '../storage/repositories';
 import { importDataUrl, saveMedia } from '../media/mediaStore';
@@ -716,30 +717,120 @@ async function buildChatImport(
   const branch = newBranch(chat.id);
   chat.activeBranchId = branch.id;
   const messages: Message[] = [];
+  /** Speaker name per imported assistant message, where the file named one. */
+  const speakerOf = new Map<ID, string>();
   let order = 0;
   for (const raw of rawMessages) {
     if (!isPlainObject(raw)) continue;
+    const named = firstOf(raw.name, raw.sender, raw.from, raw.character, raw.char_name);
     const roleRaw = firstOf(raw.role, raw.sender, raw.from, raw.name).toLowerCase();
     const role: Message['role'] =
       roleRaw === 'user' || roleRaw === 'human' ? 'user' : roleRaw === 'system' ? 'system' : 'assistant';
     const content = firstOf(raw.content, raw.text, raw.message, raw.mes);
     if (!content.trim()) continue;
-    messages.push(newMessage(chat.id, branch.id, { role, content, order }));
+    const message = newMessage(chat.id, branch.id, { role, content, order });
+    // An imported log is a record of play that already happened. Saying so is
+    // what stops the compiler reading it as the assistant's own latest turn and
+    // imitating it wholesale, lines for the user included.
+    message.historical = true;
+    // The export's own speaker field, not a guess parsed out of the prose. A
+    // name that merely restates the role carries no information.
+    if (role === 'assistant' && named && !ROLE_WORDS.has(named.toLowerCase())) {
+      speakerOf.set(message.id, named.trim());
+    }
+    messages.push(message);
     order += 1;
   }
   chat.orderCounter = order;
 
+  // A chat used to arrive with no cast at all: no character, no story, no
+  // scene. The compiler then had nothing to describe and nobody to place in the
+  // room, so the model reconstructed the character from prose alone — which is
+  // as generic as it sounds. Where the file names its speakers, they become
+  // real characters the user can then flesh out.
+  const characters: Character[] = [];
+  const byName = new Map<string, Character>();
+  for (const name of speakerOf.values()) {
+    if (byName.has(name.toLowerCase())) continue;
+    const character = newCharacter({ name });
+    byName.set(name.toLowerCase(), character);
+    characters.push(character);
+  }
+  for (const message of messages) {
+    const name = speakerOf.get(message.id);
+    if (name) message.characterId = byName.get(name.toLowerCase())?.id ?? null;
+  }
+
+  const stories: Story[] = [];
+  if (characters.length) {
+    // Whoever speaks most is the focal character, and whoever speaks in the
+    // closing stretch is who the scene is currently with.
+    const counts = new Map<ID, number>();
+    for (const message of messages) {
+      if (!message.characterId) continue;
+      counts.set(message.characterId, (counts.get(message.characterId) ?? 0) + 1);
+    }
+    const primaryId =
+      [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? characters[0].id;
+    const recent = new Set(
+      messages
+        .slice(-12)
+        .map((m) => m.characterId)
+        .filter((id): id is ID => Boolean(id)),
+    );
+    if (!recent.size) recent.add(primaryId);
+
+    const story = newStory({
+      title: chat.title,
+      description: `Imported from ${sourceName}.`,
+      characters: characters.map((c) => ({
+        characterId: c.id,
+        primary: c.id === primaryId,
+        note: '',
+        enabled: true,
+      })),
+    });
+    story.defaultChatId = chat.id;
+    stories.push(story);
+    chat.storyId = story.id;
+    chat.scene = {
+      ...emptyScene(),
+      presentCharacterIds: [...recent],
+      primaryCharacterId: primaryId,
+      updatedAt: Date.now(),
+    };
+  }
+
   const result: ParsedImport = {
     ...base('chat', sourceName, format),
     title: chat.title,
-    summary: [`${messages.length} messages`],
-    payload: { chats: [chat], branches: [branch], messages },
+    summary: [
+      `${messages.length} messages`,
+      characters.length
+        ? `${characters.length} character(s) named in the file: ${characters
+            .map((c) => c.name)
+            .join(', ')}`
+        : 'No speaker names in the file — add a character and set the scene after importing',
+    ],
+    payload: { chats: [chat], branches: [branch], messages, characters, stories },
   };
   if (!messages.length) {
     result.issues.push({ level: 'error', message: 'No messages could be read from this file.' });
   }
+  if (!characters.length && messages.length) {
+    result.issues.push({
+      level: 'warning',
+      message:
+        'This file does not name who is speaking, so no characters could be created. ' +
+        'The chat will import, but until you add a character and put them in the scene the ' +
+        'model has no description of who it is playing.',
+    });
+  }
   return result;
 }
+
+/** Words that name a role rather than a speaker. */
+const ROLE_WORDS = new Set(['user', 'human', 'assistant', 'system', 'bot', 'ai', 'model', 'char']);
 
 async function buildMemoryImport(
   body: unknown,

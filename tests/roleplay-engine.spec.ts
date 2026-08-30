@@ -16,6 +16,7 @@ import {
   resetDatabase,
   seedFixtures,
   sendMessage,
+  readStore,
   setupOllamaProvider,
   startChat,
   type MockOllama,
@@ -810,4 +811,58 @@ test('the newest exchange survives even when older ones cannot', async ({ page }
   // Trimming takes from the far end of the conversation, not the near one.
   expect(text).toContain('Answer number 11.');
   expect(body.messages.at(-1).content).toContain('And now?');
+});
+
+/* ================================================= imported chats get a cast */
+
+/**
+ * A chat imported from another app used to arrive as messages and nothing else
+ * — no character, no story, no scene. The compiler then had nobody to describe
+ * and nobody to place in the room, so the model reconstructed the character
+ * from prose alone. Where the export names its speakers, they become real
+ * characters.
+ */
+test('an imported chat log builds its cast from the named speakers', async ({ page }) => {
+  await goto(page, '#/transfer');
+  await page.locator('input[type=file]').first().setInputFiles({
+    name: 'fictionlab-export.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        title: 'The Long Winter',
+        messages: [
+          { name: 'Reiko', role: 'user', content: 'Are you coming back?' },
+          { name: 'Patrick', role: 'assistant', content: 'He set the glass down. "Always."' },
+          { name: 'Reiko', role: 'user', content: 'Promise?' },
+          { name: 'Patrick', role: 'assistant', content: 'A long pause. "I promise."' },
+        ],
+      }),
+    ),
+  });
+
+  await expect(page.getByText(/Import preview/)).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('button', { name: 'Confirm import' }).click();
+  await page.waitForTimeout(800);
+
+  // The speaker the file named is now a character in its own right.
+  const characters = await readStore(page, 'characters');
+  expect(characters.map((c: any) => c.name)).toContain('Patrick');
+  // A role word is not a speaker, so no character is invented for "user".
+  expect(characters.map((c: any) => c.name)).not.toContain('user');
+
+  // The chat belongs to a story with that cast, and the scene names who is in it.
+  const chats = await readStore(page, 'chats');
+  const chat = chats[0];
+  expect(chat.storyId).toBeTruthy();
+  const patrick = characters.find((c: any) => c.name === 'Patrick');
+  expect(chat.scene.primaryCharacterId).toBe(patrick.id);
+  expect(chat.scene.presentCharacterIds).toContain(patrick.id);
+
+  // Assistant turns are attributed, so the compiler can name who spoke.
+  const messages = await readStore(page, 'messages');
+  const assistantTurns = messages.filter((m: any) => m.role === 'assistant');
+  expect(assistantTurns.length).toBe(2);
+  expect(assistantTurns.every((m: any) => m.characterId === patrick.id)).toBe(true);
+  // And the whole log is marked as prior play rather than turns taken here.
+  expect(messages.every((m: any) => m.historical === true)).toBe(true);
 });
