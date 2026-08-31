@@ -451,6 +451,9 @@ test('an existing story can be edited without recreating it', async ({ page }) =
   await page.getByRole('tab', { name: 'World' }).click();
   await field(page, "Author's note").fill('Keep the pacing slow and the tavern warm.');
   await page.getByRole('button', { name: 'Save' }).first().click();
+  // Wait for the write to land. Reloading straight after the click raced the
+  // save and passed only because there was nothing else on screen to render.
+  await expect(page.getByText(/^Saved /).first()).toBeVisible();
   await page.reload();
 
   const stories = await readStore(page, 'stories');
