@@ -17,6 +17,7 @@ import {
   seedFixtures,
   sendMessage,
   readStore,
+  reloadApp,
   setupOllamaProvider,
   startChat,
   type MockOllama,
@@ -961,4 +962,71 @@ test('a file with no speaker field says which keys it does have', async ({ page 
   await expect(page.getByText(/Each message carries: role, content/)).toBeVisible({
     timeout: 15_000,
   });
+});
+
+test('an orphaned chat can be given a story, and the cast reaches the model', async ({
+  page,
+}) => {
+  const ollama = await mockOllama(page, ['Sera looks up from the bar.'], 8192);
+  await setupOllamaProvider(page);
+  await seedFixtures(page);
+
+  // An export that names nobody: the importer can only make a story-less chat,
+  // which is exactly the state that used to be permanent.
+  await goto(page, '#/transfer');
+  await page.locator('input[type=file]').first().setInputFiles({
+    name: 'anonymous.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        title: 'Orphan',
+        messages: [
+          { role: 'user', content: 'Is the storm easing?' },
+          { role: 'assistant', content: 'Not yet. The shutters are still complaining.' },
+        ],
+      }),
+    ),
+  });
+  await expect(page.getByText(/Import preview/)).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('button', { name: 'Confirm import' }).click();
+  await page.waitForTimeout(800);
+
+  const imported = (await readStore<any>(page, 'chats')).find((c) => c.title === 'Orphan');
+  expect(imported).toBeTruthy();
+  expect(imported.storyId).toBeFalsy();
+
+  await goto(page, `#/chat/${imported.id}`);
+  await expect(page.locator('.chat-composer')).toBeVisible({ timeout: 20_000 });
+  await page.getByRole('button', { name: 'Chat menu' }).click();
+  await page.getByRole('button', { name: /Move to story/ }).click();
+  await page.getByRole('button', { name: /The Long Storm/ }).click();
+
+  // The move is a property of the chat row, so it survives a reload.
+  await expect
+    .poll(async () => (await readStore<any>(page, 'chats')).find((c) => c.id === imported.id)?.storyId, {
+      timeout: 10_000,
+    })
+    .toBe('s1');
+  await reloadApp(page, `#/chat/${imported.id}`);
+
+  const body = await (async () => {
+    const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+    await expect(composer).toBeEditable();
+    const before = ollama.requests.length;
+    await composer.fill('Any rooms left?');
+    await page.getByRole('button', { name: 'Send message' }).click();
+    await expect.poll(() => ollama.requests.length, { timeout: 40_000 }).toBeGreaterThan(before);
+    return ollama.requests.at(-1)!.body;
+  })();
+
+  // The point of the move: the story's cast now describes the scene, where
+  // before the model was handed a transcript and no one to play.
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+  expect(system).toMatch(/Present:.*Sera/);
+  expect(system).toContain('Warm and watchful.');
+
+  // The messages themselves are untouched — the move is reversible.
+  const messages = await readStore<any>(page, 'messages');
+  const carried = messages.filter((m) => m.chatId === imported.id && m.historical === true);
+  expect(carried.length).toBe(2);
 });

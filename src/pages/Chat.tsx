@@ -203,6 +203,7 @@ export function ChatPage({
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [speakerPicker, setSpeakerPicker] = useState(false);
   const [personaPicker, setPersonaPicker] = useState(false);
+  const [storyPicker, setStoryPicker] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameText, setRenameText] = useState('');
   const [attachSheet, setAttachSheet] = useState(false);
@@ -1205,6 +1206,16 @@ export function ChatPage({
             onSelect: () => navigate('story', activeChat.storyId),
           },
           {
+            key: 'move-story',
+            label: activeChat.storyId ? 'Move to another story…' : 'Move to story…',
+            description: activeChat.storyId
+              ? 'Swap which story supplies the cast and lorebooks.'
+              : 'This chat has no story, so the model has no cast to describe.',
+            icon: 'book',
+            disabled: state.stories.filter((s) => !s.archived).length === 0,
+            onSelect: () => setStoryPicker(true),
+          },
+          {
             key: 'delete',
             label: 'Delete chat',
             icon: 'trash',
@@ -1369,6 +1380,47 @@ export function ChatPage({
             })();
           },
         }))}
+      />
+
+      {/*
+        Imported chats arrive with no story, so the compiler has no cast to
+        describe and the model writes blind. `storyId` used to be settable only
+        at creation, which left those chats permanently orphaned — this is the
+        way back. Only the chat row changes: messages, branches and their
+        stamped characterIds are untouched, so the move is reversible.
+      */}
+      <ActionSheet
+        open={storyPicker}
+        onClose={() => setStoryPicker(false)}
+        title="Move to story…"
+        actions={state.stories
+          .filter((s) => !s.archived)
+          .map((story) => ({
+            key: story.id,
+            label: story.title || 'Untitled story',
+            description:
+              activeChat.storyId === story.id
+                ? 'This chat already belongs to this story.'
+                : `${story.characters.filter((c) => c.enabled).length} character(s) in the cast.`,
+            icon: 'book' as const,
+            disabled: activeChat.storyId === story.id,
+            onSelect: () => {
+              void (async () => {
+                await actions.saveChat({
+                  ...activeChat,
+                  storyId: story.id,
+                  // A chat with no persona of its own adopts the story's, so
+                  // the persona-protection rule has a name to protect.
+                  personaId: activeChat.personaId ?? story.personaId ?? null,
+                });
+                actions.toast({
+                  kind: 'success',
+                  title: `Moved to "${story.title || 'Untitled story'}"`,
+                  detail: 'The story\'s cast, lorebooks and memories now apply to this chat.',
+                });
+              })();
+            },
+          }))}
       />
 
       <ActionSheet
