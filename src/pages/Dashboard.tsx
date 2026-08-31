@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useActions, useAppState } from '../state/store';
-import { Avatar } from '../components/media/MediaImage';
+import { Avatar, MediaImage } from '../components/media/MediaImage';
 import { Icon } from '../components/ui/Icon';
+import { ActionSheet } from '../components/ui/Sheet';
 import { Banner, EmptyState } from '../components/ui/common';
 import { migrateV2, dismissV2Migration } from '../storage/migration';
 import { newLorebook, newMemory } from '../types/factories';
-import { relativeTime, formatBytes, truncate } from '../utils/text';
+import { relativeTime, formatBytes } from '../utils/text';
 import {
   backupAdvice,
   readStorageStatus,
@@ -21,6 +22,7 @@ export function DashboardPage({
   const state = useAppState();
   const actions = useActions();
   const [migrating, setMigrating] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
 
   // Storage durability feeds the wording: an un-persisted origin is a stronger
   // reason to back up than a persisted one.
@@ -42,7 +44,7 @@ export function DashboardPage({
       state.stories
         .filter((s) => !s.archived)
         .sort((a, b) => b.updatedAt - a.updatedAt)
-        .slice(0, 4),
+        .slice(0, 12),
     [state.stories],
   );
 
@@ -51,9 +53,20 @@ export function DashboardPage({
       state.chats
         .filter((c) => !c.archived)
         .sort((a, b) => b.updatedAt - a.updatedAt)
-        .slice(0, 5),
+        .slice(0, 4),
     [state.chats],
   );
+
+  /** The cover for a story: its own, else the primary character's portrait. */
+  const coverFor = (story: (typeof state.stories)[number]) => {
+    if (story.coverMediaId) return { mediaId: story.coverMediaId, name: story.title };
+    const link =
+      story.characters.find((c) => c.primary && c.enabled) ?? story.characters.find((c) => c.enabled);
+    const character = link ? state.characters.find((c) => c.id === link.characterId) : null;
+    return character
+      ? { mediaId: character.avatarMediaId, url: character.avatarUrl, name: character.name }
+      : null;
+  };
 
   const provider = state.providers.find((p) => p.id === state.settings.activeProviderId) ?? null;
 
@@ -190,158 +203,22 @@ export function DashboardPage({
           </Banner>
         )}
 
-        <section className="section">
-          <h2 className="section-title">Quick actions</h2>
-          <div className="grid">
-            {[
-              { label: 'New Character', icon: 'users', run: () => navigate('character', 'new') },
-              { label: 'New Persona', icon: 'user', run: () => navigate('persona', 'new') },
-              { label: 'New Story', icon: 'book', run: () => navigate('story', 'new') },
-              {
-                label: 'New Chat',
-                icon: 'chat',
-                run: async () => {
-                  const story = state.stories.filter((s) => !s.archived)[0];
-                  if (!story) {
-                    actions.toast({
-                      kind: 'warn',
-                      title: 'Create a story first',
-                      detail: 'A chat needs a story to hold its characters.',
-                    });
-                    navigate('stories');
-                    return;
-                  }
-                  const chat = await actions.createChat({ storyId: story.id });
-                  navigate('chat', chat.id);
-                },
-              },
-              {
-                label: 'New Lorebook',
-                icon: 'scroll',
-                run: async () => {
-                  const book = await actions.saveLorebook(newLorebook({ name: 'New Lorebook' }));
-                  navigate('lorebook', book.id);
-                },
-              },
-              {
-                label: 'New Memory',
-                icon: 'brain',
-                run: async () => {
-                  await actions.saveMemory(
-                    newMemory({ title: 'New memory', content: '' }),
-                  );
-                  navigate('memories');
-                },
-              },
-              { label: 'Import', icon: 'upload', run: () => navigate('transfer') },
-              { label: 'Backup', icon: 'download', run: () => navigate('transfer') },
-            ].map((action) => (
-              <button key={action.label} type="button" className="card card-button" onClick={action.run}>
-                <Icon name={action.icon} />
-                <span style={{ fontWeight: 550 }}>{action.label}</span>
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="section">
-          <h2 className="section-title">Library</h2>
-          <div className="stat-grid">
-            {[
-              ['Characters', state.characters.length, 'characters' as RouteName],
-              ['Personas', state.personas.length, 'personas' as RouteName],
-              ['Stories', state.stories.length, 'stories' as RouteName],
-              ['Chats', state.chats.length, 'chat' as RouteName],
-              ['Lorebooks', state.lorebooks.length, 'lorebooks' as RouteName],
-              ['Memories', state.memories.length, 'memories' as RouteName],
-              ['Images', state.media.length, 'media' as RouteName],
-            ].map(([label, value, route]) => (
-              <button
-                key={label as string}
-                type="button"
-                className="stat"
-                onClick={() => navigate(route as RouteName)}
-              >
-                <b>{value as number}</b>
-                <span>{label as string}</span>
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="section">
-          <h2 className="section-title">
-            Recent stories
-            <button type="button" className="btn btn-sm btn-ghost" onClick={() => navigate('stories')}>
-              See all
-            </button>
-          </h2>
-          {!recentStories.length ? (
-            <EmptyState
-              icon="book"
-              title="No stories yet"
-              message="A story is where characters, lorebooks and chats come together."
-              action={
-                <button type="button" className="btn btn-primary" onClick={() => navigate('story', 'new')}>
-                  <Icon name="plus" />
-                  Create your first story
-                </button>
-              }
-            />
-          ) : (
-            <div className="list">
-              {recentStories.map((story) => {
-                const cast = story.characters
-                  .map((link) => state.characters.find((c) => c.id === link.characterId))
-                  .filter(Boolean);
-                return (
-                  <button
-                    key={story.id}
-                    type="button"
-                    className="card card-button"
-                    onClick={() => navigate('story', story.id)}
-                  >
-                    {cast[0] ? (
-                      <Avatar
-                        mediaId={cast[0]!.avatarMediaId}
-                        fallbackUrl={cast[0]!.avatarUrl}
-                        name={cast[0]!.name}
-                        size={44}
-                        square
-                      />
-                    ) : (
-                      <Icon name="book" />
-                    )}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="truncate" style={{ fontWeight: 600 }}>
-                        {story.title || 'Untitled story'}
-                      </div>
-                      <div className="small muted truncate">
-                        {cast.length
-                          ? cast.map((c) => c!.name).join(', ')
-                          : truncate(story.description, 60) || 'No characters yet'}
-                      </div>
-                      <div className="small muted">{relativeTime(story.updatedAt)}</div>
-                    </div>
-                    <Icon name="chevronRight" />
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </section>
-
+        {/*
+          What you were last reading comes first: nine times in ten the reason
+          for opening the app is already open somewhere.
+        */}
         {!!recentChats.length && (
           <section className="section">
             <h2 className="section-title">
-              Recent chats
+              Continue
               <button type="button" className="btn btn-sm btn-ghost" onClick={() => navigate('chat')}>
-                See all
+                All chats
               </button>
             </h2>
             <div className="list">
               {recentChats.map((chat) => {
-                const story = state.stories.find((s) => s.id === chat.storyId);
+                const story = state.stories.find((s) => s.id === chat.storyId) ?? null;
+                const cover = story ? coverFor(story) : null;
                 return (
                   <button
                     key={chat.id}
@@ -349,7 +226,17 @@ export function DashboardPage({
                     className="card card-button"
                     onClick={() => navigate('chat', chat.id)}
                   >
-                    <Icon name="chat" />
+                    {cover ? (
+                      <Avatar
+                        mediaId={cover.mediaId}
+                        fallbackUrl={cover.url}
+                        name={cover.name}
+                        size={40}
+                        square
+                      />
+                    ) : (
+                      <Icon name="chat" />
+                    )}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div className="truncate" style={{ fontWeight: 600 }}>
                         {chat.title}
@@ -365,7 +252,128 @@ export function DashboardPage({
             </div>
           </section>
         )}
+
+        {/*
+          A shelf, not a settings panel: covers at a readable size, the title
+          under each, and nothing else competing for the tap.
+        */}
+        <section className="section">
+          <h2 className="section-title">
+            Your stories
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => navigate('stories')}>
+              See all
+            </button>
+          </h2>
+          {!recentStories.length ? (
+            <EmptyState
+              icon="book"
+              title="Nothing here yet"
+              message="A story is where characters, lorebooks and chats come together."
+              action={
+                <button type="button" className="btn btn-primary" onClick={() => navigate('story', 'new')}>
+                  <Icon name="plus" />
+                  Create your first story
+                </button>
+              }
+            />
+          ) : (
+            <div className="shelf">
+              {recentStories.map((story) => {
+                const cover = coverFor(story);
+                return (
+                  <button
+                    key={story.id}
+                    type="button"
+                    className="shelf-item"
+                    onClick={() => navigate('story', story.id)}
+                  >
+                    <span className="shelf-cover">
+                      {cover?.mediaId ? (
+                        <MediaImage mediaId={cover.mediaId} alt={story.title || 'Untitled story'} />
+                      ) : cover?.url ? (
+                        <img src={cover.url} alt={story.title || 'Untitled story'} loading="lazy" />
+                      ) : (
+                        <Icon name="book" />
+                      )}
+                    </span>
+                    <span className="shelf-title truncate">{story.title || 'Untitled story'}</span>
+                    <span className="shelf-meta truncate">{relativeTime(story.updatedAt)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </section>
       </div>
+
+      {/*
+        One button for everything that creates something. The eight-tile grid
+        this replaces put every action on screen at once and made none of them
+        look like the point.
+      */}
+      <button
+        type="button"
+        className="fab"
+        aria-label="Create something new"
+        onClick={() => setCreateOpen(true)}
+      >
+        <Icon name="plus" />
+      </button>
+
+      <ActionSheet
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        title="Create"
+        actions={[
+          {
+            key: 'story',
+            label: 'New story',
+            description: 'A campaign: cast, world, lorebooks, chats.',
+            icon: 'book',
+            onSelect: () => navigate('story', 'new'),
+          },
+          {
+            key: 'character',
+            label: 'New character',
+            description: 'Reusable across every story.',
+            icon: 'users',
+            onSelect: () => navigate('character', 'new'),
+          },
+          {
+            key: 'persona',
+            label: 'New persona',
+            description: 'Who you play.',
+            icon: 'user',
+            onSelect: () => navigate('persona', 'new'),
+          },
+          {
+            key: 'lorebook',
+            label: 'New lorebook',
+            icon: 'scroll',
+            onSelect: async () => {
+              const book = await actions.saveLorebook(newLorebook({ name: 'New Lorebook' }));
+              navigate('lorebook', book.id);
+            },
+          },
+          {
+            key: 'memory',
+            label: 'New memory',
+            icon: 'brain',
+            onSelect: async () => {
+              await actions.saveMemory(newMemory({ title: 'New memory', content: '' }));
+              navigate('memories');
+            },
+          },
+          {
+            key: 'import',
+            label: 'Import a file',
+            description: 'Character cards, lorebooks, chat logs, backups.',
+            icon: 'upload',
+            separatorBefore: true,
+            onSelect: () => navigate('transfer'),
+          },
+        ]}
+      />
     </>
   );
 }

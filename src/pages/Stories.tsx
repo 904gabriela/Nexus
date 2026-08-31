@@ -262,7 +262,7 @@ export function StoriesPage({
 
 /* -------------------------------------------------------- story editor */
 
-type TabId = 'overview' | 'cast' | 'lore' | 'memories' | 'media' | 'settings';
+type TabId = 'overview' | 'world' | 'cast' | 'lore' | 'memories' | 'media' | 'settings';
 
 export function StoryEditor({
   storyId,
@@ -423,6 +423,7 @@ export function StoryEditor({
         <Tabs
           tabs={[
             { id: 'overview', label: 'Overview' },
+            { id: 'world', label: 'World' },
             { id: 'cast', label: 'Cast', badge: draft.characters.length },
             { id: 'lore', label: 'Lorebooks', badge: draft.lorebookIds.length },
             { id: 'memories', label: 'Memories' },
@@ -443,42 +444,20 @@ export function StoryEditor({
               onChange={(title) => patch({ title })}
               error={error ?? undefined}
             />
+            <ImagePicker
+              label="Cover"
+              mediaId={draft.coverMediaId}
+              onChange={(coverMediaId) => patch({ coverMediaId })}
+              ownerType="story-cover"
+              ownerId={draft.id}
+              shape="wide"
+              hint="Shown on the story card in your library."
+            />
             <TextArea
-              label="Description"
+              label="Summary"
               value={draft.description}
               onChange={(description) => patch({ description })}
-              hint="A short summary of the world. Included in the AI context."
-            />
-            <TextArea
-              label="Scenario"
-              value={draft.scenario}
-              onChange={(scenario) => patch({ scenario })}
-              large
-              hint="The situation the roleplay takes place in. Overrides each character's own scenario."
-            />
-            <TextArea
-              label="Opening scene"
-              value={draft.openingMessage}
-              onChange={(openingMessage) => patch({ openingMessage })}
-              large
-              hint={openingHint}
-            />
-            <div className="row">
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={writeOpening}
-                disabled={writingOpening}
-              >
-                {writingOpening ? <span className="spinner" /> : <Icon name="sparkle" />}
-                {draft.openingMessage.trim() ? 'Rewrite opening scene' : 'Write an opening scene'}
-              </button>
-            </div>
-            <TextArea
-              label="Author's note"
-              value={draft.authorNote}
-              onChange={(authorNote) => patch({ authorNote })}
-              hint="Injected near the end of the context for maximum steering weight — tone, pacing, style directions."
+              hint="What this story is, in a line or two. Included in the AI context."
             />
             <TagField label="Tags" values={draft.tags} onChange={(tags) => patch({ tags })} />
             <div className="row">
@@ -530,6 +509,62 @@ export function StoryEditor({
                 )}
               </>
             )}
+          </>
+        )}
+
+        {/*
+          The world: what is true here and what has already happened. Scenario
+          is a situation and moves with the story; rules and timeline hold for
+          the whole campaign, which is why they are separate fields rather than
+          more paragraphs inside the scenario.
+        */}
+        {tab === 'world' && (
+          <>
+            <TextArea
+              label="Scenario"
+              value={draft.scenario}
+              onChange={(scenario) => patch({ scenario })}
+              large
+              hint="The situation the roleplay takes place in. Overrides each character's own scenario."
+            />
+            <TextArea
+              label="World rules"
+              value={draft.rules}
+              onChange={(rules) => patch({ rules })}
+              large
+              hint="How this world works — what is possible, what is forbidden, what the narrator must respect."
+            />
+            <TextArea
+              label="Timeline"
+              value={draft.timeline}
+              onChange={(timeline) => patch({ timeline })}
+              large
+              hint="What has already happened, in order. The campaign's history up to now."
+            />
+            <TextArea
+              label="Opening scene"
+              value={draft.openingMessage}
+              onChange={(openingMessage) => patch({ openingMessage })}
+              large
+              hint={openingHint}
+            />
+            <div className="row">
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={writeOpening}
+                disabled={writingOpening}
+              >
+                {writingOpening ? <span className="spinner" /> : <Icon name="sparkle" />}
+                {draft.openingMessage.trim() ? 'Rewrite opening scene' : 'Write an opening scene'}
+              </button>
+            </div>
+            <TextArea
+              label="Author's note"
+              value={draft.authorNote}
+              onChange={(authorNote) => patch({ authorNote })}
+              hint="Injected near the end of the context for maximum steering weight — tone, pacing, style directions."
+            />
           </>
         )}
 
@@ -607,15 +642,6 @@ export function StoryEditor({
 
         {tab === 'media' && (
           <>
-            <ImagePicker
-              label="Story cover"
-              mediaId={draft.coverMediaId}
-              onChange={(coverMediaId) => patch({ coverMediaId })}
-              ownerType="story-cover"
-              ownerId={draft.id}
-              shape="wide"
-              hint="Shown on the story card in your library."
-            />
             <ImagePicker
               label="Chat background"
               mediaId={draft.backgroundMediaId}

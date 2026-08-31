@@ -621,6 +621,39 @@ function compileContextInner(input: CompileInput): CompileResult {
         ),
       );
     }
+    // What holds for the whole campaign, as opposed to the situation the
+    // scenario describes. Rules rank with the scenario because breaking them
+    // breaks the world; the timeline sits just under, being history.
+    if (story.rules?.trim()) {
+      parts.push(
+        part(
+          'rules',
+          'World rules',
+          'story',
+          macro(
+            `## How this world works\n${story.rules.trim()}\n\n` +
+              'These hold for the whole story. Do not write anything that contradicts them.',
+          ),
+          'World rules set for this story.',
+          PRIORITY.scenario + 1,
+        ),
+      );
+    }
+    if (story.timeline?.trim()) {
+      parts.push(
+        part(
+          'timeline',
+          'Timeline',
+          'story',
+          macro(
+            `## What has already happened\n${story.timeline.trim()}\n\n` +
+              'This is the story’s past, not the current scene.',
+          ),
+          'Story timeline.',
+          PRIORITY.scenario - 1,
+        ),
+      );
+    }
   } else if (responding?.scenario?.trim()) {
     parts.push(
       part(

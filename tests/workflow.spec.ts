@@ -24,6 +24,11 @@ import {
   sheetAction,
 } from './helpers';
 
+/** Expands one of the character editor's collapsed sections. */
+async function openSection(page: Page, title: string) {
+  await page.locator('.disclosure > summary', { hasText: title }).first().click();
+}
+
 test.beforeEach(async ({ page }) => {
   await mockAI(page, [
     'The tavern door creaks open. "You made it," she says.',
@@ -42,12 +47,12 @@ test.beforeEach(async ({ page }) => {
 test('steps 1-9: create a character with every field, an avatar, then edit it', async ({ page }) => {
   await goto(page, '#/character/new');
 
-  // 2. Fill major fields across the tabbed editor.
+  // 2. The five fields a character actually needs are the ones on screen.
   await field(page, 'Name').fill('Seraphine Vale');
-  await field(page, 'Display name').fill('Sera');
-  await field(page, 'Age').fill('27');
-  await field(page, 'Pronouns').fill('she/her');
-  await field(page, 'Occupation').fill('Innkeeper');
+  await field(page, 'Description').fill('Warm, watchful, and impossible to lie to.');
+  await field(page, 'Personality').fill('Wry, protective, quietly grieving.');
+  await page.getByRole('button', { name: 'Add greeting' }).click();
+  await field(page, 'Greeting 1 text').fill('*She looks up from the bar.* "Sit anywhere you like."');
 
   // 3. Upload an avatar from the device gallery.
   await page
@@ -56,19 +61,24 @@ test('steps 1-9: create a character with every field, an avatar, then edit it', 
     .setInputFiles({ name: 'sera.png', mimeType: 'image/png', buffer: PNG_BYTES });
   await expect(page.locator('.image-picker-preview img')).toBeVisible();
 
-  await page.getByRole('tab', { name: 'Description' }).click();
-  await field(page, 'Short description').fill('The innkeeper of the Nexus Tavern.');
-  await field(page, 'Full description').fill('Warm, watchful, and impossible to lie to.');
-  await field(page, 'Personality').fill('Wry, protective, quietly grieving.');
+  // Everything else is a tab away and folded until asked for. Nothing was
+  // dropped in the simplification — every field is still here.
+  await page.getByRole('tab', { name: 'Details' }).click();
+  await openSection(page, 'Identity');
+  await field(page, 'Display name').fill('Sera');
+  await field(page, 'Age').fill('27');
+  await field(page, 'Pronouns').fill('she/her');
+  await field(page, 'Occupation').fill('Innkeeper');
 
-  await page.getByRole('tab', { name: 'Background' }).click();
+  await openSection(page, 'Appearance and manner');
+  await field(page, 'Short description').fill('The innkeeper of the Nexus Tavern.');
+
+  await openSection(page, 'Background');
   await field(page, 'Backstory').fill('She inherited the tavern from her mother.');
   await field(page, 'Secrets').fill('The cellar door has not been opened in ten years.');
 
-  await page.getByRole('tab', { name: 'Roleplay' }).click();
+  await openSection(page, 'World and lorebooks');
   await field(page, 'Scenario').fill('A storm has trapped travellers inside the tavern.');
-  await page.getByRole('button', { name: 'Add greeting' }).click();
-  await field(page, 'Greeting 1 text').fill('*She looks up from the bar.* "Sit anywhere you like."');
 
   // 4. Save.
   await page.getByRole('button', { name: 'Save' }).first().click();
@@ -90,6 +100,8 @@ test('steps 1-9: create a character with every field, an avatar, then edit it', 
 
   // 7-9. Edit, save, verify.
   await page.getByText('Seraphine Vale').first().click();
+  await page.getByRole('tab', { name: 'Details' }).click();
+  await openSection(page, 'Identity');
   await field(page, 'Nickname').fill('Sera of the Vale');
   await page.getByRole('button', { name: 'Save' }).first().click();
   await expect(page.getByText(/^Saved /).first()).toBeVisible();
@@ -380,6 +392,7 @@ test('steps 41-48: build a story with a cast, persona, lorebook and media', asyn
 
   await goto(page, '#/story/new');
   await field(page, 'Title').fill('The Long Storm');
+  await page.getByRole('tab', { name: 'World' }).click();
   await field(page, 'Scenario').fill('Travellers wait out a storm in the Nexus Tavern.');
 
   // 42. Multiple characters.
@@ -397,12 +410,19 @@ test('steps 41-48: build a story with a cast, persona, lorebook and media', asyn
   await page.getByRole('tab', { name: /Lorebooks/ }).click();
   await page.getByRole('switch', { name: /Ashfell/ }).click();
 
-  // 45-46. Cover and background.
-  await page.getByRole('tab', { name: 'Media' }).click();
-  const fileInputs = page.locator('input[type=file][accept*="image"]');
-  await fileInputs.nth(0).setInputFiles({ name: 'cover.png', mimeType: 'image/png', buffer: PNG_BYTES });
+  // 45-46. Cover (Overview, where the story's identity lives) and the chat
+  // background (Media).
+  await page.getByRole('tab', { name: 'Overview' }).click();
+  await page
+    .locator('input[type=file][accept*="image"]')
+    .nth(0)
+    .setInputFiles({ name: 'cover.png', mimeType: 'image/png', buffer: PNG_BYTES });
   await page.waitForTimeout(300);
-  await fileInputs.nth(2).setInputFiles({ name: 'bg.png', mimeType: 'image/png', buffer: PNG_BYTES });
+  await page.getByRole('tab', { name: 'Media' }).click();
+  await page
+    .locator('input[type=file][accept*="image"]')
+    .nth(0)
+    .setInputFiles({ name: 'bg.png', mimeType: 'image/png', buffer: PNG_BYTES });
   await page.waitForTimeout(300);
 
   // 47-48. Save and refresh.
@@ -428,6 +448,7 @@ test('an existing story can be edited without recreating it', async ({ page }) =
   await goto(page, '#/stories');
   await page.getByRole('button', { name: 'Edit' }).first().click();
   await field(page, 'Title').fill('The Long Storm — Revised');
+  await page.getByRole('tab', { name: 'World' }).click();
   await field(page, "Author's note").fill('Keep the pacing slow and the tavern warm.');
   await page.getByRole('button', { name: 'Save' }).first().click();
   await page.reload();

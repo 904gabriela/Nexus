@@ -293,6 +293,14 @@ export interface Story extends Timestamped {
   title: string;
   description: string;
   scenario: string;
+  /**
+   * How this world works — what is possible in it, what is forbidden, what the
+   * narrator must respect. Distinct from the scenario, which is a situation
+   * and changes as the story moves; rules hold for the whole campaign.
+   */
+  rules: string;
+  /** What has already happened, in order. The campaign's history. */
+  timeline: string;
   authorNote: string;
   /**
    * The message a new chat opens with. Takes precedence over the primary

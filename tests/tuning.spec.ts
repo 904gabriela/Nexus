@@ -64,7 +64,8 @@ test("a story's own opening message replaces the character greeting", async ({ p
   await goto(page, '#/stories');
   await page.getByRole('button', { name: /Actions for/ }).first().click();
   await sheetAction(page, /^Edit/);
-  await field(page, 'Opening message').fill('Snow has sealed the pass.');
+  await page.getByRole('tab', { name: 'World' }).click();
+  await field(page, 'Opening scene').fill('Snow has sealed the pass.');
   await page.getByRole('button', { name: 'Save' }).first().click();
 
   await startChat(page);

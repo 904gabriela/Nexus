@@ -4,22 +4,24 @@ import { newCharacter, newGreeting } from '../types/factories';
 import { useActions, useAppState } from '../state/store';
 import { useConfirm, deleteConfirm } from '../components/ui/Confirm';
 import { Icon } from '../components/ui/Icon';
-import { Tabs, CustomFieldsEditor, Banner } from '../components/ui/common';
+import { Tabs, CustomFieldsEditor, Banner, Disclosure } from '../components/ui/common';
 import { TagField, TextArea, TextField, Toggle } from '../components/ui/Field';
 import { ImagePicker } from '../components/media/ImagePicker';
 import { downloadFile, exportCharacter, exportCharacterAsCardV2, exportFilename } from '../exporters';
 import { ActionSheet } from '../components/ui/Sheet';
 import { getMediaBlob, blobToDataUrl } from '../media/mediaStore';
 
-type TabId = 'identity' | 'description' | 'background' | 'roleplay' | 'relations' | 'world' | 'advanced';
+/*
+ * Three tabs, not seven, and everything past the first five fields is folded
+ * away. A character card carries thirty-odd fields; a character usually needs
+ * five, and showing the other twenty-five at once made every one of them look
+ * equally required. Nothing is removed — Details and Advanced hold the lot.
+ */
+type TabId = 'essentials' | 'details' | 'advanced';
 
 const TABS: Array<{ id: TabId; label: string }> = [
-  { id: 'identity', label: 'Identity' },
-  { id: 'description', label: 'Description' },
-  { id: 'background', label: 'Background' },
-  { id: 'roleplay', label: 'Roleplay' },
-  { id: 'relations', label: 'Relationships' },
-  { id: 'world', label: 'World' },
+  { id: 'essentials', label: 'Essentials' },
+  { id: 'details', label: 'Details' },
   { id: 'advanced', label: 'Advanced' },
 ];
 
@@ -42,7 +44,7 @@ export function CharacterEditor({
   );
 
   const [draft, setDraft] = useState<Character>(() => existing ?? newCharacter());
-  const [tab, setTab] = useState<TabId>('identity');
+  const [tab, setTab] = useState<TabId>('essentials');
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -57,7 +59,7 @@ export function CharacterEditor({
     const next: Record<string, string> = {};
     if (!draft.name.trim()) next.name = 'A character needs a name.';
     setErrors(next);
-    if (Object.keys(next).length) setTab('identity');
+    if (Object.keys(next).length) setTab('essentials');
     return !Object.keys(next).length;
   };
 
@@ -146,7 +148,7 @@ export function CharacterEditor({
       <div className="page">
         <Tabs tabs={TABS} active={tab} onChange={setTab} label="Character sections" />
 
-        {tab === 'identity' && (
+        {tab === 'essentials' && (
           <>
             <ImagePicker
               label="Avatar"
@@ -167,6 +169,25 @@ export function CharacterEditor({
               error={errors.name}
               hint="How the AI refers to this character. Used for the {{char}} macro."
             />
+            <TextArea
+              label="Description"
+              value={draft.description}
+              onChange={(v) => patch({ description: v })}
+              large
+              hint="The main body of the character. Supports {{char}} and {{user}} macros."
+            />
+            <TextArea label="Personality" value={draft.personality} onChange={(v) => patch({ personality: v })} large />
+            <GreetingsEditor
+              greetings={draft.greetings}
+              defaultId={draft.defaultGreetingId}
+              onChange={(greetings, defaultGreetingId) => patch({ greetings, defaultGreetingId })}
+            />
+          </>
+        )}
+
+        {tab === 'details' && (
+          <>
+            <Disclosure title="Identity" hint="Age, pronouns, occupation, tags">
             <div className="field-row field-row-2">
               <TextField label="Display name" value={draft.displayName} onChange={(v) => patch({ displayName: v })} />
               <TextField label="Nickname" value={draft.nickname} onChange={(v) => patch({ nickname: v })} />
@@ -191,34 +212,22 @@ export function CharacterEditor({
               checked={draft.favorite}
               onChange={(favorite) => patch({ favorite })}
             />
-          </>
-        )}
+            </Disclosure>
 
-        {tab === 'description' && (
-          <>
+            <Disclosure title="Appearance and manner">
             <TextField
               label="Short description"
               value={draft.shortDescription}
               onChange={(v) => patch({ shortDescription: v })}
               hint="One line shown in the library and used as a summary."
             />
-            <TextArea
-              label="Full description"
-              value={draft.description}
-              onChange={(v) => patch({ description: v })}
-              large
-              hint="The main body of the character. Supports {{char}} and {{user}} macros."
-            />
             <TextArea label="Appearance" value={draft.appearance} onChange={(v) => patch({ appearance: v })} />
             <TextArea label="Physical traits" value={draft.physicalTraits} onChange={(v) => patch({ physicalTraits: v })} />
-            <TextArea label="Personality" value={draft.personality} onChange={(v) => patch({ personality: v })} large />
             <TextArea label="Temperament" value={draft.temperament} onChange={(v) => patch({ temperament: v })} />
             <TagField label="Traits" values={draft.traits} onChange={(traits) => patch({ traits })} />
-          </>
-        )}
+            </Disclosure>
 
-        {tab === 'background' && (
-          <>
+            <Disclosure title="Background">
             <TextArea label="Backstory" value={draft.backstory} onChange={(v) => patch({ backstory: v })} large />
             <TextArea label="History" value={draft.history} onChange={(v) => patch({ history: v })} />
             <div className="field-row field-row-2">
@@ -238,48 +247,9 @@ export function CharacterEditor({
               <TextArea label="Values" value={draft.values} onChange={(v) => patch({ values: v })} />
               <TextArea label="Beliefs" value={draft.beliefs} onChange={(v) => patch({ beliefs: v })} />
             </div>
-          </>
-        )}
+            </Disclosure>
 
-        {tab === 'roleplay' && (
-          <>
-            <TextArea
-              label="Scenario"
-              value={draft.scenario}
-              onChange={(v) => patch({ scenario: v })}
-              hint="The default situation when a chat begins. A story's scenario overrides this."
-            />
-            <GreetingsEditor
-              greetings={draft.greetings}
-              defaultId={draft.defaultGreetingId}
-              onChange={(greetings, defaultGreetingId) => patch({ greetings, defaultGreetingId })}
-            />
-            <TextArea label="Speaking style" value={draft.speakingStyle} onChange={(v) => patch({ speakingStyle: v })} />
-            <TextArea label="Speech patterns" value={draft.speechPatterns} onChange={(v) => patch({ speechPatterns: v })} />
-            <TextArea
-              label="Example dialogue"
-              value={draft.exampleDialogue}
-              onChange={(v) => patch({ exampleDialogue: v })}
-              large
-              hint="Teaches the model the character's voice. Use {{char}}: and {{user}}: prefixes."
-            />
-            <TextArea
-              label="System prompt"
-              value={draft.systemPrompt}
-              onChange={(v) => patch({ systemPrompt: v })}
-              hint="Added to the global system prompt whenever this character is active."
-            />
-            <TextArea
-              label="Author's note"
-              value={draft.authorNote}
-              onChange={(v) => patch({ authorNote: v })}
-              hint="Injected near the end of the context, where it steers the reply most strongly."
-            />
-          </>
-        )}
-
-        {tab === 'relations' && (
-          <>
+            <Disclosure title="Relationships">
             <TextArea label="Relationships" value={draft.relationships} onChange={(v) => patch({ relationships: v })} large />
             <div className="field-row field-row-2">
               <TextArea label="Friends" value={draft.friends} onChange={(v) => patch({ friends: v })} />
@@ -289,11 +259,15 @@ export function CharacterEditor({
               <TextArea label="Family" value={draft.family} onChange={(v) => patch({ family: v })} />
               <TextArea label="Romantic relationships" value={draft.romantic} onChange={(v) => patch({ romantic: v })} />
             </div>
-          </>
-        )}
+            </Disclosure>
 
-        {tab === 'world' && (
-          <>
+            <Disclosure title="World and lorebooks">
+            <TextArea
+              label="Scenario"
+              value={draft.scenario}
+              onChange={(v) => patch({ scenario: v })}
+              hint="The default situation when a chat begins. A story's scenario overrides this."
+            />
             <div className="field-row field-row-2">
               <TextField label="Home" value={draft.home} onChange={(v) => patch({ home: v })} />
               <TextField label="Location" value={draft.location} onChange={(v) => patch({ location: v })} />
@@ -302,7 +276,6 @@ export function CharacterEditor({
               <TextField label="Faction" value={draft.faction} onChange={(v) => patch({ faction: v })} />
               <TextField label="World" value={draft.world} onChange={(v) => patch({ world: v })} />
             </div>
-
             <div className="field">
               <span className="field-label">Attached lorebooks</span>
               <div className="field-hint" style={{ marginBottom: 8 }}>
@@ -334,11 +307,37 @@ export function CharacterEditor({
                 </div>
               )}
             </div>
+            </Disclosure>
           </>
         )}
 
         {tab === 'advanced' && (
           <>
+            <Disclosure title="Voice" hint="How this character sounds" defaultOpen>
+            <TextArea label="Speaking style" value={draft.speakingStyle} onChange={(v) => patch({ speakingStyle: v })} />
+            <TextArea label="Speech patterns" value={draft.speechPatterns} onChange={(v) => patch({ speechPatterns: v })} />
+            <TextArea
+              label="Example dialogue"
+              value={draft.exampleDialogue}
+              onChange={(v) => patch({ exampleDialogue: v })}
+              large
+              hint="Teaches the model the character's voice. Use {{char}}: and {{user}}: prefixes."
+            />
+            <TextArea
+              label="System prompt"
+              value={draft.systemPrompt}
+              onChange={(v) => patch({ systemPrompt: v })}
+              hint="Added to the global system prompt whenever this character is active."
+            />
+            <TextArea
+              label="Author's note"
+              value={draft.authorNote}
+              onChange={(v) => patch({ authorNote: v })}
+              hint="Injected near the end of the context, where it steers the reply most strongly."
+            />
+            </Disclosure>
+
+            <Disclosure title="Provenance and custom fields">
             <TextField label="Creator" value={draft.creator} onChange={(v) => patch({ creator: v })} />
             <TextArea label="Creator notes" value={draft.creatorNotes} onChange={(v) => patch({ creatorNotes: v })} />
             <TextField label="Version" value={draft.version} onChange={(v) => patch({ version: v })} />
@@ -364,6 +363,7 @@ export function CharacterEditor({
                 Delete character
               </button>
             )}
+            </Disclosure>
           </>
         )}
       </div>

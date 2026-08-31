@@ -597,7 +597,8 @@ test('a lorebook can be attached to a story and to a character from the UI', asy
   // Attach to a character.
   await goto(page, '#/characters');
   await page.getByText('Sera').first().click();
-  await page.getByRole('tab', { name: 'World' }).click();
+  await page.getByRole('tab', { name: 'Details' }).click();
+  await page.locator('.disclosure > summary', { hasText: 'World and lorebooks' }).first().click();
   await page.getByRole('switch', { name: /Ashfell Lore/ }).click();
   await page.getByRole('button', { name: 'Save' }).first().click();
   await expect(page.getByText(/^Saved /).first()).toBeVisible();

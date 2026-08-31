@@ -200,6 +200,35 @@ export function CustomFieldsEditor({
 }
 
 /** Highlights query matches without ever injecting HTML. */
+/**
+ * A collapsed section.
+ *
+ * Editors that carry thirty fields do not need thirty fields on screen. Native
+ * `<details>` keeps this keyboard-accessible and findable by the browser's own
+ * find-in-page (which expands it) without a line of state.
+ */
+export function Disclosure({
+  title,
+  hint,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details className="disclosure" open={defaultOpen}>
+      <summary>
+        <span className="disclosure-title">{title}</span>
+        {hint && <span className="disclosure-hint">{hint}</span>}
+      </summary>
+      <div className="disclosure-body">{children}</div>
+    </details>
+  );
+}
+
 export function Highlight({ text, query }: { text: string; query: string }) {
   const needle = query.trim();
   if (!needle) return <>{text}</>;

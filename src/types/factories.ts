@@ -210,6 +210,8 @@ export function newStory(partial: Partial<Story> = {}): Story {
     title: '',
     description: '',
     scenario: '',
+    rules: '',
+    timeline: '',
     authorNote: '',
     openingMessage: '',
     tags: [],
