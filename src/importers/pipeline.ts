@@ -47,6 +47,17 @@ import {
   normalizeStory,
 } from './normalize';
 import { emptyScene } from '../types';
+import {
+  COLLECTION_KEYS,
+  documentCounts,
+  fromLegacyEnvelope,
+  isNexusDocument,
+  LEGACY_FORMAT,
+  NEXUS_FORMAT,
+  subjectAvatar,
+  type CollectionKey,
+  type NexusDocument,
+} from '../schema/nexus';
 import { readCharacterCardFromPng } from './pngMetadata';
 import * as repo from '../storage/repositories';
 import { importDataUrl, saveMedia } from '../media/mediaStore';
@@ -202,10 +213,15 @@ export function detectKind(value: unknown, filename = ''): { kind: ImportKind; f
 
   if (!isPlainObject(value)) return { kind: 'unknown', format: 'scalar' };
 
-  // Our own envelope.
-  if (value.format === 'nexus-tavern-pro' && typeof value.kind === 'string') {
+  // Our own documents. parseJson handles these before detection is reached;
+  // detectKind still answers for them because callers use it for previews.
+  if (value.format === NEXUS_FORMAT && typeof value.kind === 'string') {
+    const kind = (value.kind === 'mixed' ? 'backup' : value.kind) as ImportKind;
+    if (IMPORT_KIND_LABELS[kind]) return { kind, format: 'Nexus document' };
+  }
+  if (value.format === LEGACY_FORMAT && typeof value.kind === 'string') {
     const kind = value.kind as ImportKind;
-    if (IMPORT_KIND_LABELS[kind]) return { kind, format: 'Storyline export' };
+    if (IMPORT_KIND_LABELS[kind]) return { kind, format: 'Nexus export (pre-schema)' };
   }
 
   // A raw backup body.
@@ -277,8 +293,16 @@ export function detectKind(value: unknown, filename = ''): { kind: ImportKind; f
 
 /* ---------------------------------------------------------------- parse */
 
+/**
+ * Unwraps a pre-schema envelope for the foreign-format builders.
+ *
+ * `parseJson` lifts our own envelopes into documents before it gets this far,
+ * so this only fires for a file that carries the old marker with a payload
+ * shape `fromLegacyEnvelope` did not recognise — a hand-edited export, most
+ * likely, which is better handled by the detectors than rejected.
+ */
 function unwrapEnvelope(value: unknown): unknown {
-  if (isPlainObject(value) && value.format === 'nexus-tavern-pro' && 'data' in value) {
+  if (isPlainObject(value) && value.format === LEGACY_FORMAT && 'data' in value) {
     return value.data;
   }
   return value;
@@ -310,6 +334,17 @@ export async function parseFile(read: ReadFile): Promise<ParsedImport> {
 }
 
 export async function parseJson(input: unknown, sourceName: string): Promise<ParsedImport> {
+  // Anything Nexus wrote goes through one reader, whatever it is about. The
+  // per-kind builders below exist for foreign formats — cards, world-info
+  // dumps, chat logs — which is the only place shape-guessing belongs.
+  const own = isNexusDocument(input)
+    ? { doc: input, format: 'Nexus document' }
+    : (() => {
+        const lifted = fromLegacyEnvelope(input);
+        return lifted ? { doc: lifted, format: 'Nexus export (pre-schema)' } : null;
+      })();
+  if (own) return buildNexusImport(own.doc, sourceName, own.format);
+
   const detected = detectKind(input, sourceName);
   const body = unwrapEnvelope(input);
 
@@ -337,6 +372,170 @@ export async function parseJson(input: unknown, sourceName: string): Promise<Par
           'If this is a plain text file, rename it to .txt and import it again to choose a type manually.',
       );
   }
+}
+
+/* -------------------------------------------------- our own documents */
+
+const COLLECTION_LABELS: Partial<Record<CollectionKey, string>> = {
+  characters: 'characters',
+  personas: 'personas',
+  lorebooks: 'lorebooks',
+  loreEntries: 'lore entries',
+  stories: 'stories',
+  chats: 'chats',
+  branches: 'branches',
+  messages: 'messages',
+  alternatives: 'alternatives',
+  checkpoints: 'checkpoints',
+  memories: 'memories',
+  storySummaries: 'story summaries',
+  providers: 'text providers (keys not included)',
+  imageProviders: 'image providers (keys not included)',
+};
+
+/**
+ * Fills a document's rows out to complete records.
+ *
+ * A document's collections are the app's own row types, so they are used as
+ * they are — running them back through the card normalisers would be actively
+ * destructive, since those rebuild a character from `first_mes` and card keys
+ * and know nothing about a `greetings` array, an id, or a lorebook link.
+ *
+ * They still cannot be trusted to be *complete*: a hand-written or truncated
+ * document may be missing fields the rest of the app reads without checking.
+ * Layering each row over its factory default costs nothing for a real export
+ * (every key is already present and wins) and makes a partial one safe.
+ */
+function hydrate(key: CollectionKey, rows: Array<Record<string, unknown>>): unknown[] {
+  switch (key) {
+    case 'characters':
+      return rows.map((row) => ({ ...newCharacter(), ...row }));
+    case 'personas':
+      return rows.map((row) => ({ ...newPersona(), ...row }));
+    case 'stories':
+      return rows.map((row) => ({ ...newStory(), ...row }));
+    case 'lorebooks':
+      return rows.map((row) => ({ ...newLorebook(), ...row }));
+    case 'loreEntries':
+      return rows.map((row) => ({
+        ...newLoreEntry(String(row.lorebookId ?? '')),
+        ...row,
+      }));
+    case 'memories':
+      return rows.map((row) => ({ ...newMemory(), ...row }));
+    case 'chats':
+      return rows.map((row) => ({ ...newChat(), ...row }));
+    case 'branches':
+      return rows.map((row) => ({ ...newBranch(String(row.chatId ?? '')), ...row }));
+    case 'messages':
+      return rows.map((row) => ({
+        ...newMessage(String(row.chatId ?? ''), String(row.branchId ?? ''), {
+          role: (row.role as Message['role']) ?? 'assistant',
+        }),
+        ...row,
+      }));
+    default:
+      // Alternatives, checkpoints, summaries and providers are structural rows
+      // that only ever appear in a document this app wrote.
+      return rows;
+  }
+}
+
+/** The name to show for a document that is about one thing. */
+function subjectTitle(doc: NexusDocument): string {
+  const byId = <T extends { id: ID }>(rows: T[] | undefined) =>
+    rows?.find((r) => r.id === doc.primaryId) ?? rows?.[0];
+  switch (doc.kind) {
+    case 'character':
+      return byId(doc.characters)?.name || 'Character';
+    case 'persona':
+      return byId(doc.personas)?.name || 'Persona';
+    case 'lorebook':
+      return byId(doc.lorebooks)?.name || 'Lorebook';
+    case 'lore-entry':
+      return byId(doc.loreEntries)?.name || 'Lorebook entry';
+    case 'story':
+      return byId(doc.stories)?.title || 'Story';
+    case 'chat':
+      return byId(doc.chats)?.title || 'Chat';
+    case 'memory':
+      return doc.memories?.length === 1 ? doc.memories[0].title || 'Memory' : `${doc.memories?.length ?? 0} memories`;
+    case 'backup':
+      return 'Full backup';
+    default:
+      return 'Nexus document';
+  }
+}
+
+/**
+ * Reads a Nexus document — every export this app has ever written, once the
+ * pre-schema envelopes have been lifted (see `schema/nexus.ts`).
+ *
+ * There is deliberately no shape-guessing here. The collections are already
+ * the app's own rows, so the work is limited to summarising them, pulling a
+ * single subject's avatar back out of `media`, and re-running the warnings
+ * that are worth showing before a commit.
+ */
+async function buildNexusImport(
+  doc: NexusDocument,
+  sourceName: string,
+  format: string,
+): Promise<ParsedImport> {
+  const kind: ImportKind = doc.kind === 'mixed' ? 'backup' : doc.kind;
+
+  const payload: ImportPayload = {};
+  for (const key of COLLECTION_KEYS) {
+    const rows = doc[key];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (rows?.length) (payload as any)[key] = hydrate(key, rows as any[]);
+  }
+  if (doc.media && Object.keys(doc.media).length) payload.media = doc.media;
+  if (doc.settings) payload.settings = doc.settings;
+
+  // A single character or persona needs its avatar bytes even when the media
+  // id in the file means nothing on this install.
+  const avatar = subjectAvatar(doc);
+  if (avatar) payload.avatarDataUrl = avatar;
+  else {
+    const subject = doc.characters?.length === 1 ? doc.characters[0] : null;
+    if (subject?.avatarUrl?.startsWith('data:')) {
+      payload.avatarDataUrl = subject.avatarUrl;
+      subject.avatarUrl = '';
+    }
+  }
+
+  const summary = documentCounts(doc)
+    .filter((row) => COLLECTION_LABELS[row.key])
+    .map((row) => `${row.count} ${COLLECTION_LABELS[row.key]}`);
+  const images = Object.keys(payload.media ?? {}).length;
+  if (images) summary.push(`${images} bundled images`);
+
+  const result: ParsedImport = {
+    ...base(kind, sourceName, format),
+    title: subjectTitle(doc),
+    summary: summary.length ? summary : ['Nothing to import.'],
+    payload,
+  };
+
+  validateCharacters(result);
+
+  if (!summary.length) {
+    result.issues.push({ level: 'error', message: 'This file appears to contain no data.' });
+  }
+  if (doc.mediaMeta?.length && !images) {
+    result.issues.push({
+      level: 'warning',
+      message:
+        'This backup was created without bundled images. Characters and stories will restore, but their pictures will be missing.',
+    });
+  }
+  if ([...(doc.providers ?? []), ...(doc.imageProviders ?? [])].some((p) => !p.apiKey)) {
+    result.issues.push({
+      level: 'info',
+      message: 'API keys are never included in backups — re-enter them in Settings after restoring.',
+    });
+  }
+  return result;
 }
 
 function base(kind: ImportKind, sourceName: string, sourceFormat: string): Omit<ParsedImport, 'payload' | 'title' | 'summary'> {

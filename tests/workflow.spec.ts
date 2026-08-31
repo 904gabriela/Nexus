@@ -773,10 +773,16 @@ test('steps 80-85: every export produces readable JSON', async ({ page }) => {
   const characterJson = await captureDownload(page, async () => {
     await page.getByTestId('export-row-character').first().getByRole('button').click();
   });
+  // Everything Nexus writes is a Nexus document: flat collections under one
+  // envelope, the same shape whatever the kind.
   const parsedCharacter = JSON.parse(characterJson);
-  expect(parsedCharacter.format).toBe('nexus-tavern-pro');
+  expect(parsedCharacter.format).toBe('nexus');
+  expect(parsedCharacter.schema).toBe(1);
   expect(parsedCharacter.kind).toBe('character');
-  expect(parsedCharacter.data.character.name).toBeTruthy();
+  expect(parsedCharacter.characters).toHaveLength(1);
+  expect(parsedCharacter.characters[0].name).toBeTruthy();
+  // The subject is identified, so a reader can tell it from its dependencies.
+  expect(parsedCharacter.primaryId).toBe(parsedCharacter.characters[0].id);
   expect(characterJson).toContain('\n  '); // human-readable indentation
 
   // The export button carries its kind and item name, so this cannot pick up
@@ -785,10 +791,15 @@ test('steps 80-85: every export produces readable JSON', async ({ page }) => {
     await page.getByRole('button', { name: 'Export story: The Long Storm' }).click();
   });
   const parsedStory = JSON.parse(storyJson);
+  expect(parsedStory.format).toBe('nexus');
   expect(parsedStory.kind).toBe('story');
-  expect(parsedStory.data.characters.length).toBeGreaterThan(0);
-  expect(parsedStory.data.lorebooks.length).toBeGreaterThan(0);
-  expect(parsedStory.data.chats.length).toBeGreaterThan(0);
+  expect(parsedStory.characters.length).toBeGreaterThan(0);
+  expect(parsedStory.lorebooks.length).toBeGreaterThan(0);
+  expect(parsedStory.chats.length).toBeGreaterThan(0);
+  // Chats used to nest their own branches and messages; they are collections
+  // of the document now, like everything else.
+  expect(parsedStory.messages.length).toBeGreaterThan(0);
+  expect(parsedStory.branches.length).toBeGreaterThan(0);
 
   // 85. Full backup, with the API key stripped.
   await page.getByRole('tab', { name: 'Backup & Restore' }).click();
@@ -796,12 +807,13 @@ test('steps 80-85: every export produces readable JSON', async ({ page }) => {
     await page.getByRole('button', { name: /Download full backup/ }).click();
   });
   const backup = JSON.parse(backupJson);
+  expect(backup.format).toBe('nexus');
   expect(backup.kind).toBe('backup');
-  expect(backup.data.characters.length).toBeGreaterThan(0);
-  expect(backup.data.messages.length).toBeGreaterThan(0);
-  expect(backup.data.providers.every((p: any) => p.apiKey === '')).toBe(true);
+  expect(backup.characters.length).toBeGreaterThan(0);
+  expect(backup.messages.length).toBeGreaterThan(0);
+  expect(backup.providers.every((p: any) => p.apiKey === '')).toBe(true);
   expect(backupJson).not.toContain('test-key-1234567890');
-  expect(Object.keys(backup.data.media ?? {}).length).toBeGreaterThan(0);
+  expect(Object.keys(backup.media ?? {}).length).toBeGreaterThan(0);
 });
 
 /* ================================================================== RESTORE */

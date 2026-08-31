@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
-import type { Story, StoryCharacterLink } from '../types';
+import type { Character, Story, StoryCharacterLink } from '../types';
 import { newStory } from '../types/factories';
+import { generateOpeningScene } from '../ai/openingScene';
 import { useActions, useAppState } from '../state/store';
 import { Avatar, MediaImage } from '../components/media/MediaImage';
 import { ImagePicker } from '../components/media/ImagePicker';
@@ -296,6 +297,7 @@ export function StoryEditor({
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [writingOpening, setWritingOpening] = useState(false);
 
   // What happens when the opening message is left empty depends on the cast,
   // so say which greeting would actually be used rather than describing rules.
@@ -366,6 +368,41 @@ export function StoryEditor({
 
   const storyChats = state.chats.filter((c) => c.storyId === draft.id);
 
+  /**
+   * Writes the story's first page. A character's greeting introduces that
+   * character wherever they turn up; an opening scene belongs to this campaign
+   * and starts it somewhere. The result is a draft in the field, not a commit.
+   */
+  const writeOpening = async () => {
+    setWritingOpening(true);
+    try {
+      const scene = await generateOpeningScene({
+        story: draft,
+        characters: draft.characters
+          .filter((link) => link.enabled)
+          .map((link) => state.characters.find((c) => c.id === link.characterId))
+          .filter(Boolean) as Character[],
+        persona: state.personas.find((p) => p.id === draft.personaId) ?? null,
+        provider:
+          state.providers.find((p) => p.id === state.settings.activeProviderId) ?? null,
+      });
+      patch({ openingMessage: scene });
+      actions.toast({
+        kind: 'success',
+        title: 'Opening scene written',
+        detail: 'Edit it freely — nothing is saved until you press Save.',
+      });
+    } catch (err) {
+      actions.toast({
+        kind: 'error',
+        title: 'Could not write the opening scene',
+        detail: (err as Error).message,
+      });
+    } finally {
+      setWritingOpening(false);
+    }
+  };
+
   return (
     <div>
       <div className="page-header">
@@ -420,12 +457,23 @@ export function StoryEditor({
               hint="The situation the roleplay takes place in. Overrides each character's own scenario."
             />
             <TextArea
-              label="Opening message"
+              label="Opening scene"
               value={draft.openingMessage}
               onChange={(openingMessage) => patch({ openingMessage })}
               large
               hint={openingHint}
             />
+            <div className="row">
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={writeOpening}
+                disabled={writingOpening}
+              >
+                {writingOpening ? <span className="spinner" /> : <Icon name="sparkle" />}
+                {draft.openingMessage.trim() ? 'Rewrite opening scene' : 'Write an opening scene'}
+              </button>
+            </div>
             <TextArea
               label="Author's note"
               value={draft.authorNote}

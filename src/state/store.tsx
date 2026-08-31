@@ -41,6 +41,7 @@ import {
   newChat,
   newCheckpoint,
   newMessage,
+  newStory,
 } from '../types/factories';
 import * as repo from '../storage/repositories';
 import { requestPersistence } from '../storage/persistence';
@@ -149,6 +150,12 @@ export interface AppActions {
   duplicatePersona: (id: ID) => Promise<Persona | null>;
 
   saveStory: (story: Story) => Promise<Story>;
+  /**
+   * Opens a chat with one character, creating the story it needs on the way.
+   * Reuses an existing solo story for that character rather than adding a new
+   * one each time, so tapping Chat twice returns to the same campaign.
+   */
+  startChatWithCharacter: (characterId: ID) => Promise<Chat | null>;
   deleteStory: (id: ID) => Promise<void>;
   duplicateStory: (id: ID) => Promise<Story | null>;
 
@@ -348,7 +355,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
   /* ----------------------------------------------------------- actions */
 
-  const actions = useMemo<AppActions>(() => {
+  const actions: AppActions = useMemo<AppActions>(() => {
     const guard = async <T,>(label: string, fn: () => Promise<T>): Promise<T> => {
       try {
         return await fn();
@@ -483,6 +490,44 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           const saved = await repo.stories.save(story);
           set({ stories: upsert(stateRef.current.stories, saved) });
           return saved;
+        });
+      },
+      /**
+       * A chat needs a story to hold the cast, but making the user fill in a
+       * story form before they can talk to a character they just imported is
+       * the wrong order. This builds the story for them.
+       */
+      async startChatWithCharacter(characterId): Promise<Chat | null> {
+        return guard('Starting the chat', async () => {
+          const character = stateRef.current.characters.find((c) => c.id === characterId);
+          if (!character) return null;
+
+          // A story already built around this one character is the right home
+          // for a second conversation with them — otherwise Chat would breed a
+          // new story on every tap.
+          const solo =
+            stateRef.current.stories.find(
+              (s) =>
+                !s.archived &&
+                s.characters.filter((link) => link.enabled).length === 1 &&
+                s.characters[0]?.characterId === characterId,
+            ) ?? null;
+
+          const story =
+            solo ??
+            (await repo.stories.save(
+              newStory({
+                title: character.name || 'Untitled',
+                description: character.shortDescription,
+                scenario: character.scenario,
+                characters: [{ characterId, primary: true, note: '', enabled: true }],
+                personaId: stateRef.current.settings.defaultPersonaId ?? null,
+                lorebookIds: [...character.lorebookIds],
+              }),
+            ));
+          if (!solo) set({ stories: upsert(stateRef.current.stories, story) });
+
+          return actions.createChat({ storyId: story.id });
         });
       },
       async deleteStory(id) {

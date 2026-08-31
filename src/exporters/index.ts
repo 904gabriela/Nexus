@@ -6,56 +6,59 @@
  * stripped from every export path — see stripSecrets().
  */
 
-import type {
-  Character,
-  Chat,
-  Checkpoint,
-  ID,
-  ImageProvider,
-  LoreEntry,
-  Lorebook,
-  Memory,
-  Message,
-  MessageAlternative,
-  Persona,
-  Provider,
-  Settings,
-  Story,
-  StorySummary,
-} from '../types';
+import type { Character, ID, LoreEntry, Lorebook, Memory, Message, Persona } from '../types';
 import { SCHEMA_VERSION } from '../types/factories';
+import {
+  mergeCollections,
+  nexusDocument,
+  type NexusCollections,
+  type NexusDocument,
+  type NexusDocumentKind,
+} from '../schema/nexus';
 import * as repo from '../storage/repositories';
 import { getMediaBlob, blobToDataUrl, listMedia } from '../media/mediaStore';
 import { slugify } from '../utils/text';
 
-export const NEXUS_FORMAT = 'nexus-tavern-pro';
+/** Re-exported for callers that only import from here. */
+export { NEXUS_FORMAT, LEGACY_FORMAT } from '../schema/nexus';
 
-export type ExportKind =
-  | 'character'
-  | 'persona'
-  | 'lorebook'
-  | 'lore-entry'
-  | 'story'
-  | 'chat'
-  | 'memory'
-  | 'backup';
+export type ExportKind = Exclude<NexusDocumentKind, 'mixed'>;
 
-export interface ExportEnvelope<T> {
-  format: typeof NEXUS_FORMAT;
-  kind: ExportKind;
-  version: number;
-  exportedAt: string;
-  data: T;
+/**
+ * Every export is a Nexus document (see `schema/nexus.ts`): flat collections
+ * under one envelope, whatever the kind. The old per-kind `data` payloads are
+ * still read on import, but nothing writes them any more.
+ */
+function nexusDoc(
+  kind: ExportKind,
+  collections: NexusCollections,
+  primaryId?: ID | null,
+): NexusDocument {
+  return nexusDocument(kind, collections, {
+    primaryId: primaryId ?? null,
+    appSchemaVersion: SCHEMA_VERSION,
+  });
 }
 
-function envelope<T>(kind: ExportKind, data: T): ExportEnvelope<T> {
-  return {
-    format: NEXUS_FORMAT,
-    kind,
-    version: SCHEMA_VERSION,
-    exportedAt: new Date().toISOString(),
-    data,
-  };
+/** Bundles a character's or persona's avatar under its own media id. */
+async function avatarCollections(mediaId: ID | null): Promise<NexusCollections> {
+  if (!mediaId) return {};
+  const blob = await getMediaBlob(mediaId);
+  if (!blob) return {};
+  return { media: { [mediaId]: await blobToDataUrl(blob) } };
+}
+
+/** Flattens `{lorebook, entries}` pairs into the document's two collections. */
+async function bookCollections(ids: ID[]): Promise<NexusCollections> {
+  const lorebooks: Lorebook[] = [];
+  const loreEntries: LoreEntry[] = [];
+  for (const id of ids) {
+    const lorebook = await repo.lorebooks.get(id);
+    if (!lorebook) continue;
+    lorebooks.push(lorebook);
+    loreEntries.push(...(await repo.loreEntries.byLorebook(id)));
+  }
+  return { lorebooks, loreEntries };
 }
 
 export function toJson(value: unknown): string {
@@ -79,31 +82,16 @@ export function downloadFile(filename: string, content: string | Blob, mimeType 
 
 /* --------------------------------------------------------- single items */
 
-export interface CharacterExport {
-  character: Character;
-  avatar?: string;
-  lorebooks?: Array<{ lorebook: Lorebook; entries: LoreEntry[] }>;
-}
-
 export async function exportCharacter(
   character: Character,
   options: { includeAvatar?: boolean; includeLorebooks?: boolean } = {},
 ): Promise<string> {
-  const payload: CharacterExport = { character };
-  if (options.includeAvatar !== false && character.avatarMediaId) {
-    const blob = await getMediaBlob(character.avatarMediaId);
-    if (blob) payload.avatar = await blobToDataUrl(blob);
-  }
-  if (options.includeLorebooks && character.lorebookIds.length) {
-    payload.lorebooks = [];
-    for (const id of character.lorebookIds) {
-      const lorebook = await repo.lorebooks.get(id);
-      if (!lorebook) continue;
-      const entries = await repo.loreEntries.byLorebook(id);
-      payload.lorebooks.push({ lorebook, entries });
-    }
-  }
-  return toJson(envelope('character', payload));
+  const collections = mergeCollections(
+    { characters: [character] },
+    options.includeAvatar === false ? {} : await avatarCollections(character.avatarMediaId),
+    options.includeLorebooks ? await bookCollections(character.lorebookIds) : {},
+  );
+  return toJson(nexusDoc('character', collections, character.id));
 }
 
 /** Also emits a SillyTavern-compatible v2 character card. */
@@ -138,45 +126,34 @@ export function exportCharacterAsCardV2(character: Character, avatarDataUrl?: st
 }
 
 export async function exportPersona(persona: Persona, includeAvatar = true): Promise<string> {
-  const payload: { persona: Persona; avatar?: string } = { persona };
-  if (includeAvatar && persona.avatarMediaId) {
-    const blob = await getMediaBlob(persona.avatarMediaId);
-    if (blob) payload.avatar = await blobToDataUrl(blob);
-  }
-  return toJson(envelope('persona', payload));
+  const collections = mergeCollections(
+    { personas: [persona] },
+    includeAvatar ? await avatarCollections(persona.avatarMediaId) : {},
+  );
+  return toJson(nexusDoc('persona', collections, persona.id));
 }
 
 export async function exportLorebook(lorebookId: ID): Promise<string> {
   const lorebook = await repo.lorebooks.get(lorebookId);
   if (!lorebook) throw new Error('That lorebook no longer exists.');
   const entries = await repo.loreEntries.byLorebook(lorebookId);
-  return toJson(envelope('lorebook', { lorebook, entries }));
+  return toJson(nexusDoc('lorebook', { lorebooks: [lorebook], loreEntries: entries }, lorebookId));
 }
 
 export function exportLoreEntries(lorebook: Lorebook, entries: LoreEntry[]): string {
-  return toJson(envelope('lorebook', { lorebook, entries }));
+  return toJson(nexusDoc('lorebook', { lorebooks: [lorebook], loreEntries: entries }, lorebook.id));
 }
 
 export function exportLoreEntry(entry: LoreEntry): string {
-  return toJson(envelope('lore-entry', { entry }));
+  return toJson(nexusDoc('lore-entry', { loreEntries: [entry] }, entry.id));
 }
 
 export function exportMemory(memory: Memory): string {
-  return toJson(envelope('memory', { memory }));
+  return toJson(nexusDoc('memory', { memories: [memory] }, memory.id));
 }
 
 export function exportMemories(memories: Memory[]): string {
-  return toJson(envelope('memory', { memories }));
-}
-
-export interface StoryExport {
-  story: Story;
-  characters: Character[];
-  persona: Persona | null;
-  lorebooks: Array<{ lorebook: Lorebook; entries: LoreEntry[] }>;
-  memories: Memory[];
-  chats?: ChatExport[];
-  media?: Record<ID, string>;
+  return toJson(nexusDoc('memory', { memories }, memories.length === 1 ? memories[0].id : null));
 }
 
 export async function exportStory(
@@ -193,49 +170,48 @@ export async function exportStory(
   }
   const persona = story.personaId ? ((await repo.personas.get(story.personaId)) ?? null) : null;
 
-  const lorebooks: StoryExport['lorebooks'] = [];
-  for (const id of story.lorebookIds) {
-    const lorebook = await repo.lorebooks.get(id);
-    if (!lorebook) continue;
-    lorebooks.push({ lorebook, entries: await repo.loreEntries.byLorebook(id) });
-  }
-
   const allMemories = await repo.memories.all();
   const memories = allMemories.filter(
     (m) => m.sourceStoryId === storyId || story.memoryIds.includes(m.id),
   );
 
-  const payload: StoryExport = { story, characters, persona, lorebooks, memories };
-
+  const chatParts: NexusCollections[] = [];
   if (options.includeChats) {
-    const chats = await repo.chats.byStory(storyId);
-    payload.chats = [];
-    for (const chat of chats) payload.chats.push(await collectChat(chat.id));
+    for (const chat of await repo.chats.byStory(storyId)) {
+      chatParts.push(await collectChat(chat.id));
+    }
   }
 
+  let media: NexusCollections = {};
   if (options.includeMedia) {
-    payload.media = await collectMedia(
-      [
-        story.coverMediaId,
-        story.backgroundMediaId,
-        ...characters.map((c) => c.avatarMediaId),
-        persona?.avatarMediaId ?? null,
-      ].filter(Boolean) as ID[],
-    );
+    media = {
+      media: await collectMedia(
+        [
+          story.coverMediaId,
+          story.backgroundMediaId,
+          ...characters.map((c) => c.avatarMediaId),
+          persona?.avatarMediaId ?? null,
+        ].filter(Boolean) as ID[],
+      ),
+    };
   }
 
-  return toJson(envelope('story', payload));
+  const collections = mergeCollections(
+    {
+      stories: [story],
+      characters,
+      personas: persona ? [persona] : [],
+      memories,
+    },
+    await bookCollections(story.lorebookIds),
+    ...chatParts,
+    media,
+  );
+  return toJson(nexusDoc('story', collections, story.id));
 }
 
-export interface ChatExport {
-  chat: Chat;
-  branches: Awaited<ReturnType<typeof repo.branches.byChat>>;
-  messages: Message[];
-  alternatives: MessageAlternative[];
-  checkpoints: Checkpoint[];
-}
-
-async function collectChat(chatId: ID): Promise<ChatExport> {
+/** A chat and everything hanging off it, as flat collections. */
+async function collectChat(chatId: ID): Promise<NexusCollections> {
   const chat = await repo.chats.get(chatId);
   if (!chat) throw new Error('That chat no longer exists.');
   const [branches, messages, alternatives, checkpoints] = await Promise.all([
@@ -244,19 +220,18 @@ async function collectChat(chatId: ID): Promise<ChatExport> {
     repo.alternatives.byChat(chatId),
     repo.checkpoints.byChat(chatId),
   ]);
-  return { chat, branches, messages, alternatives, checkpoints };
+  return { chats: [chat], branches, messages, alternatives, checkpoints };
 }
 
 export async function exportChat(chatId: ID, includeMedia = false): Promise<string> {
-  const payload = await collectChat(chatId);
-  const withMedia: ChatExport & { media?: Record<ID, string> } = payload;
+  const collections = await collectChat(chatId);
   if (includeMedia) {
-    const ids = payload.messages
+    const ids = (collections.messages ?? [])
       .flatMap((m) => m.attachments.map((a) => a.mediaId))
       .filter(Boolean) as ID[];
-    withMedia.media = await collectMedia(ids);
+    collections.media = await collectMedia(ids);
   }
-  return toJson(envelope('chat', withMedia));
+  return toJson(nexusDoc('chat', collections, chatId));
 }
 
 /** Plain-text transcript, handy for archiving or feeding elsewhere. */
@@ -280,29 +255,6 @@ async function collectMedia(ids: ID[]): Promise<Record<ID, string>> {
 }
 
 /* ---------------------------------------------------------------- backup */
-
-export interface BackupPayload {
-  characters: Character[];
-  personas: Persona[];
-  stories: Story[];
-  chats: Chat[];
-  branches: Awaited<ReturnType<typeof repo.branches.all>>;
-  messages: Message[];
-  alternatives: MessageAlternative[];
-  checkpoints: Checkpoint[];
-  memories: Memory[];
-  lorebooks: Lorebook[];
-  loreEntries: LoreEntry[];
-  mediaMeta: Awaited<ReturnType<typeof repo.mediaMeta.all>>;
-  /** mediaId → data URL. Present only when media is bundled. */
-  media?: Record<ID, string>;
-  mediaIncluded: boolean;
-  providers: Provider[];
-  imageProviders: ImageProvider[];
-  /** Long-run memory. Losing this on restore would lose months of story. */
-  storySummaries: StorySummary[];
-  settings: Settings;
-}
 
 /**
  * Providers keep their config but never their key (spec §49). Both provider
@@ -357,7 +309,7 @@ export async function buildBackup(options: BackupOptions): Promise<string> {
     repo.settingsRepo.load(),
   ]);
 
-  const payload: BackupPayload = {
+  const collections: NexusCollections = {
     characters,
     personas,
     stories,
@@ -386,11 +338,11 @@ export async function buildBackup(options: BackupOptions): Promise<string> {
       if (blob) media[meta.id] = await blobToDataUrl(blob);
       if (i % 5 === 0) progress(`Bundling images… ${i + 1}/${mediaMetaList.length}`);
     }
-    payload.media = media;
+    collections.media = media;
   }
 
   progress('Serialising…');
-  return toJson(envelope('backup', payload));
+  return toJson(nexusDoc('backup', collections));
 }
 
 export function backupFilename(): string {

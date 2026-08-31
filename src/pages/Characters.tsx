@@ -174,6 +174,23 @@ export function CharactersPage({
                       </div>
                     </div>
                   </button>
+                  {/*
+                    Talking to a character is the point of the app, so it is one
+                    tap from the library. The story a chat needs is built behind
+                    it — filling in a story form first was the wrong order.
+                  */}
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-primary"
+                    aria-label={`Chat with ${character.name}`}
+                    onClick={async () => {
+                      const chat = await actions.startChatWithCharacter(character.id);
+                      if (chat) navigate('chat', chat.id);
+                    }}
+                  >
+                    <Icon name="chat" />
+                    Chat
+                  </button>
                   <button
                     type="button"
                     className="btn btn-ghost btn-icon"
@@ -198,8 +215,19 @@ export function CharactersPage({
             ? [
                 { key: 'edit', label: 'Edit', icon: 'edit', onSelect: () => navigate('character', menuFor.id) },
                 {
+                  key: 'chat',
+                  label: 'Chat',
+                  description: 'Opens straight into a scene. The story is set up for you.',
+                  icon: 'chat',
+                  onSelect: async () => {
+                    const chat = await actions.startChatWithCharacter(menuFor.id);
+                    if (chat) navigate('chat', chat.id);
+                  },
+                },
+                {
                   key: 'story',
                   label: 'Start a story with this character',
+                  description: 'Build the campaign yourself — world, cast, lorebooks.',
                   icon: 'book',
                   onSelect: () => navigate('story', 'new', { character: menuFor.id }),
                 },
