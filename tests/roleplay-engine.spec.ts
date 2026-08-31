@@ -72,16 +72,30 @@ test('an impossible context size is clamped instead of silently truncated', asyn
   await seedFixtures(page);
 
   // The configuration that caused the original failure: a context size far
-  // beyond anything the model can hold.
-  await page.evaluate(() => {
-    const raw = localStorage.getItem('nexus-settings');
-    const settings = raw ? JSON.parse(raw) : {};
+  // beyond anything the model can hold. Settings live in IndexedDB — writing
+  // this to localStorage, as this test used to, changed nothing at all.
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const settings: any = await new Promise((r) => {
+      const q = db.transaction('settings', 'readonly').objectStore('settings').get('settings');
+      q.onsuccess = () => r(q.result);
+    });
     settings.contextBudget = 513856;
-    localStorage.setItem('nexus-settings', JSON.stringify(settings));
+    await new Promise<void>((r) => {
+      const q = db.transaction('settings', 'readwrite').objectStore('settings').put(settings);
+      q.onsuccess = () => r();
+    });
+    db.close();
   });
   await page.reload();
   await boot(page);
   await generateOnce(page);
+
+  // The setting really did take, so the clamp below is doing the work.
+  expect((await readStore<any>(page, 'settings'))[0].contextBudget).toBe(513856);
 
   const options = ollama.requests.at(-1)!.body.options;
   expect(options.num_ctx).toBeLessThanOrEqual(8192);
@@ -1029,4 +1043,151 @@ test('an orphaned chat can be given a story, and the cast reaches the model', as
   const messages = await readStore<any>(page, 'messages');
   const carried = messages.filter((m) => m.chatId === imported.id && m.historical === true);
   expect(carried.length).toBe(2);
+});
+
+/* =================================================== the narrator's brief */
+
+test('the model is framed as the narrator, not as the character', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  await seedHospitalScene(page);
+  const body = await sendTurn(page, ollama, 'You look terrible.');
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+
+  // The frame itself: an author writing a scene, not a person in it.
+  expect(system).toMatch(/You are not a character in this scene/);
+  expect(system).toMatch(/You are the author writing it/);
+  // And named against the focal character specifically, which is the confusion
+  // that actually happens — the model deciding it *is* Bakugo.
+  expect(system).toMatch(/Katsuki Bakugo is someone you write about, not someone you are/);
+
+  // The brief settles who is writing before describing what they write about.
+  expect(system.indexOf('You are the narrator')).toBeLessThan(system.indexOf('## Current scene'));
+});
+
+test('bare dialogue is ruled out without imposing a shape on the reply', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  await seedHospitalScene(page);
+  const body = await sendTurn(page, ollama, 'You look terrible.');
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+
+  expect(system).toMatch(/the next page of a novel/);
+  expect(system).toMatch(/nothing but a quoted line is a transcript, not a scene/);
+
+  // No quota of any kind smuggled in alongside it: not a word count, not a
+  // paragraph count, not a required list of components.
+  expect(system).not.toMatch(/\b\d+\s*(words|sentences|paragraphs)\b/i);
+  expect(system).toMatch(/length and shape follow the scene, not a quota/);
+});
+
+test('the speaker prefix is labelled as a label, not a script format', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Kirishima grins.'], 8192);
+  await setupOllamaProvider(page);
+  // Two in the room is what turns attribution on in the first place.
+  await seedHospitalScene(page, {
+    castKirishima: true,
+    presentCharacterIds: ['bakugo', 'kirishima'],
+  });
+
+  const body = await sendTurn(page, ollama, 'Both of you, sit down.');
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+  expect(system).toMatch(/a label saying who was speaking, not the format to write in/);
+});
+
+test('example dialogue is framed as a voice sample, not a length template', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera looks up.'], 8192);
+  await setupOllamaProvider(page);
+  await seedFixtures(page);
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const character: any = await new Promise((r) => {
+      const q = db.transaction('characters', 'readonly').objectStore('characters').get('c1');
+      q.onsuccess = () => r(q.result);
+    });
+    character.exampleDialogue = '{{user}}: Any rooms?\nSera: "One. Take it or the road."';
+    await new Promise<void>((r) => {
+      const q = db.transaction('characters', 'readwrite').objectStore('characters').put(character);
+      q.onsuccess = () => r();
+    });
+    db.close();
+  });
+  await page.reload();
+  await boot(page);
+
+  await startChat(page);
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await expect(composer).toBeEditable();
+  const before = ollama.requests.length;
+  await composer.fill('Any rooms left?');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect.poll(() => ollama.requests.length, { timeout: 40_000 }).toBeGreaterThan(before);
+  const system = ollama.requests
+    .at(-1)!
+    .body.messages.find((m: any) => m.role === 'system').content;
+
+  // The sample still reaches the model — this is not about removing it.
+  expect(system).toContain('Take it or the road.');
+  // But it arrives labelled, so it teaches voice rather than brevity.
+  expect(system).toMatch(/How Sera sounds/);
+  expect(system).toMatch(/not a shape for your turn/);
+});
+
+test('an install that never edited the stock prompt is moved off "stay in character"', async ({
+  page,
+}) => {
+  // The wording as it shipped, still sitting in an existing install's settings.
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const settings: any = await new Promise((r) => {
+      const q = db.transaction('settings', 'readonly').objectStore('settings').get('settings');
+      q.onsuccess = () => r(q.result);
+    });
+    settings.globalSystemPrompt =
+      'You are a masterful roleplay partner. Stay in character, write vivid, immersive prose, ' +
+      'and never break the fourth wall or speak as the user unless explicitly asked.';
+    await new Promise<void>((r) => {
+      const q = db.transaction('settings', 'readwrite').objectStore('settings').put(settings);
+      q.onsuccess = () => r();
+    });
+    db.close();
+  });
+  await reloadApp(page, '#/dashboard');
+
+  const migrated = (await readStore<any>(page, 'settings'))[0];
+  expect(migrated.globalSystemPrompt).not.toMatch(/Stay in character/);
+  expect(migrated.globalSystemPrompt).toMatch(/narrating an unfolding story/);
+});
+
+test('a system prompt the user wrote themselves is never rewritten', async ({ page }) => {
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const settings: any = await new Promise((r) => {
+      const q = db.transaction('settings', 'readonly').objectStore('settings').get('settings');
+      q.onsuccess = () => r(q.result);
+    });
+    settings.globalSystemPrompt = 'Stay in character. Write short, clipped replies. No purple prose.';
+    await new Promise<void>((r) => {
+      const q = db.transaction('settings', 'readwrite').objectStore('settings').put(settings);
+      q.onsuccess = () => r();
+    });
+    db.close();
+  });
+  await reloadApp(page, '#/dashboard');
+
+  // It resembles the old default and contradicts the new framing, and it is
+  // still theirs. Only the exact stock string is migrated.
+  const kept = (await readStore<any>(page, 'settings'))[0];
+  expect(kept.globalSystemPrompt).toBe(
+    'Stay in character. Write short, clipped replies. No purple prose.',
+  );
 });

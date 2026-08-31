@@ -31,6 +31,7 @@ import { LORE_TIER_RANK } from '../types';
 import type { LoreTier } from '../types';
 import { scanLore } from '../lore/matcher';
 import { describeControl, describeScene, resolveScene, type ResolvedScene } from './scene';
+import { describeNarration } from './narration';
 import { truncate } from '../utils/text';
 import { IMAGE_TOKEN_COST, estimateTokens } from './tokens';
 
@@ -284,6 +285,13 @@ const PRIORITY = {
   system: 1000,
   /** Presence and control. Above everything the world merely knows. */
   scene: 970,
+  /**
+   * The narrator's brief. Above the scene, because who is writing has to be
+   * settled before what they are writing about, and above the global system
+   * prompt's tier-mate `global` so a stock "stay in character" cannot be the
+   * last word on the model's role.
+   */
+  narration: 975,
   /** A cast member who is not in the scene: recognisable, not detailed. */
   absentCharacter: 640,
   global: 950,
@@ -408,6 +416,21 @@ function compileContextInner(input: CompileInput): CompileResult {
     );
   }
 
+  // Who is writing, settled before anything about the world. Without this the
+  // highest-priority block in the prompt is the global system prompt, whose
+  // stock wording casts the model as one character answering in turn — and a
+  // model cast that way replies with a line of dialogue and no scene around it.
+  parts.push(
+    part(
+      'narration',
+      'You are the narrator',
+      'scene',
+      macro(describeNarration(scene, userName)),
+      'Always included — Nexus narrates a world rather than playing one character.',
+      PRIORITY.narration,
+    ),
+  );
+
   // Presence and control, stated once, in a tier that cannot be trimmed.
   // Both blocks are emitted for every chat, including one-character chats:
   // the rule that the model must not write the user used to live inside a
@@ -506,13 +529,26 @@ function compileContextInner(input: CompileInput): CompileResult {
         ),
       );
     }
+    // Example dialogue used to be pasted in raw. Character-card examples are
+    // short quoted exchanges, and a block of those sitting unlabelled in the
+    // system prompt reads as a template for the shape of a reply, not a sample
+    // of a voice — which is one way a narrator ends up writing two lines of
+    // dialogue and nothing else. Saying what it is for costs three sentences.
     if (character.exampleDialogue.trim()) {
+      const name = character.displayName || character.name;
       parts.push(
         part(
           `character-examples:${character.id}`,
-          `${character.displayName || character.name} — example dialogue`,
+          `${name} — example dialogue`,
           'character',
-          macro(character.exampleDialogue),
+          macro(
+            `## How ${name} sounds\n` +
+              `The lines below are a sample of ${name}'s voice: word choice, rhythm, ` +
+              `temperament, what they will and will not say. Match the voice.\n` +
+              `Do not match their length or their layout — they are excerpts lifted out of ` +
+              `scenes, not a shape for your turn.\n\n` +
+              character.exampleDialogue,
+          ),
           'Example dialogue teaches the model the character voice.',
           PRIORITY.character - 100,
         ),

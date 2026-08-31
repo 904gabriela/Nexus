@@ -363,14 +363,32 @@ export const PROVIDER_PRESETS: Record<
   },
 };
 
+/**
+ * The stock system prompt as it shipped until the narrator work.
+ *
+ * Kept so an install that never touched the field can be moved forward without
+ * overwriting a prompt someone actually wrote. See `settingsRepo.load`.
+ */
+export const LEGACY_SYSTEM_PROMPT =
+  'You are a masterful roleplay partner. Stay in character, write vivid, immersive prose, ' +
+  'and never break the fourth wall or speak as the user unless explicitly asked.';
+
+/**
+ * "Stay in character" is the wrong instruction for this app: it casts the model
+ * as one person answering, when the job is to write the whole scene. The
+ * narrator's brief in `context/narration.ts` carries the frame; this leaves the
+ * user-facing field saying something compatible rather than contradictory.
+ */
+export const DEFAULT_SYSTEM_PROMPT =
+  'You are narrating an unfolding story. Write it as prose — the scene, the world and ' +
+  'everyone in it except the user — and keep it moving.';
+
 export function defaultSettings(): Settings {
   return {
     id: 'settings',
     activeProviderId: null,
     defaultPersonaId: null,
-    globalSystemPrompt:
-      'You are a masterful roleplay partner. Stay in character, write vivid, immersive prose, ' +
-      'and never break the fourth wall or speak as the user unless explicitly asked.',
+    globalSystemPrompt: DEFAULT_SYSTEM_PROMPT,
     globalInstructions: '',
     contextBudget: 8192,
     maxPromptTokens: 12288,

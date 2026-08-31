@@ -28,7 +28,13 @@ import type {
   Story,
   StorySummary,
 } from '../types';
-import { SCHEMA_VERSION, defaultSettings, now } from '../types/factories';
+import {
+  DEFAULT_SYSTEM_PROMPT,
+  LEGACY_SYSTEM_PROMPT,
+  SCHEMA_VERSION,
+  defaultSettings,
+  now,
+} from '../types/factories';
 
 /* --------------------------------------------------------------- generic */
 
@@ -200,7 +206,17 @@ export const settingsRepo = {
       return fresh;
     }
     // Merge forward so new settings keys appear for existing installs.
-    return { ...defaultSettings(), ...stored, schemaVersion: SCHEMA_VERSION };
+    const merged = { ...defaultSettings(), ...stored, schemaVersion: SCHEMA_VERSION };
+    // An install that never edited the system prompt is still carrying the
+    // stock "stay in character" wording, which frames the model as one speaker
+    // rather than the narrator of a scene. Move only that exact string forward:
+    // a prompt someone wrote themselves is theirs, however much it resembles
+    // the old default.
+    if (stored.globalSystemPrompt?.trim() === LEGACY_SYSTEM_PROMPT) {
+      merged.globalSystemPrompt = DEFAULT_SYSTEM_PROMPT;
+      await dbPut(STORES.settings, merged);
+    }
+    return merged;
   },
   save: (value: Settings) => dbPut(STORES.settings, value),
 };
