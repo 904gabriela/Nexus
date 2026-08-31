@@ -189,6 +189,15 @@ test('media gallery filters generated images and can reuse one', async ({ page }
   await reuse.getByLabel('Persona').selectOption({ label: 'Corin' });
   await reuse.getByRole('button', { name: 'Apply' }).click();
 
+  // Wait for the write to land. Reloading straight after the click raced the
+  // save, so the assertion below read the persona as it was before Apply.
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect
+    .poll(async () => (await readStore<any>(page, 'personas'))[0]?.avatarMediaId, {
+      timeout: 10_000,
+    })
+    .toBeTruthy();
+
   await reloadApp(page);
   const personas = await readStore(page, 'personas');
   expect(personas[0].avatarMediaId).toBeTruthy();
@@ -576,6 +585,9 @@ test('alternatives and the active selection survive a reload', async ({ page }) 
 
   // Switching back also persists.
   await page.getByRole('button', { name: 'Previous response' }).click();
+  // The switch is written to IndexedDB asynchronously; reloading before it
+  // lands read the old selection back and failed here intermittently.
+  await expect(page.locator('.alt-nav')).toContainText('1 / 2');
   await reloadApp(page);
   await expect(page.getByText(/The tavern door creaks/)).toBeVisible();
   await expect(page.locator('.alt-nav')).toContainText('1 / 2');
