@@ -582,7 +582,10 @@ export function StoryEditor({
                 {availablePresets(state.settings.narrationPresets ?? [])
                   .filter((preset) => preset.instruction.trim())
                   .map((preset) => {
-                    const on = draft.narrationPresetIds.includes(preset.id);
+                    // A story saved before presets existed has no field at
+                    // all, and reading through it would take the editor down.
+                    const selected = draft.narrationPresetIds ?? [];
+                    const on = selected.includes(preset.id);
                     return (
                       <Toggle
                         key={preset.id}
@@ -592,8 +595,8 @@ export function StoryEditor({
                         onChange={(next) =>
                           patch({
                             narrationPresetIds: next
-                              ? [...draft.narrationPresetIds, preset.id]
-                              : draft.narrationPresetIds.filter((id) => id !== preset.id),
+                              ? [...selected, preset.id]
+                              : selected.filter((id) => id !== preset.id),
                           })
                         }
                       />

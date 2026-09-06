@@ -509,9 +509,12 @@ test.describe('the oversized-context case that timed out against llama3.1', () =
     expect(system).toMatch(/Present:.*Katsuki Bakugo/);
     expect(system).toMatch(/Never write Reiko Ryuusui's dialogue/);
     expect(system).toMatch(/Continue the scene/);
-    // The newest turn is the last message and is intact.
-    expect(body.messages.at(-1).role).toBe('user');
-    expect(body.messages.at(-1).content).toContain('giggle');
+    // The newest turn is the last thing said, and is intact. The very last
+    // message is the turn directive, which is sent after the user's turn by
+    // design — so this asserts on the newest *user* message.
+    const userTurns = body.messages.filter((m: any) => m.role === 'user');
+    expect(userTurns.at(-1).content).toContain('giggle');
+    expect(body.messages.at(-1).content).toContain('## This turn');
   });
 
   test('old transcript is dropped before recent turns are', async ({ page }) => {
@@ -730,7 +733,10 @@ test('every sent message carries its provenance', async ({ page }) => {
   // Row zero is the assembled prompt; the newest turn is the user's and comes
   // last; the carried-over transcript is attributed and flagged historical.
   expect(labels[0]).toContain('#0 · system');
-  expect(labels.at(-1)).toMatch(/· user · Reiko Ryuusui/);
+  // The user's turn is the last *conversational* row; the turn directive is
+  // appended after it and is traced too.
+  expect(labels.at(-1)).toMatch(/· system · Nexus \(turn directive\)/);
+  expect(labels.at(-2)).toMatch(/· user · Reiko Ryuusui/);
   expect(labels.some((l) => l.includes('historical'))).toBe(true);
   expect(labels.some((l) => /· assistant · Katsuki Bakugo/.test(l))).toBe(true);
 });
@@ -825,7 +831,8 @@ test('the newest exchange survives even when older ones cannot', async ({ page }
 
   // Trimming takes from the far end of the conversation, not the near one.
   expect(text).toContain('Answer number 11.');
-  expect(body.messages.at(-1).content).toContain('And now?');
+  const newestUserTurn = body.messages.filter((m: any) => m.role === 'user').at(-1);
+  expect(newestUserTurn.content).toContain('And now?');
 });
 
 /* ================================================= imported chats get a cast */
