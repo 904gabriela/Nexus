@@ -385,6 +385,20 @@ export interface Message extends Timestamped {
    * compiler frames it as history instead of letting it imply a cast.
    */
   historical?: boolean;
+  /**
+   * What a historical message's content actually is.
+   *
+   * `turn`  — one named character's turn, and `characterId` says whose. An
+   *           imported log is a sequence of these: the file names a speaker
+   *           per message, so the attribution is the file's, not a guess.
+   * `scene` — a whole scene in one message: narration, a story opening, or a
+   *           pasted transcript carrying several speakers at once. There is no
+   *           single speaker to name, and naming one would be a lie.
+   *
+   * Absent means unknown, which is read as `scene` — the conservative answer,
+   * and the behaviour everything stored before this field existed already had.
+   */
+  speakerScope?: 'turn' | 'scene';
 }
 
 export interface MessageAlternative extends Timestamped {

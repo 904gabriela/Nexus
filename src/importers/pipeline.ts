@@ -995,7 +995,12 @@ async function buildChatImport(
   }
   for (const message of messages) {
     const name = speakerOf.get(message.id);
-    if (name) message.characterId = byName.get(name.toLowerCase())?.id ?? null;
+    if (!name) continue;
+    message.characterId = byName.get(name.toLowerCase())?.id ?? null;
+    // The file named a speaker for this message, so its content is that one
+    // character's turn rather than a scene containing several. That is what
+    // lets the compiler put the name back on the wire.
+    if (message.characterId) message.speakerScope = 'turn';
   }
 
   const stories: Story[] = [];

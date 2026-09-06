@@ -1360,3 +1360,139 @@ test('a chat can override the story it belongs to', async ({ page }) => {
   expect(system).toMatch(/- Slow Burn:/);
   expect(system).not.toMatch(/- Fast Paced:/);
 });
+
+/* ================================ attribution inside historical roleplay */
+
+/**
+ * An imported log names a speaker per message, so the attribution is the
+ * file's own — not a guess parsed out of prose. The compiler used to throw it
+ * away: `attribute()` skipped every historical message, which was right for a
+ * pasted transcript holding a whole scene and wrong for a per-turn log.
+ */
+test('an imported multi-character log keeps its attribution on the wire', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+
+  await goto(page, '#/transfer');
+  await page.locator('input[type=file]').first().setInputFiles({
+    name: 'two-speakers.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        title: 'The ward',
+        messages: [
+          { name: 'Reiko', role: 'user', content: 'You both look terrible.' },
+          { name: 'Bakugo', role: 'assistant', content: 'Tch. Speak for yourself.' },
+          { name: 'Kirishima', role: 'assistant', content: 'He has been saying that all morning.' },
+          { name: 'Reiko', role: 'user', content: 'Has he now.' },
+          { name: 'Bakugo', role: 'assistant', content: 'Shut it, hair-for-brains.' },
+        ],
+      }),
+    ),
+  });
+  await expect(page.getByText(/Import preview/)).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('button', { name: 'Confirm import' }).click();
+  await page.waitForTimeout(800);
+
+  // Both speakers became characters, and the scene holds both.
+  const messages = await readStore<any>(page, 'messages');
+  const attributed = messages.filter((m) => m.speakerScope === 'turn');
+  expect(attributed.length).toBe(3);
+  expect(attributed.every((m: any) => m.historical === true && m.characterId)).toBe(true);
+
+  const chat = (await readStore<any>(page, 'chats'))[0];
+  await goto(page, `#/chat/${chat.id}`);
+  await expect(page.locator('.chat-composer')).toBeVisible({ timeout: 20_000 });
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await expect(composer).toBeEditable();
+  const before = ollama.requests.length;
+  await composer.fill('Both of you, quiet.');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect.poll(() => ollama.requests.length, { timeout: 40_000 }).toBeGreaterThan(before);
+
+  const body = ollama.requests.at(-1)!.body;
+  const assistantTurns = body.messages
+    .filter((m: any) => m.role === 'assistant')
+    .map((m: any) => m.content);
+
+  // Who said what survives the trip. Anonymous assistant turns are exactly
+  // what made a two-character log unreadable.
+  expect(assistantTurns.some((c: string) => c.startsWith('Bakugo:'))).toBe(true);
+  expect(assistantTurns.some((c: string) => c.startsWith('Kirishima:'))).toBe(true);
+  // The user's own turns stay user turns — never relabelled as a character.
+  const userTurns = body.messages.filter((m: any) => m.role === 'user').map((m: any) => m.content);
+  expect(userTurns.some((c: string) => c.includes('You both look terrible.'))).toBe(true);
+  expect(assistantTurns.every((c: string) => !c.startsWith('Reiko:'))).toBe(true);
+});
+
+test('a whole-scene message is never given one character’s name', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Kirishima grins.'], 8192);
+  await setupOllamaProvider(page);
+  // Two present, so attribution is switched on — and a carried transcript that
+  // holds the whole scene, which has no single speaker to name.
+  await seedHospitalScene(page, {
+    castKirishima: true,
+    presentCharacterIds: ['bakugo', 'kirishima'],
+  });
+
+  const body = await sendTurn(page, ollama, 'You are both impossible.');
+  const carried = body.messages.filter(
+    (m: any) => m.role === 'assistant' && m.content.includes('The hospital room was quiet'),
+  );
+  expect(carried.length).toBeGreaterThan(0);
+  // Naming a speaker here would be a lie: the message contains several.
+  for (const message of carried) {
+    expect(message.content).not.toMatch(/^Katsuki Bakugo:/);
+    expect(message.content).not.toMatch(/^Kirishima:/);
+  }
+  // Instead the prompt says what the record is, and that it is not a pattern.
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+  expect(system).toMatch(/a record of earlier roleplay, not events happening now/);
+});
+
+test('historical Reiko dialogue does not license writing Reiko now', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  // The seeded transcript contains `Reiko: "How are you feeling?"`.
+  await seedHospitalScene(page, { transcriptRepeats: 5 });
+
+  const body = await sendTurn(page, ollama, 'Well?');
+  const all = body.messages.map((m: any) => String(m.content)).join('\n');
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+
+  // The contradiction is real and has to be named, not hidden: the record does
+  // contain her lines, and the prompt says so and says it is not a pattern.
+  expect(all).toMatch(/Reiko: "How are you feeling\?"/);
+  expect(system).toMatch(/contains lines for Reiko Ryuusui as well as for the cast/);
+  expect(system).toMatch(/not a pattern to continue/);
+  expect(system).toMatch(/Reiko Ryuusui's words, actions and choices belong to the user alone/);
+  // And the control rule still stands, in both the system block and the last word.
+  expect(system).toMatch(/Never write Reiko Ryuusui's dialogue, actions, thoughts, or decisions/);
+  expect(body.messages.at(-1).content).toMatch(/Never write Reiko Ryuusui/);
+});
+
+test('a seeded story opening is not attributed to the focal character', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Kirishima grins.'], 8192);
+  await setupOllamaProvider(page);
+  await seedFixtures(page);
+
+  // An opening is the scene, not the character taking a turn — even though it
+  // is filed under them, and even with attribution switched on.
+  await startChat(page);
+  const seeded = (await readStore<any>(page, 'messages')).find((m) => m.order === 0);
+  expect(seeded.historical).toBe(true);
+  expect(seeded.speakerScope).toBe('scene');
+
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await expect(composer).toBeEditable();
+  const before = ollama.requests.length;
+  await composer.fill('Evening.');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect.poll(() => ollama.requests.length, { timeout: 40_000 }).toBeGreaterThan(before);
+
+  const opening = ollama.requests
+    .at(-1)!
+    .body.messages.find((m: any) => m.content.includes('Sera looks up from the bar'));
+  expect(opening).toBeTruthy();
+  expect(opening.content).not.toMatch(/^Sera:/);
+});

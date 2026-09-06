@@ -1241,7 +1241,13 @@ function compileContextInner(input: CompileInput): CompileResult {
  * containing several would be a lie about its contents.
  */
 function attribute(message: Message, content: string, scene: ResolvedScene): string {
-  if (message.role !== 'assistant' || message.historical) return content;
+  if (message.role !== 'assistant') return content;
+  // Historical messages used to be skipped wholesale. That was right for a
+  // pasted transcript — one message holding a whole scene has no single
+  // speaker, and naming one would be false — but it also threw away the
+  // attribution an imported log carries per message, which the file itself
+  // supplied. The distinction is what the content *is*, not how it got here.
+  if (message.historical && message.speakerScope !== 'turn') return content;
   if (scene.present.length < 2) return content;
   const speaker = scene.present.find((c) => c.id === message.characterId);
   if (!speaker) return content;

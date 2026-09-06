@@ -845,6 +845,9 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
                   // turn the assistant just took — and imitates it, including
                   // the user's own lines.
                   historical: true,
+                  // An opening is the scene, not the focal character taking a
+                  // turn, even though it is filed under them.
+                  speakerScope: 'scene',
                 }),
               );
               chat.orderCounter = 1;
