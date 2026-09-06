@@ -20,7 +20,9 @@ test('dump', async ({ page }) => {
   await goto(page, '#/chat/hospital-chat');
   await expect(page.locator('.chat-composer')).toBeVisible({ timeout: 20_000 });
   const composer = page.getByRole('textbox', { name: 'Message', exact: true });
-  await composer.fill('*my face lits up with mischievous energy. I giggle*');
+  // The benchmark turn verbatim: a short expression plus a short line, which
+  // is the shape that used to draw a one-sentence conversational answer.
+  await composer.fill('my face lits up mischievously\n\n"oh? is that so?"');
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect.poll(() => ollama.requests.length, { timeout: 30_000 }).toBeGreaterThan(0);
 

@@ -288,6 +288,14 @@ export interface GenerationSettings {
   contextSize: number;
 }
 
+export interface NarrationPreset {
+  id: ID;
+  name: string;
+  instruction: string;
+  description: string;
+  builtIn: boolean;
+}
+
 export interface Story extends Timestamped {
   id: ID;
   title: string;
@@ -301,6 +309,12 @@ export interface Story extends Timestamped {
   rules: string;
   /** What has already happened, in order. The campaign's history. */
   timeline: string;
+  /**
+   * Narration style presets applied to every chat in this story. They combine
+   * — "Detailed + Slow Burn + Cinematic" is a normal selection — so this is a
+   * list rather than a mode. See `narration/presets.ts`.
+   */
+  narrationPresetIds: ID[];
   authorNote: string;
   /**
    * The message a new chat opens with. Takes precedence over the primary
@@ -408,6 +422,12 @@ export interface Chat extends Timestamped {
    * and editable from inside the conversation.
    */
   direction: string;
+  /**
+   * Narration presets for this chat alone. `null` inherits the story's
+   * selection; an empty array is a deliberate "none", which is why this is
+   * nullable rather than just empty.
+   */
+  narrationPresetIds: ID[] | null;
   lorebookIds: ID[];
   /** Next value for Message.order. */
   orderCounter: number;
@@ -593,6 +613,12 @@ export interface Settings {
    * it — paid for in startup latency on every message.
    */
   maxResponseTokens: number;
+  /**
+   * Presets the user created, plus edits to the built-in ones stored under the
+   * same id. Lives in settings rather than its own object store so an existing
+   * database needs no version bump to gain the feature.
+   */
+  narrationPresets: NarrationPreset[];
   reserveForResponse: number;
   loreScanDepth: number;
   maxLoreEntries: number;

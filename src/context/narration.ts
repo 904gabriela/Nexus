@@ -13,13 +13,33 @@
  * structure, or a list of components every reply must contain. Shape follows
  * the moment; the brief only rules out the two failure modes that actually
  * happen, which are bare dialogue and stopping at acknowledgement.
+ *
+ * `describeTurnDirective` is the same brief's last word, and it is placed
+ * after the history rather than before it. A dump of the real prompt showed
+ * the frame sitting ninety lines above the thing it governs, with the scene,
+ * the cast, the story, five lore blocks and the whole transcript in between —
+ * so the last thing the model read before writing was a short user line that
+ * happened to be a question. A chat-tuned model answers a question.
  */
 
 import type { ResolvedScene } from './scene';
 
 const nameOf = (c: { displayName?: string; name: string }) => c.displayName || c.name;
 
-export function describeNarration(scene: ResolvedScene, personaName: string): string {
+export interface NarrationInput {
+  scene: ResolvedScene;
+  personaName: string;
+  /**
+   * True when the conversation carries transcript brought in from earlier play.
+   * Such a transcript is written as a script — `Bakugo: "..."` — so the model
+   * needs telling that the names are labels whether or not the scene itself
+   * holds more than one character.
+   */
+  hasCarriedTranscript?: boolean;
+}
+
+export function describeNarration(input: NarrationInput): string {
+  const { scene, personaName } = input;
   const lines: string[] = ['## You are the narrator'];
 
   lines.push(
@@ -43,10 +63,12 @@ export function describeNarration(scene: ResolvedScene, personaName: string): st
       'transcript, not a scene — write bare dialogue only when the beat is genuinely that sharp.',
   );
 
-  // With two or more in the room the compiler prefixes past assistant turns
-  // with `Name:` so it is unambiguous who spoke. Left unexplained that reads as
-  // a script format to imitate, and the model answers in screenplay lines.
-  if (scene.present.length > 1) {
+  // Name prefixes reach the model two ways: the compiler adds them to past
+  // assistant turns when the scene holds more than one character, and a carried
+  // transcript arrives already written as a script. This used to fire only on
+  // the first, which switched the counterweight off in exactly the case where
+  // script-teaching is worst — one character plus a pasted transcript.
+  if (scene.present.length > 1 || input.hasCarriedTranscript) {
     lines.push(
       '',
       'Some earlier turns are prefixed with a name. That is a label saying who was ' +
@@ -66,4 +88,37 @@ export function describeNarration(scene: ResolvedScene, personaName: string): st
   );
 
   return lines.join('\n');
+}
+
+/**
+ * The last thing the model reads before it writes.
+ *
+ * Everything above this is context: who exists, where they are, what has
+ * happened. This says what to do with the turn that just arrived — and it is
+ * deliberately short, because its whole value is proximity. It restates only
+ * what the failure needs: the user's message is an event in the scene rather
+ * than a question addressed to the model, reactions are played out rather than
+ * acknowledged, depth follows the moment, and the persona is never written.
+ */
+export function describeTurnDirective(input: NarrationInput): string {
+  const { scene, personaName } = input;
+  const audience = scene.present.length
+    ? scene.present.map(nameOf).join(', ')
+    : 'the characters present';
+
+  return [
+    '## This turn',
+    `${personaName}'s message above is something happening inside the scene — an action, ` +
+      `an expression, a line spoken to ${audience}. It is not a question addressed to you, ` +
+      'and it does not want a short conversational answer.',
+    '',
+    `Play it forward. Let ${audience} react to what ${personaName} actually did — that ` +
+      'gesture, those words — and carry the scene to its next real beat instead of ' +
+      'stopping once the message has been acknowledged.',
+    '',
+    'How much room the moment gets follows the moment: a light exchange can be brief, a ' +
+      'charged one earns space. Narration, action, inner reaction, dialogue and the world ' +
+      'around them are tools — use the ones this beat needs, not all of them every time.',
+    `Never write ${personaName}.`,
+  ].join('\n');
 }

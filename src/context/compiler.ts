@@ -31,7 +31,8 @@ import { LORE_TIER_RANK } from '../types';
 import type { LoreTier } from '../types';
 import { scanLore } from '../lore/matcher';
 import { describeControl, describeScene, resolveScene, type ResolvedScene } from './scene';
-import { describeNarration } from './narration';
+import { describeNarration, describeTurnDirective } from './narration';
+import { describeNarrationStyle, selectedPresets } from '../narration/presets';
 import { truncate } from '../utils/text';
 import { IMAGE_TOKEN_COST, estimateTokens } from './tokens';
 
@@ -281,6 +282,9 @@ function lorePriority(hit: { tier: LoreTier; entry: { priority: number } }): num
 }
 
 /** Priority tiers, higher survives trimming (spec §44). */
+/** The turn directive's part id. It is emitted as the last message, not in the system block. */
+const TURN_DIRECTIVE_ID = 'turn-directive';
+
 const PRIORITY = {
   system: 1000,
   /** Presence and control. Above everything the world merely knows. */
@@ -420,14 +424,53 @@ function compileContextInner(input: CompileInput): CompileResult {
   // highest-priority block in the prompt is the global system prompt, whose
   // stock wording casts the model as one character answering in turn — and a
   // model cast that way replies with a line of dialogue and no scene around it.
+  const carriedTranscript = input.history.some((m) => m.historical);
+  const narrationInput = {
+    scene,
+    personaName: userName,
+    hasCarriedTranscript: carriedTranscript,
+  };
   parts.push(
     part(
       'narration',
       'You are the narrator',
       'scene',
-      macro(describeNarration(scene, userName)),
+      macro(describeNarration(narrationInput)),
       'Always included — Nexus narrates a world rather than playing one character.',
       PRIORITY.narration,
+    ),
+  );
+  // How the narrator writes, as opposed to what it knows. The chat's selection
+  // wins over the story's; `null` on the chat means inherit, while an empty
+  // array is a deliberate "none", which is why the check is for null.
+  const presetIds = chat?.narrationPresetIds ?? story?.narrationPresetIds ?? [];
+  const styleBlock = describeNarrationStyle(
+    selectedPresets(presetIds, settings.narrationPresets ?? []),
+  );
+  if (styleBlock.trim()) {
+    parts.push(
+      part(
+        'narration-style',
+        'Narration style',
+        'scene',
+        macro(styleBlock),
+        `${presetIds.length} narration preset(s) selected for this chat.`,
+        PRIORITY.narration - 1,
+      ),
+    );
+  }
+
+  // Sent as the final message rather than inside the system block — see the
+  // splice at the end of this function. It is registered here so its tokens are
+  // budgeted and it appears in the inspector like every other part.
+  parts.push(
+    part(
+      TURN_DIRECTIVE_ID,
+      'This turn',
+      'instruction',
+      macro(describeTurnDirective(narrationInput)),
+      'Sent last, after the history, where it cannot be crowded out.',
+      PRIORITY.instruction,
     ),
   );
 
@@ -451,7 +494,7 @@ function compileContextInner(input: CompileInput): CompileResult {
   // Without saying so, the model reads it as its own most recent output and
   // imitates it wholesale — including the user's lines, and including every
   // character who happened to be named in it.
-  if (input.history.some((m) => m.historical)) {
+  if (carriedTranscript) {
     parts.push(
       part(
         'historical-frame',
@@ -1043,7 +1086,7 @@ function compileContextInner(input: CompileInput): CompileResult {
   /* ------------------------------------------------------ build payload */
 
   const systemPrompt = finalParts
-    .filter((p) => p.kind !== 'history')
+    .filter((p) => p.kind !== 'history' && p.id !== TURN_DIRECTIVE_ID)
     .sort((a, b) => b.priority - a.priority)
     .map((p) => p.content)
     .filter(Boolean)
@@ -1140,6 +1183,32 @@ function compileContextInner(input: CompileInput): CompileResult {
       payload.length - Math.max(0, item.depth),
     );
     payload.splice(index, 0, { role: 'system', content: item.content });
+  }
+
+  // The turn directive goes last, after the user's message.
+  //
+  // Position is the whole point. Dumping the real request showed the narrator's
+  // brief ninety lines above the turn it governs, with the scene, the cast, the
+  // story, the lore and the entire transcript in between — so the final thing
+  // the model read was a short user line that happened to be a question, and a
+  // chat-tuned model answers a question. This is the same brief's last word,
+  // sitting where it cannot be crowded out.
+  const turnDirective = finalParts.find((p) => p.id === TURN_DIRECTIVE_ID)?.content ?? '';
+  if (turnDirective.trim()) {
+    payload.push({ role: 'system', content: turnDirective });
+    trace(
+      {
+        apiRole: 'system',
+        storedRole: null,
+        sender: 'Nexus (turn directive)',
+        characterId: null,
+        historical: false,
+        excerpted: false,
+        originalTokens: estimateTokens(turnDirective),
+        finalTokens: estimateTokens(turnDirective),
+      },
+      turnDirective,
+    );
   }
 
   return {

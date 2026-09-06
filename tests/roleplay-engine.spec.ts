@@ -1191,3 +1191,165 @@ test('a system prompt the user wrote themselves is never rewritten', async ({ pa
     'Stay in character. Write short, clipped replies. No purple prose.',
   );
 });
+
+/* ======================================= the shallow-response regression */
+
+/**
+ * The benchmark turn, asserted end to end.
+ *
+ * A short expression plus a short line — and the line is a question, which is
+ * what used to draw a one-sentence conversational answer out of a chat-tuned
+ * model. Nothing here asserts the generated prose: a mocked model returns
+ * whatever it is told to. What is provable is that the instruction reaches the
+ * model, in the position that gives it weight, with the scene intact.
+ */
+test('the benchmark turn arrives with the narrative directive last', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  await seedHospitalScene(page, { castKirishima: true, transcriptRepeats: 3 });
+
+  const body = await sendTurn(page, ollama, 'my face lits up mischievously\n\n"oh? is that so?"');
+  const messages = body.messages;
+  const system = messages.find((m: any) => m.role === 'system').content;
+  const last = messages.at(-1);
+
+  /* --- the directive, and where it sits ------------------------------- */
+  // Last, after the user's turn. Position is the point: the narrator's brief
+  // alone sat ninety lines above the turn it governed.
+  expect(last.role).toBe('system');
+  expect(last.content).toContain('## This turn');
+  expect(last.content).toMatch(/It is not a question addressed to you/);
+  expect(last.content).toMatch(/Play it forward/);
+  expect(last.content).toMatch(/instead of stopping once the message has been acknowledged/);
+  // Depth follows the scene, and no quota was smuggled in with it.
+  expect(last.content).toMatch(/a light exchange can be brief, a charged one earns space/);
+  expect(last.content).not.toMatch(/\b\d+\s*(words|sentences|paragraphs)\b/i);
+
+  /* --- control ------------------------------------------------------- */
+  expect(last.content).toMatch(/Never write Reiko Ryuusui/);
+  expect(system).toMatch(/Reiko Ryuusui is the user/);
+  expect(system).toMatch(/Never write Reiko Ryuusui's dialogue, actions, thoughts, or decisions/);
+  expect(system).toMatch(/You narrate the world and play everyone present except Reiko Ryuusui/);
+  expect(system).toMatch(/You are not a character in this scene/);
+
+  /* --- presence ------------------------------------------------------ */
+  const presentLine = /Present: (.*)/.exec(system)?.[1] ?? '';
+  expect(presentLine).toContain('Reiko Ryuusui');
+  expect(presentLine).toContain('Katsuki Bakugo');
+  // Named all through the transcript and the lore, and still not in the room.
+  expect(presentLine).not.toMatch(/Edgeshot|Midoriya|Deku|Kirishima|Aizawa/);
+  expect(system).toMatch(/not in the scene: .*Kirishima|Kirishima.*\(not present\)/);
+
+  /* --- the turn itself, and the play it continues --------------------- */
+  const userTurns = messages.filter((m: any) => m.role === 'user');
+  expect(userTurns.at(-1).content).toContain('my face lits up mischievously');
+  expect(userTurns.at(-1).content).toContain('oh? is that so?');
+  const transcript = messages
+    .filter((m: any) => m.role === 'assistant')
+    .map((m: any) => m.content)
+    .join('\n');
+  expect(transcript.length).toBeGreaterThan(0);
+  expect(transcript).toMatch(/hospital room|Bakugo/);
+});
+
+test('a carried script transcript is called a label even with one character present', async ({
+  page,
+}) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  // One character in the scene, and a transcript written as `Bakugo: "..."`.
+  // The clause used to be gated on the cast size, so this — the case where
+  // script-teaching is worst — was the one configuration it never covered.
+  await seedHospitalScene(page);
+
+  const body = await sendTurn(page, ollama, '*I giggle.*');
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+  expect(system).toMatch(/a label saying who was speaking, not the format to write in/);
+});
+
+/* ============================================== narration style presets */
+
+test('narration presets combine, and reach the model as one block', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  await seedHospitalScene(page);
+
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const story: any = await new Promise((r) => {
+      const q = db.transaction('stories', 'readonly').objectStore('stories').get('mha-story');
+      q.onsuccess = () => r(q.result);
+    });
+    story.narrationPresetIds = ['preset-detailed', 'preset-slow-burn', 'preset-cinematic'];
+    await new Promise<void>((r) => {
+      const q = db.transaction('stories', 'readwrite').objectStore('stories').put(story);
+      q.onsuccess = () => r();
+    });
+    db.close();
+  });
+  await page.reload();
+  await boot(page);
+
+  const body = await sendTurn(page, ollama, 'You look terrible.');
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+
+  // All three, in one block, as separate emphases rather than run together.
+  expect(system).toContain('## Narration style');
+  expect(system).toMatch(/- Detailed: Use richer sensory/);
+  expect(system).toMatch(/- Slow Burn: Let emotional tension build/);
+  expect(system).toMatch(/- Cinematic: Emphasise visual composition/);
+  // A preset shapes how the scene is written, and says nothing about length.
+  expect(system).toMatch(/none of them asks for a particular length/);
+});
+
+test('no preset selected sends no style block at all', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  await seedHospitalScene(page);
+
+  const body = await sendTurn(page, ollama, 'You look terrible.');
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+  expect(system).not.toContain('## Narration style');
+});
+
+test('a chat can override the story it belongs to', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  await seedHospitalScene(page);
+
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const read = (store: string, id: string) =>
+      new Promise<any>((r) => {
+        const q = db.transaction(store, 'readonly').objectStore(store).get(id);
+        q.onsuccess = () => r(q.result);
+      });
+    const write = (store: string, value: any) =>
+      new Promise<void>((r) => {
+        const q = db.transaction(store, 'readwrite').objectStore(store).put(value);
+        q.onsuccess = () => r();
+      });
+
+    const story = await read('stories', 'mha-story');
+    story.narrationPresetIds = ['preset-fast-paced'];
+    await write('stories', story);
+
+    const chat = await read('chats', 'hospital-chat');
+    chat.narrationPresetIds = ['preset-slow-burn'];
+    await write('chats', chat);
+    db.close();
+  });
+  await page.reload();
+  await boot(page);
+
+  const body = await sendTurn(page, ollama, 'You look terrible.');
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+  expect(system).toMatch(/- Slow Burn:/);
+  expect(system).not.toMatch(/- Fast Paced:/);
+});

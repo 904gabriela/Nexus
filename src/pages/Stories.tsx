@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { Character, Story, StoryCharacterLink } from '../types';
 import { newStory } from '../types/factories';
 import { generateOpeningScene } from '../ai/openingScene';
+import { availablePresets } from '../narration/presets';
 import { useActions, useAppState } from '../state/store';
 import { Avatar, MediaImage } from '../components/media/MediaImage';
 import { ImagePicker } from '../components/media/ImagePicker';
@@ -565,6 +566,41 @@ export function StoryEditor({
               onChange={(authorNote) => patch({ authorNote })}
               hint="Injected near the end of the context for maximum steering weight — tone, pacing, style directions."
             />
+
+            {/*
+              Presets combine rather than exclude — "Detailed + Slow Burn +
+              Cinematic" is a normal selection — so these are switches, not a
+              mode picker.
+            */}
+            <div className="field">
+              <span className="field-label">Narration style</span>
+              <div className="field-hint" style={{ marginBottom: 8 }}>
+                How the narrator writes. Combine as many as suit the story; none of them asks
+                for a particular length.
+              </div>
+              <div className="stack">
+                {availablePresets(state.settings.narrationPresets ?? [])
+                  .filter((preset) => preset.instruction.trim())
+                  .map((preset) => {
+                    const on = draft.narrationPresetIds.includes(preset.id);
+                    return (
+                      <Toggle
+                        key={preset.id}
+                        label={preset.name}
+                        description={preset.description}
+                        checked={on}
+                        onChange={(next) =>
+                          patch({
+                            narrationPresetIds: next
+                              ? [...draft.narrationPresetIds, preset.id]
+                              : draft.narrationPresetIds.filter((id) => id !== preset.id),
+                          })
+                        }
+                      />
+                    );
+                  })}
+              </div>
+            </div>
           </>
         )}
 
