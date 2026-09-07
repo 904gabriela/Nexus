@@ -15,6 +15,7 @@ import {
   goto,
   makeCharacterCardPng,
   reloadApp,
+  saveAndSettle,
   bubble,
   openMessageMenu,
   mockAI,
@@ -138,7 +139,9 @@ test('steps 10-16: create a persona with an avatar, verify persistence, edit', a
 
   await page.getByText('Corin Ashe').first().click();
   await field(page, 'Nickname').fill('Cor');
-  await page.getByRole('button', { name: 'Save' }).first().click();
+  // Save is asynchronous; reloading on the next line read back the persona as
+  // it was before the click.
+  await saveAndSettle(page);
   await page.reload();
   expect((await readStore(page, 'personas'))[0].nickname).toBe('Cor');
 });
@@ -689,7 +692,7 @@ test('steps 67-75: create a memory from selected messages, then manage it', asyn
   // 74. Edit.
   await page.getByText('Her name is Seraphine').first().click();
   await fieldIn(page.getByRole('dialog'), 'Content').fill('Updated memory content.');
-  await page.getByRole('dialog').getByRole('button', { name: 'Save' }).click();
+  await saveAndSettle(page.getByRole('dialog'), page);
   await page.reload();
   expect((await readStore(page, 'memories'))[0].content).toBe('Updated memory content.');
 

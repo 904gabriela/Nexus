@@ -132,6 +132,24 @@ export async function sheetAction(page: Page, label: string | RegExp) {
   await sheet.getByRole('button', { name: label }).first().click();
 }
 
+/**
+ * Clicks Save and waits for the write to land.
+ *
+ * Saving is asynchronous: the click returns before IndexedDB has the row. A
+ * test that reloads on the next line reads back the state from before the
+ * click, which is the same race that has now surfaced in five different tests
+ * under full-suite load. Waiting for the toast the app already shows is the
+ * fix, and it belongs here rather than in each caller.
+ */
+export async function saveAndSettle(
+  scope: Page | ReturnType<Page['getByRole']>,
+  page?: Page,
+) {
+  const root = page ?? (scope as Page);
+  await (scope as Page).getByRole('button', { name: 'Save' }).first().click();
+  await expect(root.getByText(/^Saved |saved$/i).first()).toBeVisible({ timeout: 15_000 });
+}
+
 export async function confirmDialog(page: Page, label: string | RegExp = /Delete|Confirm|Discard|Remove|Restore|Erase/) {
   const dialog = page.getByRole('dialog').last();
   await dialog.getByRole('button', { name: label }).first().click();
