@@ -39,6 +39,7 @@ import {
   relevantRelationships,
 } from './storyState';
 import { MEMORY_TIER_RANK, rankMemories } from '../memory/relevance';
+import { memoryBasis } from '../memory/matrix';
 import { truncate } from '../utils/text';
 import { IMAGE_TOKEN_COST, estimateTokens } from './tokens';
 
@@ -236,6 +237,28 @@ function tailExcerpt(content: string, budgetTokens: number): string | null {
   }
 
   return `[…earlier part of this message omitted…]\n\n${content.slice(cut)}`;
+}
+
+/**
+ * Marks a memory the story has not actually confirmed.
+ *
+ * A claim and an observation read identically once they are both a line of
+ * prose in the prompt, and the model has no way to tell them apart — so a
+ * character's cover story would harden into fact. Saying who claimed it lets
+ * the model keep treating it as something that might be untrue.
+ */
+function basisSuffix(memory: Memory, input: CompileInput): string {
+  const basis = memoryBasis(memory);
+  if (basis === 'observed') return '';
+  if (basis === 'inferred') return ' — inferred, not confirmed';
+  // The claimant can be the persona as easily as a character: the person
+  // playing can assert something about the world too, and it is no more
+  // confirmed for that.
+  const claimant =
+    input.characters.find((c) => c.id === memory.statedById) ??
+    (input.persona?.id === memory.statedById ? input.persona : null);
+  const name = claimant?.displayName || claimant?.name;
+  return name ? ` — claimed by ${name}; may not be true` : ' — claimed, not confirmed';
 }
 
 function memoryReason(memory: Memory): string {
@@ -966,7 +989,7 @@ function compileContextInner(input: CompileInput): CompileResult {
         `Memory — ${memory.title || 'Untitled'}`,
         'memory',
         macro(
-          `## ${memory.title || 'Memory'} [${memory.category}]\n${memory.content}`,
+          `## ${memory.title || 'Memory'} [${memory.category}]${basisSuffix(memory, input)}\n${memory.content}`,
         ),
         `Included because: ${reason}.`,
         priority,

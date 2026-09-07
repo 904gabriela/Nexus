@@ -2,12 +2,13 @@
  * Automatic memory.
  *
  * Scans a recent exchange for the trigger classes the user has enabled and, on
- * a hit, proposes a memory. Detection is deterministic and local so it costs
- * nothing per turn; the AI is only invoked to phrase the memory once a trigger
- * has actually fired.
+ * a hit, asks the memory matrix what changed. Detection is deterministic and
+ * local so it costs nothing per turn; the AI is only invoked once a trigger has
+ * actually fired.
  *
  * Everything it creates is an ordinary memory: editable, deletable, and never
- * pinned unless the user turned that on.
+ * pinned unless the user turned that on. Anything the matrix was not confident
+ * about arrives as a proposal and stays out of the prompt until accepted.
  */
 
 import type {
@@ -20,8 +21,7 @@ import type {
   Provider,
   Settings,
 } from '../types';
-import { generateMemoryDraft } from './summarizer';
-import { newMemory } from '../types/factories';
+import { extractMemories } from './matrix';
 
 interface TriggerRule {
   trigger: AutoMemoryTrigger;
@@ -129,80 +129,57 @@ export interface AutoMemoryInput {
   existing: Memory[];
 }
 
-/** Cheap similarity check so the same beat is not remembered twice. */
-function isDuplicate(content: string, existing: Memory[]): boolean {
-  const words = new Set(
-    content
-      .toLowerCase()
-      .replace(/[^\w\s]/g, ' ')
-      .split(/\s+/)
-      .filter((w) => w.length > 4),
-  );
-  if (words.size < 3) return false;
-
-  for (const memory of existing) {
-    const other = new Set(
-      memory.content
-        .toLowerCase()
-        .replace(/[^\w\s]/g, ' ')
-        .split(/\s+/)
-        .filter((w) => w.length > 4),
-    );
-    if (!other.size) continue;
-    let shared = 0;
-    for (const word of words) if (other.has(word)) shared += 1;
-    if (shared / Math.min(words.size, other.size) > 0.6) return true;
-  }
-  return false;
-}
-
 export interface AutoMemoryResult {
   memory: Memory;
+  /** What made the scan look at this exchange at all. */
   hit: TriggerHit;
+  /** Whether it committed, and why or why not. */
+  reason: string;
 }
 
 /**
- * Evaluates an exchange and, if a trigger fires, produces a saved-ready memory.
- * Returns null when nothing fired or the beat is already remembered.
+ * Evaluates an exchange and, if a trigger fires, extracts what changed.
+ *
+ * The triggers stay: they are a local, free filter over the exchange, and they
+ * are what the user configured in Settings. What changed is that a firing no
+ * longer produces one prose summary — it hands the exchange to the memory
+ * matrix, which reports typed changes with a basis and a confidence, or reports
+ * nothing at all. An empty result is a normal outcome; most exchanges do not
+ * change anything worth keeping for later.
  */
 export async function maybeCreateAutoMemory(
   input: AutoMemoryInput,
-): Promise<AutoMemoryResult | null> {
+): Promise<{ results: AutoMemoryResult[]; readable: boolean }> {
   const { settings } = input;
-  if (!settings.autoMemory) return null;
+  const nothing = { results: [], readable: true };
+  if (!settings.autoMemory) return nothing;
 
   const hits = detectTriggers(input.messages, settings.autoMemoryTriggers);
-  if (!hits.length) return null;
+  if (!hits.length) return nothing;
   const hit = hits[0];
 
-  const draft = await generateMemoryDraft({
+  const extracted = await extractMemories({
     messages: input.messages,
     characters: input.characters,
     persona: input.persona,
     provider: input.provider,
+    chatId: input.chatId,
+    storyId: input.storyId,
+    existing: input.existing,
+    pin: settings.autoMemoryPin,
   });
 
-  if (!draft.content.trim()) return null;
-  if (isDuplicate(draft.content, input.existing)) return null;
-
-  const memory = newMemory({
-    origin: 'auto',
-    title: draft.title || `Auto: ${hit.trigger}`,
-    content: draft.content,
-    // The trigger classification is more reliable than the model's guess here.
-    category: hit.category,
-    importance: 'normal',
-    pinned: settings.autoMemoryPin,
-    sourceMessageIds: input.messages.map((m) => m.id),
-    sourceChatId: input.chatId,
-    sourceStoryId: input.storyId,
-    characterIds: Array.from(
-      new Set(input.messages.map((m) => m.characterId).filter(Boolean) as string[]),
-    ),
-    tags: ['auto', hit.trigger],
-  });
-
-  return { memory, hit };
+  return {
+    results: extracted.memories.map(({ memory, reason }) => ({
+      // The trigger classification is a better category than the model's guess
+      // only when the model did not offer one it was sure of; it did, so its
+      // category stands and the trigger becomes a tag.
+      memory: { ...memory, tags: [...new Set([...memory.tags, hit.trigger])] },
+      hit,
+      reason,
+    })),
+    readable: extracted.readable,
+  };
 }
 
 export function triggerLabel(trigger: AutoMemoryTrigger): string {

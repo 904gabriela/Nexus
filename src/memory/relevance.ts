@@ -14,12 +14,13 @@
  * background otherwise.
  *
  * Matching is deliberately narrow. A memory's *content* is prose, and matching
- * on prose matches everything — so the terms come from its title, its tags and
- * the characters it names. Those are the parts someone chose; the body is
- * where they wrote freely.
+ * on prose matches everything — so the terms come from its title, its tags, its
+ * subjects and the characters it names. Those are the parts someone chose; the
+ * body is where they wrote freely.
  */
 
 import type { ID, Memory } from '../types';
+import { isUsable, memorySubjects } from './matrix';
 
 export type MemoryTier =
   /** About someone in the room, or something in the current message. */
@@ -72,14 +73,19 @@ export interface RankMemoriesInput {
   limit: number;
 }
 
-/** Terms worth matching on: the title, the tags, nothing from the body. */
+/** Terms worth matching on: the title, tags and subjects, nothing from the body. */
 function termsOf(memory: Memory): string[] {
   const fromTitle = memory.title
     .split(/[^\p{L}\p{N}']+/u)
     .map((w) => w.trim())
     .filter((w) => w.length > 3);
   const fromTags = (memory.tags ?? []).map((t) => t.trim()).filter(Boolean);
-  return [...new Set([...fromTitle, ...fromTags].map((t) => t.toLowerCase()))];
+  // Subjects are the matrix's most useful output for retrieval: they name who
+  // the memory is about even when no character record exists for them.
+  const fromSubjects = memorySubjects(memory);
+  return [
+    ...new Set([...fromTitle, ...fromTags, ...fromSubjects].map((t) => t.toLowerCase())),
+  ];
 }
 
 function mentions(haystack: string, terms: string[]): string[] {
@@ -106,6 +112,10 @@ export function rankMemories(input: RankMemoriesInput): RankedMemory[] {
 
   const ranked = input.memories
     .filter((memory) => memory.content.trim())
+    // A memory waiting for review, or one a later memory replaced, is not
+    // something the story knows yet. Ranking is where that line is enforced,
+    // so no caller can forget it.
+    .filter(isUsable)
     .map((memory): RankedMemory => {
       const terms = termsOf(memory);
       const aboutSomeoneHere = (memory.characterIds ?? []).some((id) => present.has(id));

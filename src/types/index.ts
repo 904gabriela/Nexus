@@ -252,6 +252,40 @@ export type MemoryImportance = 'low' | 'normal' | 'high' | 'critical';
 
 export const MEMORY_IMPORTANCE: MemoryImportance[] = ['low', 'normal', 'high', 'critical'];
 
+/**
+ * How the memory came to be believed.
+ *
+ * The story showing something, a character claiming it, and the extractor
+ * concluding it are three different kinds of knowledge, and a character who
+ * lies makes them come apart. Collapsing them into one flat "fact" is how a
+ * story ends up treating a cover story as settled truth.
+ */
+export type MemoryBasis =
+  /** It happened in the text. */
+  | 'observed'
+  /** Someone said it. It may be wrong, or a lie. */
+  | 'stated'
+  /** Concluded rather than shown. */
+  | 'inferred';
+
+export const MEMORY_BASES: MemoryBasis[] = ['observed', 'stated', 'inferred'];
+
+export type MemoryStatus =
+  /** Waiting for a person to accept it. Never sent to the model. */
+  | 'proposed'
+  /** In use. */
+  | 'active'
+  /** Replaced by a later memory, kept for the record. */
+  | 'superseded';
+
+/** A beat that moved two people relative to each other. */
+export interface RelationshipImpact {
+  /** Character ids, or the persona's id. */
+  betweenIds: [ID, ID];
+  /** What changed, in a few words: "trust broken", "grew closer". */
+  change: string;
+}
+
 export interface Memory extends Timestamped {
   id: ID;
   /** 'auto' memories were proposed by the trigger scan, not written by hand. */
@@ -266,6 +300,29 @@ export interface Memory extends Timestamped {
   sourceStoryId: ID | null;
   characterIds: ID[];
   tags: string[];
+
+  /* ------------------------------------------------------- memory matrix */
+  /*
+   * Everything below is optional in practice: memories saved before these
+   * fields existed do not carry them, so read them through the helpers in
+   * src/memory/matrix.ts rather than directly.
+   */
+
+  /**
+   * Who or what this is about, by name. Unlike characterIds these need no
+   * character record, so a memory can be about someone the story has only
+   * mentioned. Retrieval matches on these.
+   */
+  subjects?: string[];
+  basis?: MemoryBasis;
+  /** 0–1. Only confident observations commit without review. */
+  confidence?: number;
+  status?: MemoryStatus;
+  /** Who claimed it, when the basis is 'stated'. */
+  statedById?: ID | null;
+  /** Memories this one replaces, once it is accepted. */
+  supersedes?: ID[];
+  relationshipImpact?: RelationshipImpact | null;
 }
 
 /* ------------------------------------------------------------------ story */

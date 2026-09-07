@@ -526,8 +526,14 @@ export async function sendMessage(page: Page, text: string) {
 
 export interface MockOllama {
   replies: string[];
-  /** Every body posted to /api/chat, in order. */
+  /** Every body posted to /api/chat, in order — the roleplay turns. */
   requests: Array<{ body: any; url: string }>;
+  /**
+   * Background work: memory extraction and summaries, which go through
+   * complete() to the OpenAI-compatible endpoint rather than /api/chat. Kept
+   * separate so `requests.at(-1)` still means "the last roleplay turn".
+   */
+  utility: Array<{ body: any; url: string }>;
   /** What /api/show reports as the model's window. */
   contextLength: number;
 }
@@ -546,7 +552,7 @@ export async function mockOllama(
   replies: string[] = ['A mocked reply.'],
   contextLength = 8192,
 ): Promise<MockOllama> {
-  const state: MockOllama = { replies: [...replies], requests: [], contextLength };
+  const state: MockOllama = { replies: [...replies], requests: [], utility: [], contextLength };
   let index = 0;
 
   await page.route('**/api/tags', async (route: Route) => {
@@ -568,6 +574,25 @@ export async function mockOllama(
       body: JSON.stringify({
         model_info: { 'general.architecture': 'llama', 'llama.context_length': state.contextLength },
       }),
+    });
+  });
+
+  /*
+   * Background work — memory extraction, summaries — goes through complete(),
+   * which posts to the OpenAI-compatible endpoint Ollama also serves rather
+   * than to /api/chat. Left unrouted those calls escape to the network and the
+   * feature silently does nothing under test. The reply queue is shared with
+   * /api/chat so ordering across the two endpoints stays predictable.
+   */
+  await page.route('**/v1/chat/completions', async (route: Route) => {
+    const body = route.request().postDataJSON();
+    state.utility.push({ body, url: route.request().url() });
+    const reply = state.replies[Math.min(index, state.replies.length - 1)] ?? 'A mocked reply.';
+    index += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ choices: [{ message: { role: 'assistant', content: reply } }] }),
     });
   });
 

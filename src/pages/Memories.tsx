@@ -10,6 +10,12 @@ import { ActionSheet, Sheet } from '../components/ui/Sheet';
 import { useConfirm, deleteConfirm } from '../components/ui/Confirm';
 import { downloadFile, exportFilename, exportMemories, exportMemory } from '../exporters';
 import { relativeTime, truncate } from '../utils/text';
+import {
+  acceptMemory,
+  memoryBasis,
+  memoryStatus,
+  memorySupersedes,
+} from '../memory/matrix';
 import type { RouteName } from '../state/router';
 
 const IMPORTANCE_CHIP: Record<MemoryImportance, string> = {
@@ -55,12 +61,24 @@ export function MemoriesPage({
   const [sort, setSort] = useState<'updated' | 'importance' | 'title'>('updated');
   const [editing, setEditing] = useState<Memory | null>(null);
   const [menuFor, setMenuFor] = useState<Memory | null>(null);
+  // Replaced memories are kept as a record but are noise in the list, so they
+  // are somewhere to go and look rather than always in the way.
+  const [shelf, setShelf] = useState<'current' | 'review' | 'replaced'>('current');
+
+  const needsReview = useMemo(
+    () => state.memories.filter((m) => memoryStatus(m) === 'proposed'),
+    [state.memories],
+  );
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     const rank: Record<MemoryImportance, number> = { critical: 4, high: 3, normal: 2, low: 1 };
     return state.memories
       .filter((memory) => {
+        const status = memoryStatus(memory);
+        if (shelf === 'review' && status !== 'proposed') return false;
+        if (shelf === 'replaced' && status !== 'superseded') return false;
+        if (shelf === 'current' && status === 'superseded') return false;
         if (category !== 'all' && memory.category !== category) return false;
         if (!needle) return true;
         return [memory.title, memory.content, memory.tags.join(' '), memory.category]
@@ -74,7 +92,25 @@ export function MemoriesPage({
         if (sort === 'title') return a.title.localeCompare(b.title);
         return b.updatedAt - a.updatedAt;
       });
-  }, [state.memories, query, category, sort]);
+  }, [state.memories, query, category, sort, shelf]);
+
+  /**
+   * Accepting is the only thing that makes a supersession real, so it goes
+   * through acceptMemory rather than flipping the status here: rejecting a
+   * proposal must leave the memories it would have replaced untouched.
+   */
+  const accept = async (memory: Memory) => {
+    const writes = acceptMemory(memory, state.memories);
+    for (const write of writes) await actions.saveMemory(write);
+    const replaced = writes.length - 1;
+    actions.toast({
+      kind: 'success',
+      title: 'Memory accepted',
+      detail: replaced
+        ? `It is now in use. ${replaced} earlier memor${replaced === 1 ? 'y was' : 'ies were'} marked replaced.`
+        : 'It is now in use.',
+    });
+  };
 
   const remove = async (memory: Memory) => {
     const ok = await confirm(deleteConfirm('memory', memory.title));
@@ -124,6 +160,46 @@ export function MemoriesPage({
         ) : (
         <>
         <SearchInput value={query} onChange={setQuery} placeholder="Search memories…" />
+
+        {/*
+          A memory the extractor was not sure about is saved but not used: it
+          reaches nothing until someone accepts it. That distinction is only
+          honest if there is somewhere to go and accept it.
+        */}
+        <div className="chip-row" style={{ marginBottom: 10 }}>
+          {(
+            [
+              ['current', 'In use'],
+              ['review', `Needs review${needsReview.length ? ` (${needsReview.length})` : ''}`],
+              ['replaced', 'Replaced'],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={`chip ${shelf === id ? 'chip-accent' : ''}`}
+              style={{ cursor: 'pointer' }}
+              onClick={() => setShelf(id)}
+              aria-pressed={shelf === id}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {shelf === 'review' && (
+          <p className="small muted" style={{ marginBottom: 10 }}>
+            These were extracted automatically but were either concluded rather than shown, or not
+            confident enough to use unattended. None of them is being sent to the AI. Accept the
+            ones that are right and delete the rest.
+          </p>
+        )}
+        {shelf === 'replaced' && (
+          <p className="small muted" style={{ marginBottom: 10 }}>
+            Superseded by a later memory. They are kept because they are the record of what the
+            story believed at the time, and they are not sent to the AI.
+          </p>
+        )}
 
         <div className="chip-row" style={{ marginBottom: 10 }}>
           <button
@@ -229,6 +305,15 @@ export function MemoriesPage({
                       </span>
                     )}
                     {memory.origin === 'auto' && <span className="chip">auto</span>}
+                    {memoryStatus(memory) === 'proposed' && (
+                      <span className="chip chip-warn">needs review</span>
+                    )}
+                    {memoryStatus(memory) === 'superseded' && (
+                      <span className="chip">replaced</span>
+                    )}
+                    {memoryBasis(memory) !== 'observed' && (
+                      <span className="chip">{memoryBasis(memory)}</span>
+                    )}
                   </div>
                   <div className="small muted clamp-2" style={{ marginTop: 4 }}>
                     {truncate(memory.content, 150)}
@@ -276,6 +361,19 @@ export function MemoriesPage({
           menuFor
             ? [
                 { key: 'edit', label: 'Edit', icon: 'edit', onSelect: () => setEditing(menuFor) },
+                ...(memoryStatus(menuFor) === 'proposed'
+                  ? [
+                      {
+                        key: 'accept',
+                        label: 'Accept',
+                        description: memorySupersedes(menuFor).length
+                          ? `Start using this, and mark the ${memorySupersedes(menuFor).length} memory it replaces as replaced.`
+                          : 'Start using this memory in the AI context.',
+                        icon: 'check',
+                        onSelect: () => void accept(menuFor),
+                      },
+                    ]
+                  : []),
                 {
                   key: 'source',
                   label: 'View source',
@@ -405,6 +503,29 @@ export function MemoryEditor({
           hint="Higher importance survives context trimming."
         />
       </div>
+      {/*
+        The basis is not decoration: it changes what the AI is told. A memory
+        marked as claimed is sent as somebody's word for it rather than as
+        something true, which is the difference between a character who lies
+        and a character who is retroactively honest.
+      */}
+      <SelectField
+        label="How this is known"
+        value={memoryBasis(draft)}
+        onChange={(basis) => patch({ basis })}
+        options={[
+          { value: 'observed', label: 'It happened' },
+          { value: 'stated', label: 'Someone said it' },
+          { value: 'inferred', label: 'It was concluded' },
+        ]}
+        hint={
+          memoryBasis(draft) === 'observed'
+            ? 'Sent as fact.'
+            : memoryBasis(draft) === 'stated'
+              ? 'Sent as a claim, with whoever made it — the AI is told it may not be true.'
+              : 'Sent marked as unconfirmed.'
+        }
+      />
       <Toggle
         label="Pinned"
         description="Pinned memories are always included, ahead of everything else."

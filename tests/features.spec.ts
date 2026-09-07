@@ -341,7 +341,22 @@ test('story summary generates, persists and replaces old history in context', as
 test('automatic memory can be enabled and creates an editable memory', async ({ page }) => {
   await mockAI(page, [
     'She swore an oath and promised she would never betray the company.',
-    '{"title":"The oath","category":"Event","content":"She promised never to betray the company."}',
+    // The extractor now reports a list of typed changes rather than one prose
+    // summary, and reports an empty list when nothing changed. The old shape —
+    // a single loose object — is no longer read, and an unreadable answer
+    // records nothing instead of silently saving a mechanical extract.
+    JSON.stringify([
+      {
+        title: 'The oath',
+        content: 'She promised never to betray the company.',
+        category: 'Event',
+        subjects: ['Sera'],
+        basis: 'observed',
+        confidence: 0.9,
+        importance: 'high',
+        relationship: null,
+      },
+    ]),
   ]);
   await seedFixtures(page);
   await setupProvider(page);

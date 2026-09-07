@@ -25,6 +25,7 @@ import {
   useStore,
 } from '../state/store';
 import { maybeCreateAutoMemory } from '../memory/autoMemory';
+import { acceptMemory, applyRelationshipImpacts, memoryStatus } from '../memory/matrix';
 import {
   applyDraft,
   generateStorySummary,
@@ -311,7 +312,7 @@ export function useGeneration() {
       if (assistantCount > 0 && assistantCount % current.settings.autoMemoryEvery === 0) {
         try {
           const exchange = line.slice(-2);
-          const result = await maybeCreateAutoMemory({
+          const { results, readable } = await maybeCreateAutoMemory({
             messages: exchange.map((m) => ({ ...m, content: contentOf(m) })),
             characters: currentCharacters,
             persona: currentPersona,
@@ -321,13 +322,63 @@ export function useGeneration() {
             storyId: chat.storyId,
             existing: current.memories,
           });
-          if (result) {
-            await actions.saveMemory(result.memory);
+
+          for (const result of results) {
+            // Accepting is what makes a supersession real, so a memory that
+            // commits on its own must go through the same path as one accepted
+            // by hand rather than being written straight in.
+            const writes =
+              memoryStatus(result.memory) === 'active'
+                ? acceptMemory(result.memory, current.memories)
+                : [result.memory];
+            for (const write of writes) await actions.saveMemory(write);
+          }
+
+          // Nothing recorded because the model's answer could not be read is a
+          // different thing from nothing worth recording, and it must not look
+          // the same — otherwise a model that cannot produce JSON leaves
+          // automatic memory quietly doing nothing forever.
+          if (!readable) {
+            actions.toast({
+              kind: 'warn',
+              title: 'Could not read the memory extraction',
+              detail:
+                'The model did not answer with the JSON that was asked for, so nothing was recorded. Smaller models often need a larger one for this — or turn automatic memory off and use Remember in a chat instead.',
+            });
+          }
+
+          const committed = results.filter((r) => memoryStatus(r.memory) === 'active');
+          const proposed = results.filter((r) => memoryStatus(r.memory) !== 'active');
+
+          if (committed.length) {
             actions.toast({
               kind: 'info',
-              title: 'Memory saved automatically',
-              detail: `${result.memory.title} — triggered by: ${result.hit.trigger}. Edit or delete it from Memories.`,
+              title:
+                committed.length === 1
+                  ? 'Memory saved automatically'
+                  : `${committed.length} memories saved automatically`,
+              detail: `${committed.map((r) => r.memory.title).join(' · ')} — edit or delete them from Memories.`,
             });
+          }
+          if (proposed.length) {
+            actions.toast({
+              kind: 'info',
+              title:
+                proposed.length === 1
+                  ? 'A memory is waiting for you'
+                  : `${proposed.length} memories are waiting for you`,
+              detail:
+                'Not confident enough to save on its own, so it is not being used yet. Review it in Memories.',
+            });
+          }
+
+          // A beat that moved two people is also a change to where they stand.
+          if (currentStory) {
+            const updated = applyRelationshipImpacts(
+              currentStory,
+              results.map((r) => r.memory),
+            );
+            if (updated) await actions.saveStory(updated);
           }
         } catch {
           // Automatic memory is an assist, never a hard requirement.
