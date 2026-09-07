@@ -1496,3 +1496,150 @@ test('a seeded story opening is not attributed to the focal character', async ({
   expect(opening).toBeTruthy();
   expect(opening.content).not.toMatch(/^Sera:/);
 });
+
+/* ============================== memory retrieval is ranked by the scene */
+
+/**
+ * Seeds a story with far more memories than the budget admits, exactly one of
+ * which is about the person in the room.
+ */
+async function seedManyMemories(page: Page) {
+  await seedHospitalScene(page);
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const put = (v: unknown) =>
+      new Promise<void>((r) => {
+        const q = db.transaction('memories', 'readwrite').objectStore('memories').put(v);
+        q.onsuccess = () => r();
+      });
+    const now = Date.now();
+    const base = {
+      origin: 'manual',
+      category: 'Event',
+      pinned: false,
+      sourceMessageIds: [],
+      sourceChatId: null,
+      sourceStoryId: 'mha-story',
+      tags: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    // Forty newer, higher-importance memories about nobody in the room.
+    for (let i = 0; i < 40; i += 1) {
+      await put({
+        ...base,
+        id: `noise-${i}`,
+        title: `Sports festival heat ${i}`,
+        content: `Something happened in heat ${i} of the sports festival.`,
+        importance: 'high',
+        characterIds: [],
+        updatedAt: now + 1000 + i,
+      });
+    }
+
+    // One older, merely-normal memory about the character who is present.
+    await put({
+      ...base,
+      id: 'about-bakugo',
+      title: 'The promise',
+      content: 'Bakugo promised Reiko he would stop pretending it did not hurt.',
+      importance: 'normal',
+      characterIds: ['bakugo'],
+      updatedAt: now - 500_000,
+    });
+
+    // And one about a topic the user is about to raise, by tag.
+    await put({
+      ...base,
+      id: 'about-cellar',
+      title: 'The sealed door',
+      content: 'The recovery ward has a door nobody uses.',
+      importance: 'low',
+      characterIds: [],
+      tags: ['cellar'],
+      updatedAt: now - 900_000,
+    });
+    db.close();
+  });
+  await page.reload();
+  await boot(page);
+}
+
+test('a memory about someone in the room outranks forty newer ones that are not', async ({
+  page,
+}) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  await seedManyMemories(page);
+
+  const body = await sendTurn(page, ollama, 'You never say when it hurts.');
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+
+  // The one about the person actually present is in, on merit rather than on
+  // recency: it is older and less important than every memory competing.
+  expect(system).toContain('Bakugo promised Reiko he would stop pretending');
+  // And the noise did not fill the budget ahead of it.
+  const noiseCount = (system.match(/Something happened in heat/g) ?? []).length;
+  expect(noiseCount).toBeLessThan(40);
+});
+
+test('a memory is pulled in by what the user just said', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  await seedManyMemories(page);
+
+  // Nothing about this memory is important or recent; the only thing linking
+  // it to the scene is the word the user typed.
+  const body = await sendTurn(page, ollama, 'What is behind the cellar door?');
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+  expect(system).toContain('The recovery ward has a door nobody uses.');
+});
+
+test('a memory from another story stays out of this one', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Bakugo scowls.'], 8192);
+  await setupOllamaProvider(page);
+  await seedManyMemories(page);
+
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    await new Promise<void>((r) => {
+      const q = db
+        .transaction('memories', 'readwrite')
+        .objectStore('memories')
+        .put({
+          id: 'other-story',
+          origin: 'manual',
+          title: 'A different world',
+          content: 'The dragon of Ashfell was never found.',
+          category: 'Event',
+          importance: 'critical',
+          pinned: false,
+          sourceMessageIds: [],
+          sourceChatId: null,
+          sourceStoryId: 'some-other-story',
+          characterIds: [],
+          tags: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now() + 9_000_000,
+        });
+      q.onsuccess = () => r();
+    });
+    db.close();
+  });
+  await page.reload();
+  await boot(page);
+
+  const body = await sendTurn(page, ollama, 'You never say when it hurts.');
+  const system = body.messages.find((m: any) => m.role === 'system').content;
+  // Newest and critical, and still background: it belongs to another story and
+  // nothing in this scene touched it.
+  expect(system).not.toContain('The dragon of Ashfell');
+  expect(system).toContain('Bakugo promised Reiko');
+});

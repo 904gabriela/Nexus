@@ -38,6 +38,7 @@ import {
   describeStoryState,
   relevantRelationships,
 } from './storyState';
+import { MEMORY_TIER_RANK, rankMemories } from '../memory/relevance';
 import { truncate } from '../utils/text';
 import { IMAGE_TOKEN_COST, estimateTokens } from './tokens';
 
@@ -927,24 +928,38 @@ function compileContextInner(input: CompileInput): CompileResult {
 
   /* ------------------------------------------------------------ memories */
 
-  const rankedMemories = [...input.memories].sort((a, b) => {
-    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-    const rank = IMPORTANCE_RANK[b.importance] - IMPORTANCE_RANK[a.importance];
-    if (rank) return rank;
-    return b.updatedAt - a.updatedAt;
+  // Ranked against the scene rather than by importance alone. The old order —
+  // pinned, then importance, then recency — could not see what was happening,
+  // so a memory about someone who is not in the room outranked one about the
+  // moment being played simply for being newer.
+  const rankedMemories = rankMemories({
+    memories: input.memories,
+    storyId: story?.id ?? null,
+    presentCharacterIds: scene.present.map((c) => c.id),
+    sceneText: [scene.location, scene.situation, scene.objective, ...scene.present.map((c) => c.name)]
+      .filter(Boolean)
+      .join('\n'),
+    currentText: input.pendingUserText ?? '',
+    recentText: input.history
+      .slice(-RECENT_WINDOW)
+      .map((m) => m.content)
+      .join('\n'),
+    limit: Math.max(0, settings.maxMemories),
   });
 
   const memoryHits: MemoryHit[] = [];
-  const usableMemories = rankedMemories.slice(0, Math.max(0, settings.maxMemories));
-  for (const memory of usableMemories) {
-    if (!memory.content.trim()) continue;
-    const reason = memoryReason(memory);
+  for (const ranked of rankedMemories) {
+    const memory = ranked.memory;
+    const reason = `${ranked.reason} ${memoryReason(memory)}.`;
     memoryHits.push({ memory, reason });
+    // Pinned and critical keep their own tiers, as before. Everything else is
+    // banded by relevance so a scene-relevant memory outranks a background one
+    // however important the background one calls itself.
     const priority = memory.pinned
       ? PRIORITY.pinnedMemory
       : memory.importance === 'critical'
         ? PRIORITY.criticalMemory
-        : PRIORITY.memory + IMPORTANCE_RANK[memory.importance];
+        : PRIORITY.memory + MEMORY_TIER_RANK[ranked.tier] * 8 + IMPORTANCE_RANK[memory.importance];
     parts.push(
       part(
         `memory:${memory.id}`,
