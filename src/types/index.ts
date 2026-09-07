@@ -288,6 +288,53 @@ export interface GenerationSettings {
   contextSize: number;
 }
 
+/**
+ * Where the story stands, as opposed to where this scene stands.
+ *
+ * Deliberately does NOT restate SceneState. The scene knows the room, who is
+ * in it and what is happening this minute; this knows the wider situation the
+ * scene sits inside — which arc, when, what is unresolved. Nor does it hold
+ * recent events: those are the chat and the memories, and copying them here
+ * would give the same fact two homes that can disagree.
+ */
+export interface StoryState {
+  /** Which stretch of the story this is — a chapter, an arc, a phase. */
+  arc: string;
+  /** When it is: "Friday evening", "three days after the fight". */
+  time: string;
+  /** The tension currently driving things. */
+  conflict: string;
+  /** What is being pursued at story level, above this scene's objective. */
+  objective: string;
+  /** Open threads, one per line. Things the story owes an answer to. */
+  threads: string[];
+  updatedAt: number;
+}
+
+/**
+ * How two people in a story stand with each other.
+ *
+ * Between any two participants — two characters, or a character and the
+ * persona — which is why the ends are plain ids rather than `characterId`
+ * fields. `summary` is where they are now; the history of how they got there
+ * is the chat and the memories, not a second copy here.
+ */
+export interface Relationship {
+  id: ID;
+  /** The two participants. Character ids, or the persona's id. */
+  betweenIds: [ID, ID];
+  /** What this is, in a few words: "rivals", "estranged siblings". */
+  label: string;
+  /** Where they stand now, in prose. */
+  summary: string;
+  /**
+   * True when a person wrote or corrected this rather than the story
+   * inferring it. A manual relationship outranks anything derived.
+   */
+  manual: boolean;
+  updatedAt: number;
+}
+
 export interface NarrationPreset {
   id: ID;
   name: string;
@@ -315,6 +362,14 @@ export interface Story extends Timestamped {
    * list rather than a mode. See `narration/presets.ts`.
    */
   narrationPresetIds: ID[];
+  /**
+   * Where the story currently stands. Nested on the story rather than kept in
+   * its own store because it is exactly one per story, the same reasoning that
+   * puts SceneState on the chat.
+   */
+  state: StoryState;
+  /** How the cast stand with each other and with the persona. */
+  relationships: Relationship[];
   authorNote: string;
   /**
    * The message a new chat opens with. Takes precedence over the primary
@@ -477,6 +532,10 @@ export interface SceneState {
   /** Temporary, scene-local state per character id — injuries, mood, secrets. */
   characterStates: Record<ID, string>;
   updatedAt: number;
+}
+
+export function emptyStoryState(): StoryState {
+  return { arc: '', time: '', conflict: '', objective: '', threads: [], updatedAt: 0 };
 }
 
 export function emptyScene(): SceneState {

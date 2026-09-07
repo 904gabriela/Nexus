@@ -33,6 +33,11 @@ import { scanLore } from '../lore/matcher';
 import { describeControl, describeScene, resolveScene, type ResolvedScene } from './scene';
 import { describeNarration, describeTurnDirective } from './narration';
 import { describeNarrationStyle, selectedPresets } from '../narration/presets';
+import {
+  describeRelationships,
+  describeStoryState,
+  relevantRelationships,
+} from './storyState';
 import { truncate } from '../utils/text';
 import { IMAGE_TOKEN_COST, estimateTokens } from './tokens';
 
@@ -296,6 +301,13 @@ const PRIORITY = {
    * last word on the model's role.
    */
   narration: 975,
+  /**
+   * Where the story stands, and how the people in the room stand with each
+   * other. Live situation, so above the story's static setup; wider than the
+   * scene, so below it.
+   */
+  storyState: 862,
+  relationships: 858,
   /** A cast member who is not in the scene: recognisable, not detailed. */
   absentCharacter: 640,
   global: 950,
@@ -630,6 +642,45 @@ function compileContextInner(input: CompileInput): CompileResult {
         PRIORITY.persona,
       ),
     );
+  }
+
+  // The wider situation, and the standings inside it. Both are story-owned and
+  // both are filtered by what the scene actually holds: a relationship between
+  // two people who are not here is background, not context.
+  const stateBlock = macro(describeStoryState(story?.state));
+  if (stateBlock.trim()) {
+    parts.push(
+      part(
+        'story-state',
+        'Where the story stands',
+        'story',
+        stateBlock,
+        'Current arc, time, tension and open threads for this story.',
+        PRIORITY.storyState,
+      ),
+    );
+  }
+
+  if (story) {
+    const participants: Array<{ id: string; name: string }> = [
+      ...scene.present.map((c) => ({ id: c.id, name: c.displayName || c.name })),
+      ...(persona ? [{ id: persona.id, name: persona.displayName || persona.name }] : []),
+    ];
+    const presentIds = new Set(participants.map((p) => p.id));
+    const active = relevantRelationships(story.relationships, presentIds);
+    const relationshipBlock = macro(describeRelationships(active, participants));
+    if (relationshipBlock.trim()) {
+      parts.push(
+        part(
+          'relationships',
+          'How they stand',
+          'story',
+          relationshipBlock,
+          `${active.length} relationship(s) between people in this scene.`,
+          PRIORITY.relationships,
+        ),
+      );
+    }
   }
 
   if (story) {

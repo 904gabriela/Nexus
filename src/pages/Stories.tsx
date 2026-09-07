@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
-import type { Character, Story, StoryCharacterLink } from '../types';
+import type { Character, Relationship, Story, StoryCharacterLink } from '../types';
+import { emptyStoryState } from '../types';
 import { newStory } from '../types/factories';
+import { uid } from '../utils/uid';
 import { generateOpeningScene } from '../ai/openingScene';
 import { availablePresets } from '../narration/presets';
 import { useActions, useAppState } from '../state/store';
@@ -369,6 +371,26 @@ export function StoryEditor({
 
   const storyChats = state.chats.filter((c) => c.storyId === draft.id);
 
+  // A story saved before these fields existed carries neither, so every read
+  // goes through a default rather than through the row.
+  const storyState = draft.state ?? emptyStoryState();
+  const patchState = (changes: Partial<typeof storyState>) =>
+    patch({ state: { ...storyState, ...changes, updatedAt: Date.now() } });
+
+  /** Everyone a relationship can be between: the cast, plus the persona. */
+  const participants = [
+    ...draft.characters
+      .filter((link) => link.enabled)
+      .map((link) => state.characters.find((c) => c.id === link.characterId))
+      .filter(Boolean)
+      .map((c) => ({ id: c!.id, name: c!.displayName || c!.name || 'Unnamed' })),
+    ...(draft.personaId
+      ? state.personas
+          .filter((p) => p.id === draft.personaId)
+          .map((p) => ({ id: p.id, name: p.displayName || p.name || 'You' }))
+      : []),
+  ];
+
   /**
    * Writes the story's first page. A character's greeting introduces that
    * character wherever they turn up; an opening scene belongs to this campaign
@@ -568,6 +590,52 @@ export function StoryEditor({
             />
 
             {/*
+              Where the story stands, as opposed to what it is. Rules and the
+              timeline above are fixed; these move as you play, and they are
+              what lets the model know it is chapter three rather than chapter
+              one. Deliberately no "present characters" or "recent events"
+              field: the scene owns the first and the chat owns the second.
+            */}
+            <div className="field">
+              <span className="field-label">Where the story stands</span>
+              <div className="field-hint" style={{ marginBottom: 8 }}>
+                The current situation, above whatever this scene happens to be. Leave any of it
+                empty and it is simply not sent.
+              </div>
+              <div className="field-row field-row-2">
+                <TextField
+                  label="Arc"
+                  value={storyState.arc}
+                  onChange={(arc) => patchState({ arc })}
+                  hint="Which stretch of the story this is."
+                />
+                <TextField
+                  label="Time"
+                  value={storyState.time}
+                  onChange={(time) => patchState({ time })}
+                  hint="Friday evening; three days after the fight."
+                />
+              </div>
+              <TextArea
+                label="Active tension"
+                value={storyState.conflict}
+                onChange={(conflict) => patchState({ conflict })}
+                hint="What is currently unresolved between them."
+              />
+              <TextArea
+                label="Working towards"
+                value={storyState.objective}
+                onChange={(objective) => patchState({ objective })}
+                hint="The story-level goal, above this scene's own."
+              />
+              <TagField
+                label="Open threads"
+                values={storyState.threads}
+                onChange={(threads) => patchState({ threads })}
+              />
+            </div>
+
+            {/*
               Presets combine rather than exclude — "Detailed + Slow Burn +
               Cinematic" is a normal selection — so these are switches, not a
               mode picker.
@@ -608,12 +676,19 @@ export function StoryEditor({
         )}
 
         {tab === 'cast' && (
-          <CastEditor
-            links={draft.characters}
-            onChange={setCharacters}
-            personaId={draft.personaId}
-            onPersonaChange={(personaId) => patch({ personaId })}
-          />
+          <>
+            <CastEditor
+              links={draft.characters}
+              onChange={setCharacters}
+              personaId={draft.personaId}
+              onPersonaChange={(personaId) => patch({ personaId })}
+            />
+            <RelationshipEditor
+              relationships={draft.relationships ?? []}
+              onChange={(relationships) => patch({ relationships })}
+              participants={participants}
+            />
+          </>
         )}
 
         {tab === 'lore' && (
@@ -933,5 +1008,119 @@ function CastEditor({
         }))}
       />
     </>
+  );
+}
+
+/**
+ * Relationships between the people in a story.
+ *
+ * Deliberately not a grid of every pair: a cast of eight has twenty-eight
+ * pairs and almost none of them carry anything. A relationship exists because
+ * someone said it does, and the ones that matter are added by hand.
+ */
+function RelationshipEditor({
+  relationships,
+  onChange,
+  participants,
+}: {
+  relationships: Relationship[];
+  onChange: (next: Relationship[]) => void;
+  participants: Array<{ id: string; name: string }>;
+}) {
+  const nameOf = (id: string) => participants.find((p) => p.id === id)?.name ?? 'Someone';
+
+  const patchOne = (id: string, changes: Partial<Relationship>) =>
+    onChange(
+      relationships.map((r) =>
+        r.id === id ? { ...r, ...changes, manual: true, updatedAt: Date.now() } : r,
+      ),
+    );
+
+  const add = () => {
+    if (participants.length < 2) return;
+    onChange([
+      ...relationships,
+      {
+        id: uid('rel_'),
+        betweenIds: [participants[0].id, participants[1].id],
+        label: '',
+        summary: '',
+        manual: true,
+        updatedAt: Date.now(),
+      },
+    ]);
+  };
+
+  return (
+    <section className="section">
+      <h3 className="section-title">
+        Relationships
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={add}
+          disabled={participants.length < 2}
+        >
+          <Icon name="plus" />
+          Add
+        </button>
+      </h3>
+
+      {participants.length < 2 ? (
+        <p className="small muted">
+          Add at least two people to the cast — or a character and a persona — and their
+          relationships can be described here.
+        </p>
+      ) : !relationships.length ? (
+        <p className="small muted">
+          None yet. Only relationships between people actually in a scene are sent, so a long cast
+          costs nothing until it matters.
+        </p>
+      ) : (
+        <div className="stack">
+          {relationships.map((r) => (
+            <div className="card" key={r.id}>
+              <div className="field-row field-row-2">
+                <SelectField
+                  label="Between"
+                  value={r.betweenIds[0]}
+                  onChange={(id) => patchOne(r.id, { betweenIds: [id, r.betweenIds[1]] })}
+                  options={participants.map((p) => ({ value: p.id, label: p.name }))}
+                />
+                <SelectField
+                  label="And"
+                  value={r.betweenIds[1]}
+                  onChange={(id) => patchOne(r.id, { betweenIds: [r.betweenIds[0], id] })}
+                  options={participants.map((p) => ({ value: p.id, label: p.name }))}
+                />
+              </div>
+              <TextField
+                label="What this is"
+                value={r.label}
+                onChange={(label) => patchOne(r.id, { label })}
+                hint="Rivals; estranged siblings; something neither will name."
+              />
+              <TextArea
+                label="Where they stand now"
+                value={r.summary}
+                onChange={(summary) => patchOne(r.id, { summary })}
+                hint="The current state, not the history — the chat and the memories hold that."
+              />
+              <button
+                type="button"
+                className="btn btn-sm btn-danger"
+                onClick={() => onChange(relationships.filter((x) => x.id !== r.id))}
+                aria-label={`Remove the relationship between ${nameOf(r.betweenIds[0])} and ${nameOf(
+                  r.betweenIds[1],
+                )}`}
+              >
+                <Icon name="trash" />
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }

@@ -17,7 +17,7 @@ import type {
   Story,
   StorySummary,
 } from './index';
-import { defaultCapabilities, emptyScene } from './index';
+import { defaultCapabilities, emptyScene, emptyStoryState } from './index';
 import { uid } from '../utils/uid';
 
 export const SCHEMA_VERSION = 4;
@@ -213,6 +213,8 @@ export function newStory(partial: Partial<Story> = {}): Story {
     rules: '',
     timeline: '',
     narrationPresetIds: [],
+    state: emptyStoryState(),
+    relationships: [],
     authorNote: '',
     openingMessage: '',
     tags: [],

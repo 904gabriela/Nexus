@@ -260,3 +260,175 @@ test('a validation failure returns to the tab that holds the broken field', asyn
   );
   await expect(page.getByText('A character needs a name.')).toBeVisible();
 });
+
+/* ================================= story state and relationships (Phase 2) */
+
+test('where the story stands is sent, and does not restate the scene', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.'], 8192);
+  await setupOllamaProvider(page);
+  await seedFixtures(page);
+
+  await goto(page, '#/stories');
+  await page.getByRole('button', { name: 'Edit' }).first().click();
+  await page.getByRole('tab', { name: 'World' }).click();
+  await field(page, 'Arc').fill('The long storm');
+  await field(page, 'Time').fill('Third night of the storm');
+  await field(page, 'Active tension').fill('Nobody has mentioned the cellar since it was sealed.');
+  await field(page, 'Working towards').fill('Getting through the season without opening it.');
+  await field(page, 'Open threads').fill('Who sealed the cellar');
+  await field(page, 'Open threads').press('Enter');
+  await page.getByRole('button', { name: 'Save' }).first().click();
+  await expect(page.getByText(/^Saved /).first()).toBeVisible();
+
+  const stories = await readStore<any>(page, 'stories');
+  expect(stories[0].state.arc).toBe('The long storm');
+  expect(stories[0].state.threads).toContain('Who sealed the cellar');
+
+  await goto(page, '#/stories');
+  await page.getByRole('button', { name: /Start chat|Continue/ }).first().click();
+  await expect(page.locator('.chat-composer')).toBeVisible({ timeout: 20_000 });
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await expect(composer).toBeEditable();
+  const before = ollama.requests.length;
+  await composer.fill('Quiet tonight.');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect.poll(() => ollama.requests.length, { timeout: 40_000 }).toBeGreaterThan(before);
+
+  const system = ollama.requests.at(-1)!.body.messages.find((m: any) => m.role === 'system').content;
+  expect(system).toContain('## Where the story stands');
+  expect(system).toContain('Arc: The long storm');
+  expect(system).toContain('Time: Third night of the storm');
+  expect(system).toMatch(/Active tension: Nobody has mentioned the cellar/);
+  expect(system).toMatch(/Unresolved:\n- Who sealed the cellar/);
+
+  // It sits under the scene and above the story's static setup: a live
+  // situation outranks what was true before play began, and is outranked by
+  // what is happening in the room this minute.
+  expect(system.indexOf('## Current scene')).toBeLessThan(system.indexOf('## Where the story stands'));
+  expect(system.indexOf('## Where the story stands')).toBeLessThan(system.indexOf('## Scenario'));
+});
+
+test('a relationship reaches the model only when both people are in the scene', async ({
+  page,
+}) => {
+  const ollama = await mockOllama(page, ['Sera nods.'], 8192);
+  await setupOllamaProvider(page);
+  await seedFixtures(page);
+
+  // Sera is in the scene; Halda is in the cast but not present.
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const read = (store: string, id: string) =>
+      new Promise<any>((r) => {
+        const q = db.transaction(store, 'readonly').objectStore(store).get(id);
+        q.onsuccess = () => r(q.result);
+      });
+    const write = (store: string, v: any) =>
+      new Promise<void>((r) => {
+        const q = db.transaction(store, 'readwrite').objectStore(store).put(v);
+        q.onsuccess = () => r();
+      });
+
+    const sera = await read('characters', 'c1');
+    await write('characters', { ...sera, id: 'c2', name: 'Halda' });
+
+    const story = await read('stories', 's1');
+    story.characters = [
+      { characterId: 'c1', primary: true, note: '', enabled: true },
+      { characterId: 'c2', primary: false, note: '', enabled: true },
+    ];
+    story.relationships = [
+      {
+        id: 'rel-present',
+        betweenIds: ['c1', 'p1'],
+        label: 'old friends',
+        summary: 'She has been letting him drink on credit for a year.',
+        manual: true,
+        updatedAt: Date.now(),
+      },
+      {
+        id: 'rel-absent',
+        betweenIds: ['c2', 'p1'],
+        label: 'never met',
+        summary: 'Halda has only heard the name.',
+        manual: true,
+        updatedAt: Date.now(),
+      },
+    ];
+    await write('stories', story);
+    db.close();
+  });
+  await page.reload();
+  await boot(page);
+
+  await goto(page, '#/stories');
+  await page.getByRole('button', { name: /Start chat|Continue/ }).first().click();
+  await expect(page.locator('.chat-composer')).toBeVisible({ timeout: 20_000 });
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await expect(composer).toBeEditable();
+  const before = ollama.requests.length;
+  await composer.fill('Evening.');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect.poll(() => ollama.requests.length, { timeout: 40_000 }).toBeGreaterThan(before);
+
+  const system = ollama.requests.at(-1)!.body.messages.find((m: any) => m.role === 'system').content;
+  expect(system).toContain('## How they stand');
+  expect(system).toContain('letting him drink on credit');
+  // Halda is in the cast but not in the room, so her standing is background.
+  // A cast of eight has twenty-eight pairs; sending them all is how a prompt
+  // grows quadratically with a cast that is mostly elsewhere.
+  expect(system).not.toContain('Halda has only heard the name');
+});
+
+test('a story saved before these fields existed still opens and still sends', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.'], 8192);
+  await setupOllamaProvider(page);
+  await seedFixtures(page);
+
+  // Exactly the shape an existing install holds: no `state`, no
+  // `relationships`. Reading through either would take the editor down.
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const story: any = await new Promise((r) => {
+      const q = db.transaction('stories', 'readonly').objectStore('stories').get('s1');
+      q.onsuccess = () => r(q.result);
+    });
+    delete story.state;
+    delete story.relationships;
+    await new Promise<void>((r) => {
+      const q = db.transaction('stories', 'readwrite').objectStore('stories').put(story);
+      q.onsuccess = () => r();
+    });
+    db.close();
+  });
+  await page.reload();
+  await boot(page);
+
+  await goto(page, '#/stories');
+  await page.getByRole('button', { name: 'Edit' }).first().click();
+  await page.getByRole('tab', { name: 'World' }).click();
+  await expect(field(page, 'Arc')).toBeVisible();
+  await page.getByRole('tab', { name: /Cast/ }).click();
+  await expect(page.getByRole('heading', { name: 'Relationships' })).toBeVisible();
+
+  // And an empty story state sends nothing rather than an empty heading.
+  await goto(page, '#/stories');
+  await page.getByRole('button', { name: /Start chat|Continue/ }).first().click();
+  await expect(page.locator('.chat-composer')).toBeVisible({ timeout: 20_000 });
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await expect(composer).toBeEditable();
+  const before = ollama.requests.length;
+  await composer.fill('Evening.');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect.poll(() => ollama.requests.length, { timeout: 40_000 }).toBeGreaterThan(before);
+
+  const system = ollama.requests.at(-1)!.body.messages.find((m: any) => m.role === 'system').content;
+  expect(system).not.toContain('## Where the story stands');
+  expect(system).not.toContain('## How they stand');
+});
