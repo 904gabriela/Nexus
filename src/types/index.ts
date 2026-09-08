@@ -805,6 +805,12 @@ export interface Settings {
 
   /* automatic memory */
   autoMemory: boolean;
+  /**
+   * Whether the extractor also reports people the story named who are not in
+   * the cast. Optional: an install that predates it reads as on, which is the
+   * behaviour it already had.
+   */
+  autoCharacters?: boolean;
   autoMemoryTriggers: AutoMemoryTrigger[];
   autoMemoryPin: boolean;
   /** Evaluate automatic memory once every N assistant replies. */

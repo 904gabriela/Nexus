@@ -129,6 +129,8 @@ export interface ExtractionInput {
   existing: Memory[];
   /** Pin whatever is committed. Mirrors the existing setting. */
   pin?: boolean;
+  /** Report people the story named who are not in the cast. Defaults to on. */
+  discoverPeople?: boolean;
   signal?: AbortSignal;
 }
 
@@ -405,7 +407,7 @@ export async function extractMemories(input: ExtractionInput): Promise<Extractio
 
   return {
     memories: results,
-    discovered: toDiscoveries(payload.newPeople, input),
+    discovered: input.discoverPeople === false ? [] : toDiscoveries(payload.newPeople, input),
     readable: true,
   };
 }

@@ -115,7 +115,15 @@ function Shell() {
             Storyline
             <small>Pro</small>
           </div>
-          {NAV.filter((item) => item.route !== 'search').map((item) => (
+          {/*
+            The same shape the phone has had all along. Listing all twelve
+            destinations flat made the sidebar an index of tables — characters,
+            personas, lorebooks, memories, media — which is what the app holds
+            rather than what anyone came to do. What you use is at the top;
+            what you manage is under Library, one heading down and still one
+            click away.
+          */}
+          {NAV.filter((item) => item.primary).map((item) => (
             <button
               key={item.route}
               type="button"
@@ -123,17 +131,21 @@ function Shell() {
               aria-current={route.name === item.route ? 'page' : undefined}
             >
               <Icon name={item.icon} />
-              {item.route === 'settings' ? 'Settings' : item.label}
+              {item.label}
             </button>
           ))}
-          <button
-            type="button"
-            onClick={() => navigate('search')}
-            aria-current={route.name === 'search' ? 'page' : undefined}
-          >
-            <Icon name="search" />
-            Search
-          </button>
+          <div className="side-nav-group">Library</div>
+          {NAV.filter((item) => !item.primary).map((item) => (
+            <button
+              key={item.route}
+              type="button"
+              onClick={() => navigate(item.route)}
+              aria-current={route.name === item.route ? 'page' : undefined}
+            >
+              <Icon name={item.icon} />
+              {item.label}
+            </button>
+          ))}
         </nav>
 
         <main className={`app-main${fullscreen ? ' no-nav-pad' : ''}`} id="main">

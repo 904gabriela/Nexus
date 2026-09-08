@@ -1,6 +1,7 @@
 import { memo, useMemo, useState } from 'react';
 import type { Character, Message, MessageAlternative, Persona, Story } from '../../types';
-import { Avatar, useMediaUrl } from '../media/MediaImage';
+import { useMediaUrl } from '../media/MediaImage';
+import { Prose } from './prose';
 import { Icon } from '../ui/Icon';
 import { useLongPress } from '../ui/common';
 import { formatDate } from '../../utils/text';
@@ -59,13 +60,7 @@ export const MessageItem = memo(function MessageItem({
   highlighted,
 }: MessageItemProps) {
   renderStats.message += 1;
-  const { name, character, persona: author } = speakerFor(
-    message,
-    characters,
-    persona,
-    story,
-    personas,
-  );
+  const { name } = speakerFor(message, characters, persona, story, personas);
   const isUser = message.role === 'user';
 
   const longPress = useLongPress(() => {
@@ -97,23 +92,12 @@ export const MessageItem = memo(function MessageItem({
       data-message-id={message.id}
       aria-label={`${name} message`}
     >
-      {!isUser && (
-        <Avatar
-          mediaId={character?.avatarMediaId ?? null}
-          fallbackUrl={character?.avatarUrl}
-          name={name}
-          size={34}
-        />
-      )}
-      {isUser && (
-        <Avatar
-          mediaId={author?.avatarMediaId ?? null}
-          fallbackUrl={author?.avatarUrl}
-          name={name}
-          size={34}
-        />
-      )}
-
+      {/*
+        No avatar on the transcript. Two rows of round portraits down the left
+        of every reply is chrome the scene does not need — the speaker's name
+        already says who is talking, and identity belongs to the header and the
+        story's own artwork rather than to each paragraph.
+      */}
       <div className="msg-body">
         <div className="msg-meta">
           {selecting && (
@@ -151,7 +135,13 @@ export const MessageItem = memo(function MessageItem({
             }
           }}
         >
-          {displayText || (streaming ? '' : <span className="muted">(empty)</span>)}
+          {displayText ? (
+            <Prose text={displayText} />
+          ) : streaming ? (
+            ''
+          ) : (
+            <span className="muted">(empty)</span>
+          )}
           {streaming && (
             <span className="typing-dots" style={{ marginLeft: 6 }} aria-label="Generating">
               <i />

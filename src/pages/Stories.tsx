@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import type {
   Character,
   DiscoveredPerson,
+  Memory,
   Relationship,
   Story,
   StoryCharacterLink,
@@ -22,6 +23,7 @@ import { ActionSheet } from '../components/ui/Sheet';
 import { useConfirm, deleteConfirm } from '../components/ui/Confirm';
 import { downloadFile, exportFilename, exportStory } from '../exporters';
 import { relativeTime, truncate } from '../utils/text';
+import { memoryStatus } from '../memory/matrix';
 import type { RouteName } from '../state/router';
 
 export function StoriesPage({
@@ -384,6 +386,10 @@ export function StoryEditor({
     patch({ state: { ...storyState, ...changes, updatedAt: Date.now() } });
 
   /** Everyone a relationship can be between: the cast, plus the persona. */
+  const castCharacters = draft.characters
+    .map((link) => state.characters.find((c) => c.id === link.characterId))
+    .filter((c): c is Character => Boolean(c));
+
   const participants = [
     ...draft.characters
       .filter((link) => link.enabled)
@@ -466,6 +472,13 @@ export function StoryEditor({
 
         {tab === 'overview' && (
           <>
+            <StoryStanding
+              story={draft}
+              cast={castCharacters}
+              memories={state.memories.filter((m) => m.sourceStoryId === draft.id)}
+              chatCount={state.chats.filter((c) => c.storyId === draft.id).length}
+              onOpenChat={onOpenChat}
+            />
             <TextField
               label="Title"
               required
@@ -1033,6 +1046,133 @@ function CastEditor({
         }))}
       />
     </>
+  );
+}
+
+/**
+ * Where this story stands, before any of the fields that edit it.
+ *
+ * A story used to open on a Title field, which is a form for a thing rather
+ * than the thing. Everything below already exists somewhere in the app — the
+ * cast, the state, the threads, the memories — and the only reason it was hard
+ * to see was that each piece lived on its own page. Nothing here is editable
+ * and nothing here is new state; it reads what the story already holds and
+ * says it in one place.
+ */
+function StoryStanding({
+  story,
+  cast,
+  memories,
+  chatCount,
+  onOpenChat,
+}: {
+  story: Story;
+  cast: Character[];
+  memories: Memory[];
+  chatCount: number;
+  onOpenChat: (chatId: string) => void;
+}) {
+  const state = useAppState();
+  const stateBlock = story.state ?? emptyStoryState();
+  const threads = (stateBlock.threads ?? []).filter(Boolean);
+  const recent = memories
+    .filter((m) => memoryStatus(m) === 'active')
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 3);
+  const waiting = memories.filter((m) => memoryStatus(m) === 'proposed').length;
+  const latestChat = state.chats
+    .filter((c) => c.storyId === story.id && !c.archived)
+    .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+
+  const facts: Array<[string, string]> = [
+    ['Arc', stateBlock.arc],
+    ['When', stateBlock.time],
+    ['Tension', stateBlock.conflict],
+    ['Working towards', stateBlock.objective],
+  ].filter(([, value]) => Boolean(value?.trim())) as Array<[string, string]>;
+
+  // A story with nothing in it yet has nothing to stand on; the form below is
+  // the whole of what it needs, and an empty panel above it is just furniture.
+  if (!cast.length && !facts.length && !recent.length && !chatCount) return null;
+
+  return (
+    <section className="story-standing">
+      <div className="row row-between row-wrap" style={{ gap: 8, marginBottom: 10 }}>
+        <div style={{ minWidth: 0 }}>
+          <h2 className="story-standing-title">{story.title || 'Untitled story'}</h2>
+          <p className="small muted" style={{ margin: 0 }}>
+            {chatCount
+              ? `${chatCount} chat${chatCount === 1 ? '' : 's'}`
+              : 'No chats yet'}
+            {cast.length ? ` · ${cast.length} in the cast` : ''}
+            {waiting ? ` · ${waiting} memor${waiting === 1 ? 'y' : 'ies'} to review` : ''}
+          </p>
+        </div>
+        {latestChat && (
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            onClick={() => onOpenChat(latestChat.id)}
+          >
+            <Icon name="chat" />
+            Continue
+          </button>
+        )}
+      </div>
+
+      {!!cast.length && (
+        <div className="row row-wrap" style={{ gap: 6, marginBottom: 10 }}>
+          {cast.map((character) => (
+            <span className="chip" key={character.id}>
+              <Avatar
+                mediaId={character.avatarMediaId}
+                fallbackUrl={character.avatarUrl}
+                name={character.name}
+                size={18}
+              />
+              {character.displayName || character.name}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {!!facts.length && (
+        <dl className="qs-facts" style={{ marginBottom: threads.length ? 8 : 0 }}>
+          {facts.map(([label, value]) => (
+            <Fragment key={label}>
+              <dt>{label}</dt>
+              <dd>{value}</dd>
+            </Fragment>
+          ))}
+        </dl>
+      )}
+
+      {!!threads.length && (
+        <div style={{ marginBottom: recent.length ? 10 : 0 }}>
+          <div className="qs-heading" style={{ margin: '0 0 4px' }}>
+            Unresolved
+          </div>
+          <ul className="story-standing-list">
+            {threads.map((thread) => (
+              <li key={thread}>{thread}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {!!recent.length && (
+        <div>
+          <div className="qs-heading" style={{ margin: '0 0 4px' }}>
+            Lately remembered
+          </div>
+          <ul className="story-standing-list">
+            {recent.map((memory) => (
+              <li key={memory.id}>{memory.title || truncate(memory.content, 70)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
   );
 }
 

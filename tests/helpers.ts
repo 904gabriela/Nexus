@@ -150,6 +150,22 @@ export async function saveAndSettle(
   await expect(root.getByText(/^Saved |saved$/i).first()).toBeVisible({ timeout: 15_000 });
 }
 
+/**
+ * Opens the Context Inspector from a chat.
+ *
+ * It used to hang off the token chip in the header. The chip now appears only
+ * when the prompt is actually over budget — a token count is a fact about the
+ * request, not about the story — so the inspector's standing entry point is
+ * Quick Settings, where the rest of the technical view lives.
+ */
+export async function openContextInspector(page: Page) {
+  await page.getByRole('button', { name: 'Quick settings' }).click();
+  await page.getByRole('button', { name: /^Context Inspector/ }).click();
+  await expect(page.getByRole('button', { name: 'Close context inspector' })).toBeVisible({
+    timeout: 15_000,
+  });
+}
+
 export async function confirmDialog(page: Page, label: string | RegExp = /Delete|Confirm|Discard|Remove|Restore|Erase/) {
   const dialog = page.getByRole('dialog').last();
   await dialog.getByRole('button', { name: label }).first().click();

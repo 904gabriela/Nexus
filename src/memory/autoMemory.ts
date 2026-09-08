@@ -172,6 +172,7 @@ export async function maybeCreateAutoMemory(
     storyId: input.storyId,
     existing: input.existing,
     pin: settings.autoMemoryPin,
+    discoverPeople: settings.autoCharacters ?? true,
   });
 
   return {

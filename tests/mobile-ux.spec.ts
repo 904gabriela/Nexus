@@ -19,6 +19,7 @@ import {
   setupProvider,
   sheetAction,
   startChat,
+  openContextInspector,
 } from './helpers';
 
 const MIN_TOUCH = 44;
@@ -219,8 +220,7 @@ for (const viewport of VIEWPORTS) {
       await closeSheet(page);
 
       // Context inspector.
-      await page.getByRole('button', { name: /Context: .* Open inspector/ }).click();
-      await expect(page.getByRole('button', { name: 'Close context inspector' })).toBeVisible();
+      await openContextInspector(page);
       await collect('context inspector');
       await page.getByRole('button', { name: 'Close context inspector' }).click();
 

@@ -421,6 +421,7 @@ export function defaultSettings(): Settings {
     autoSummaryEvery: 20,
 
     autoMemory: false,
+    autoCharacters: true,
     autoMemoryTriggers: ['plot', 'relationship', 'revelation', 'promise', 'romance'],
     autoMemoryPin: false,
     autoMemoryEvery: 6,

@@ -16,6 +16,8 @@ import { AiSummarySheet } from '../components/chat/AiSummarySheet';
 import { StorySummarySheet } from '../components/chat/StorySummarySheet';
 import { StoryTimeline, type JumpTarget } from '../components/chat/StoryTimeline';
 import { ResponseSettingsSheet } from '../components/chat/ResponseSettingsSheet';
+import { QuickSettings } from '../components/chat/QuickSettings';
+import { resolveScene } from '../context/scene';
 import { MemoryEditor } from './Memories';
 import { Icon } from '../components/ui/Icon';
 import { ActionSheet, Sheet } from '../components/ui/Sheet';
@@ -212,6 +214,7 @@ export function ChatPage({
   const [storySummary, setStorySummary] = useState(false);
   const [newChatFrom, setNewChatFrom] = useState<Message | null>(null);
   const [showTimeline, setShowTimeline] = useState(false);
+  const [quickSettings, setQuickSettings] = useState(false);
   const [pendingJump, setPendingJump] = useState<JumpTarget | null>(null);
   const [highlighted, setHighlighted] = useState<ID | null>(null);
 
@@ -644,6 +647,20 @@ export function ChatPage({
     }
   };
 
+  /*
+   * Pure and small — the cast plus whatever the chat has declared. Not the
+   * compiler, so keeping it current costs nothing, but it is memoised anyway
+   * so the header does not churn while someone is typing.
+   *
+   * It has to sit above the early returns below: a hook after a conditional
+   * return changes the hook count between renders, which React answers by
+   * unmounting the whole tree.
+   */
+  const scene = useMemo(
+    () => resolveScene({ scene: activeChat?.scene, cast: gen.characters }),
+    [activeChat?.scene, gen.characters],
+  );
+
   /* ------------------------------------------------------------ render */
 
   if (!chatId || !activeChat) {
@@ -669,13 +686,39 @@ export function ChatPage({
   const directionLines = (activeChat.direction ?? '')
     .split('\n')
     .filter((l) => l.trim()).length;
+  const sceneArtMediaId =
+    gen.story?.backgroundMediaId ??
+    gen.story?.coverMediaId ??
+    scene.primary?.avatarMediaId ??
+    null;
+
+  const sceneDescriptor = [
+    scene.location ||
+      scene.situation ||
+      (scene.present.length
+        ? scene.present.map((c) => c.name).join(', ')
+        : 'No characters attached'),
+    // Which timeline you are on is not scene-setting, but forgetting it while
+    // playing on a fork is worse than the extra word.
+    branchCount > 1 ? (activeBranch?.name ?? 'branch') : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
   const responseSummary = directionLines
     ? `${directionLines} direction${directionLines === 1 ? '' : 's'} · temperature ${generation.temperature}`
     : `Temperature ${generation.temperature} · no direction set`;
 
   return (
     <div className="chat-screen">
-      {gen.story?.backgroundMediaId && <ChatBackground mediaId={gen.story.backgroundMediaId} />}
+      {/*
+        Whatever artwork the story already has, in order of how deliberate it
+        is: a background was chosen to be one, a cover was chosen to represent
+        the story, an avatar is at least the right face. It is atmosphere only
+        — the gradient fades it out well above the prose, so nothing about
+        legibility depends on which image, or whether there is one at all.
+      */}
+      {sceneArtMediaId && <ChatBackground mediaId={sceneArtMediaId} />}
 
       <header className="chat-header">
         <button
@@ -687,22 +730,48 @@ export function ChatPage({
           <Icon name="chevronLeft" />
         </button>
         <div className="chat-title">
-          <strong>{chatDisplayTitle(activeChat, gen.story)}</strong>
-          <span>
-            {gen.characters.length
-              ? gen.characters.map((c) => c.name).join(', ')
-              : 'No characters attached'}
-            {branchCount > 1 && ` · ${activeBranch?.name ?? 'branch'}`}
-          </span>
+          {/*
+            The story leads, not the chat's auto-generated name: what someone
+            is in the middle of is "The Long Storm", not "The Long Storm —
+            chat". The line under it says where they are, falling back to who
+            is here when the scene has not been placed.
+          */}
+          <strong>{gen.story?.title || chatDisplayTitle(activeChat, gen.story)}</strong>
+          <span>{sceneDescriptor}</span>
         </div>
-        {state.settings.showTokenCounts && (
+        {/*
+          The token count is a number about the request, not about the story,
+          and in the header it competed with the title for the same few
+          hundred pixels. It moved to Quick Settings, beside the inspector it
+          belongs to — still one tap away, and only when it is over budget does
+          it come back out here where it cannot be missed.
+        */}
+        {state.settings.showTokenCounts && compiled?.overBudget && (
           <TokenChip
             baseTokens={compiled?.totalTokens ?? 0}
             budget={compiled?.budget ?? 0}
-            overBudget={compiled?.overBudget ?? false}
+            overBudget
             onOpen={openContextInspector}
           />
         )}
+        <button
+          type="button"
+          className="btn btn-ghost btn-icon"
+          onClick={() => setShowTimeline(true)}
+          aria-label="Story map"
+          title="Story map"
+        >
+          <Icon name="branch" />
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost btn-icon"
+          onClick={() => setQuickSettings(true)}
+          aria-label="Quick settings"
+          title="Quick settings"
+        >
+          <Icon name="settings" />
+        </button>
         <button
           type="button"
           className="btn btn-ghost btn-icon"
@@ -926,6 +995,28 @@ export function ChatPage({
           setImageGen(false);
           navigate('settings');
         }}
+      />
+
+      <QuickSettings
+        open={quickSettings}
+        onClose={() => setQuickSettings(false)}
+        chat={activeChat}
+        cast={gen.characters}
+        scene={scene}
+        settings={state.settings}
+        personaName={gen.persona ? gen.persona.displayName || gen.persona.name : null}
+        onPatchChat={(patch) => actions.saveChat({ ...activeChat, ...patch })}
+        onPatchSettings={(patch) => actions.saveSettings(patch)}
+        contextSummary={
+          state.settings.showTokenCounts && compiled
+            ? `${formatTokens(compiled.totalTokens)} / ${formatTokens(compiled.budget)} tokens`
+            : null
+        }
+        onOpenInspector={openContextInspector}
+        onOpenPersona={() => setPersonaPicker(true)}
+        onOpenResponseSettings={() => setResponseSettings(true)}
+        onOpenMemories={() => navigate('memories')}
+        onOpenAdvanced={() => navigate('settings')}
       />
 
       <ResponseSettingsSheet

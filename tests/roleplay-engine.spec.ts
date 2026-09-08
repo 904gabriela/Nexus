@@ -21,6 +21,7 @@ import {
   setupOllamaProvider,
   startChat,
   type MockOllama,
+  openContextInspector,
 } from './helpers';
 import { seedHospitalScene } from './scene-fixture';
 
@@ -721,7 +722,7 @@ test('every sent message carries its provenance', async ({ page }) => {
 
   // Read the trace through the view the user actually has, so the test covers
   // the whole chain rather than an internal structure nobody can see.
-  await page.getByRole('button', { name: /Context|Inspector/i }).first().click();
+  await openContextInspector(page);
   await page.getByRole('tab', { name: 'Provider request' }).click();
 
   const rows = page.locator('.ctx-part');

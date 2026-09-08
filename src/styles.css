@@ -581,9 +581,24 @@ textarea {
 }
 
 .switch-row .switch-desc {
+  /* The description is a span inside the label, so without this it runs on
+     from the label text: "Write memories automaticallyRecords what changed…". */
+  display: block;
+  margin-top: 2px;
   font-size: calc(12px * var(--font-scale));
+  line-height: 1.45;
   color: var(--text-faint);
   font-weight: 400;
+}
+
+/* A row with a description is no longer a single line, so centring its switch
+   against the whole block leaves it floating beside the paragraph. */
+.switch-row:has(.switch-desc) {
+  align-items: flex-start;
+}
+
+.switch-row:has(.switch-desc) .switch {
+  margin-top: 2px;
 }
 
 /*
@@ -1015,14 +1030,25 @@ textarea {
   position: relative;
 }
 
+/*
+ * Atmosphere, not a backdrop.
+ *
+ * A full-bleed image behind a page of prose makes every line's contrast depend
+ * on what happens to be under it. This one is anchored to the top and faded
+ * out by a mask before the reading area starts, so the scene gets a sense of
+ * place and the text keeps the flat page colour it was designed against.
+ */
 .chat-bg {
   position: absolute;
-  inset: 0;
+  inset: 0 0 auto;
+  height: min(46vh, 380px);
   background-size: cover;
-  background-position: center;
-  opacity: 0.16;
+  background-position: center 30%;
+  opacity: 0.28;
   pointer-events: none;
   z-index: 0;
+  -webkit-mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.9), transparent 82%);
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.9), transparent 82%);
 }
 
 .chat-header {
@@ -1045,7 +1071,8 @@ textarea {
 
 .chat-title strong {
   display: block;
-  font-size: calc(15px * var(--font-scale));
+  font-size: calc(16.5px * var(--font-scale));
+  letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1065,18 +1092,23 @@ textarea {
   min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding: 12px 10px 4px;
+  /* Without avatars the prose starts at the scroller's edge, so the gutter
+     that used to be the portrait column becomes real padding. */
+  padding: 16px 18px 4px;
   position: relative;
   z-index: 1;
   overscroll-behavior: contain;
 }
 
 .chat-messages {
-  max-width: 860px;
+  /* A reading measure, not a container width. Prose set the full width of a
+     desktop window is measurably harder to read, and roleplay is read rather
+     than scanned. */
+  max-width: 680px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 22px;
 }
 
 .msg {
@@ -1098,64 +1130,95 @@ textarea {
 }
 
 .msg-body {
-  max-width: min(88%, 640px);
   min-width: 0;
+  flex: 1;
+}
+
+/* The user's own turns stay narrow and distinct; the story itself gets the
+   full measure. */
+.msg-user .msg-body {
+  max-width: min(85%, 480px);
+  flex: 0 1 auto;
 }
 
 .msg-meta {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: calc(11.5px * var(--font-scale));
+  font-size: calc(11px * var(--font-scale));
   color: var(--text-faint);
-  margin-bottom: 3px;
-  padding: 0 3px;
+  margin-bottom: 6px;
+  padding: 0;
+  letter-spacing: 0.04em;
 }
 
 .msg-user .msg-meta {
   justify-content: flex-end;
 }
 
+/* The story's own turns are not cards.
+   A box around every reply makes a page of roleplay read as a log of records —
+   and the border, the fill and the padding all say "this is a datum" about
+   something that is meant to be read as writing. Narration gets no container
+   at all; only the user's own turns keep one, so it stays obvious which lines
+   are theirs. */
 .bubble {
-  background: var(--ai-bubble);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px 13px;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: calc(14.5px * var(--font-scale));
-  line-height: 1.62;
+  font-size: calc(15.5px * var(--font-scale));
+  line-height: 1.75;
+  color: var(--text-dim);
   cursor: default;
   user-select: text;
 }
 
 .msg-user .bubble {
   background: var(--user-bubble);
-  border-color: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 9px 13px;
+  color: var(--text);
+  font-size: calc(14.5px * var(--font-scale));
+  line-height: 1.62;
 }
 
 .bubble.selected {
   outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline-offset: 4px;
+  border-radius: var(--radius-sm);
 }
 
+/* Marks that used to be a border on a box become a rule beside the text. */
 .bubble.important {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--warn) 70%, transparent);
+  padding-left: 12px;
+}
+
+.msg-user .bubble.important {
+  box-shadow: none;
   border-color: color-mix(in srgb, var(--warn) 60%, transparent);
+  padding-left: 13px;
 }
 
 .bubble.error {
-  border-color: color-mix(in srgb, var(--danger) 60%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--danger) 70%, transparent);
+  padding-left: 12px;
   color: var(--danger);
 }
 
-.bubble em.narration {
-  color: var(--text-dim);
-  font-style: italic;
+/* Spoken lines carry the scene, so they are the part that gets full contrast;
+   everything around them is narration and recedes. */
+.bubble .speech {
+  color: var(--text);
+  font-weight: 500;
 }
 
-.bubble q.speech {
-  quotes: '"' '"';
-  color: var(--accent-text);
+.bubble .emphasis {
+  font-style: italic;
 }
 
 .msg-attachments {
@@ -1175,12 +1238,30 @@ textarea {
   background: var(--bg-hover);
 }
 
+/* Present, but quiet.
+   Reading is the common case and editing is the rare one, so the controls sit
+   at the edge of noticing until they are wanted. They are never removed: on a
+   touch screen there is no hover to reveal them with, and an action you cannot
+   find is worse than one you can see faintly. */
 .msg-actions {
   display: flex;
   gap: 2px;
-  margin-top: 4px;
-  padding: 0 2px;
+  margin-top: 6px;
+  padding: 0;
   flex-wrap: wrap;
+  opacity: 0.32;
+  transition: opacity 0.14s ease;
+}
+
+.msg:hover .msg-actions,
+.msg:focus-within .msg-actions {
+  opacity: 1;
+}
+
+@media (hover: hover) {
+  .msg-actions {
+    opacity: 0;
+  }
 }
 
 .msg-user .msg-actions {
@@ -1217,7 +1298,7 @@ textarea {
   display: flex;
   align-items: center;
   gap: 4px;
-  margin-top: 5px;
+  margin-top: 8px;
   font-size: calc(11.5px * var(--font-scale));
   color: var(--text-faint);
 }
@@ -2038,15 +2119,18 @@ mark {
 /* Ring the message a timeline jump landed on, then fade back out. */
 .msg-highlighted .bubble {
   animation: jump-flash 2.6s ease;
+  border-radius: var(--radius-sm);
 }
 
+/* A halo rather than a hairline ring: without a card to outline, a tight
+   2px box would sit on the letterforms. */
 @keyframes jump-flash {
   0%,
   60% {
-    box-shadow: 0 0 0 2px var(--accent);
+    box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 26%, transparent);
   }
   100% {
-    box-shadow: 0 0 0 2px transparent;
+    box-shadow: 0 0 0 8px transparent;
   }
 }
 
@@ -2299,4 +2383,144 @@ mark {
 .disclosure-body {
   padding: 2px 14px 14px;
   border-top: 1px solid var(--border);
+}
+
+
+/* --------------------------------------------------- quick settings sheet */
+
+/*
+ * The short list of things you reach for mid-scene. Sectioned rather than
+ * listed, because "how it writes", "who is here" and "what it remembers" are
+ * different questions and a flat menu makes the user do that sorting.
+ */
+.qs-section {
+  padding: 4px 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.qs-section:last-of-type {
+  border-bottom: 0;
+  padding-bottom: 4px;
+}
+
+.qs-heading {
+  font-size: calc(11.5px * var(--font-scale));
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--text-faint);
+  margin: 12px 0 8px;
+  font-weight: 600;
+}
+
+.qs-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 12px;
+  margin: 0 0 10px;
+  font-size: calc(13px * var(--font-scale));
+}
+
+.qs-facts dt {
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.qs-facts dd {
+  margin: 0;
+  color: var(--text);
+}
+
+.qs-cast {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+/* A chip that is also a control, so it has to clear the touch minimum. */
+.chip-tap {
+  cursor: pointer;
+  min-height: var(--tap);
+  padding-inline: 12px;
+}
+
+.qs-links {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.qs-link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 10px 8px;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font-size: calc(14px * var(--font-scale));
+}
+
+.qs-link:hover {
+  background: var(--bg-hover);
+}
+
+.qs-link > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.qs-link-detail {
+  display: block;
+  font-size: calc(12px * var(--font-scale));
+  color: var(--text-faint);
+}
+
+.qs-link > svg:last-child {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.side-nav-group {
+  margin: 14px 10px 4px;
+  font-size: calc(10.5px * var(--font-scale));
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-faint);
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------- story standing */
+
+/*
+ * What the story is, above the fields that change it. One translucent panel
+ * rather than a row of cards: it is one thought — where this story stands —
+ * and splitting it into tiles would make it read as a dashboard.
+ */
+.story-standing {
+  background: color-mix(in srgb, var(--bg-elevated) 70%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 16px;
+}
+
+.story-standing-title {
+  margin: 0;
+  font-size: calc(20px * var(--font-scale));
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+}
+
+.story-standing-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: calc(13px * var(--font-scale));
+  color: var(--text-dim);
+  line-height: 1.55;
 }
