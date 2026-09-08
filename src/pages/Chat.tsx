@@ -1,12 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Attachment, Chat, ID, Memory, Message, MessageAlternative } from '../types';
 import { newMemory } from '../types/factories';
-import {
-  effectiveGeneration,
-  useActions,
-  useAppState,
-  useStore,
-} from '../state/store';
+import { effectiveGeneration, useActions, useAppState, useStore } from '../state/store';
 import { useGeneration, chatDisplayTitle, speakerFor } from '../hooks/useGeneration';
 import { MessageItem, type QuickAction } from '../components/chat/MessageItem';
 import { ContextInspector } from '../components/chat/ContextInspector';
@@ -682,12 +677,17 @@ export function ChatPage({
   const branchCount = state.branches.length;
   const chatCheckpoints = state.checkpoints.filter((c) => c.chatId === activeChat.id);
 
-  // The menu row should say what is actually in force, so the tuning that is
-  // already applied is visible without opening the sheet.
+  // What tuning is already in force, so it is visible without opening the
+  // sheet. This used to describe the chat menu's Response settings row; the
+  // row moved to Quick Settings and the summary moved with it.
   const generation = effectiveGeneration(activeChat, gen.story, gen.provider);
   const directionLines = (activeChat.direction ?? '')
     .split('\n')
     .filter((l) => l.trim()).length;
+  const responseSummary = directionLines
+    ? `${directionLines} direction${directionLines === 1 ? '' : 's'} · temperature ${generation.temperature}`
+    : `Temperature ${generation.temperature} · no direction set`;
+
   const sceneArtMediaId =
     gen.story?.backgroundMediaId ??
     gen.story?.coverMediaId ??
@@ -706,10 +706,6 @@ export function ChatPage({
   ]
     .filter(Boolean)
     .join(' · ');
-
-  const responseSummary = directionLines
-    ? `${directionLines} direction${directionLines === 1 ? '' : 's'} · temperature ${generation.temperature}`
-    : `Temperature ${generation.temperature} · no direction set`;
 
   return (
     <div className="chat-screen">
@@ -1018,6 +1014,7 @@ export function ChatPage({
         personaName={gen.persona ? gen.persona.displayName || gen.persona.name : null}
         onPatchChat={(patch) => actions.saveChat({ ...activeChat, ...patch })}
         onPatchSettings={(patch) => actions.saveSettings(patch)}
+        responseSummary={responseSummary}
         contextSummary={
           state.settings.showTokenCounts && compiled
             ? `${formatTokens(compiled.totalTokens)} / ${formatTokens(compiled.budget)} tokens`
@@ -1139,41 +1136,17 @@ export function ChatPage({
         title={chatDisplayTitle(activeChat, gen.story)}
         actions={[
           {
-            key: 'response',
-            label: 'Response settings',
-            description: responseSummary,
-            icon: 'settings',
-            onSelect: () => setResponseSettings(true),
-          },
-          {
-            key: 'context',
-            label: 'Context Inspector',
-            description: compiled
-              ? `${formatTokens(compiled.totalTokens)} / ${formatTokens(compiled.budget)} tokens`
-              : 'Working out the context…',
-            icon: 'layers',
-            onSelect: openContextInspector,
-          },
-          {
-            key: 'timeline',
-            label: 'Story timeline',
-            // Deliberately avoids naming the other menu entries: the label and
-            // description together form this button's accessible name, and
-            // repeating "Checkpoints" or "Branches" here makes two menu items
-            // answer to the same name.
-            description: activeChat.storyId
-              ? 'Every landmark in this story, oldest first.'
-              : 'Every landmark in this chat, oldest first.',
-            icon: 'clock',
-            onSelect: () => {
-              setStoryMapTab('timeline');
-              setShowStoryMap(true);
-            },
-          },
-          {
-            key: 'branches',
-            label: 'Branches',
-            description: `${branchCount} timeline${branchCount === 1 ? '' : 's'}`,
+            /*
+             * Response settings, the Context Inspector and the persona picker
+             * all live in Quick Settings now, and Branches and Story timeline
+             * are two names for one sheet. Leaving them here as well made the
+             * menu answer questions it had already answered — this is the
+             * long tail: export, rename, archive, delete, and the things you
+             * do to a chat rather than to a scene.
+             */
+            key: 'story-map',
+            label: 'Story map',
+            description: `${branchCount} timeline${branchCount === 1 ? '' : 's'} · every landmark in this story`,
             icon: 'branch',
             onSelect: () => {
               setStoryMapTab('branches');
@@ -1207,29 +1180,19 @@ export function ChatPage({
             separatorBefore: true,
           },
           {
-            key: 'persona',
-            label: 'Change your persona',
-            icon: 'user',
-            disabled: state.personas.length < 1,
-            description: gen.persona
-              ? `Writing as ${gen.persona.displayName || gen.persona.name}. Applies to new messages only.`
-              : 'No persona set for this chat.',
-            onSelect: () => setPersonaPicker(true),
-          },
-          {
             key: 'story-summary',
-            label: 'Story summary',
+            label: 'The story so far',
             description: gen.summary?.rollingSummary
-              ? 'Long-run memory for this story.'
-              : 'Not generated yet — long stories need this.',
+              ? 'What has happened, kept short enough to carry forward.'
+              : 'Not written yet — a long story needs one to keep its past.',
             icon: 'brain',
             disabled: !activeChat.storyId,
             onSelect: () => setStorySummary(true),
           },
           {
             key: 'ai-summary',
-            label: 'Export for AI summary',
-            description: 'A briefing pack for handing this story to another AI.',
+            label: 'Hand this story to someone else',
+            description: 'A briefing pack: who everyone is, what has happened, where it stands.',
             icon: 'file',
             onSelect: () => setAiSummary(true),
           },

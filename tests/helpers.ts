@@ -166,6 +166,29 @@ export async function openContextInspector(page: Page) {
   });
 }
 
+/**
+ * Opens Response settings, which now lives in Quick Settings rather than the
+ * chat menu — the menu kept a duplicate of it until the scene pass.
+ */
+export async function openResponseSettings(page: Page) {
+  await page.getByRole('button', { name: 'Quick settings' }).click();
+  await page.getByRole('button', { name: /^Response settings/ }).click();
+}
+
+/**
+ * Opens the Story Map on one of its two views. Branches and the timeline used
+ * to be separate chat-menu entries; they are tabs of one sheet now, reachable
+ * from the header.
+ */
+export async function openStoryMap(page: Page, view: 'branches' | 'timeline' = 'branches') {
+  await page.getByRole('button', { name: 'Story map' }).click();
+  const sheet = page.locator('.sheet').last();
+  await sheet
+    .getByRole('tablist', { name: 'Story map views' })
+    .getByRole('tab', { name: view === 'branches' ? /Branches/ : /Timeline/ })
+    .click();
+}
+
 export async function confirmDialog(page: Page, label: string | RegExp = /Delete|Confirm|Discard|Remove|Restore|Erase/) {
   const dialog = page.getByRole('dialog').last();
   await dialog.getByRole('button', { name: label }).first().click();

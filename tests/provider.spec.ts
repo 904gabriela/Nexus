@@ -18,6 +18,7 @@ import {
   sendMessage,
   setupProvider,
   startChat,
+  openContextInspector,
 } from './helpers';
 
 /** Configures a provider pointing at `baseUrl` without contacting it. */
@@ -327,8 +328,7 @@ test('the API key never appears in the compiled context or an export', async ({ 
   for (const body of sent) expect(body).not.toContain(secret);
 
   // Not in the inspector's copyable context either.
-  await page.getByRole('button', { name: 'Chat menu' }).click();
-  await page.locator('.sheet').last().getByRole('button', { name: 'Context Inspector' }).click();
+  await openContextInspector(page);
   await page.getByRole('tab', { name: 'Raw' }).click();
   const raw = await page.locator('pre.mono').innerText();
   expect(raw).not.toContain(secret);

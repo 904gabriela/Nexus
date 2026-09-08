@@ -27,6 +27,8 @@ import {
   setupProvider,
   sheetAction,
   startChat,
+  openStoryMap,
+  openContextInspector,
 } from './helpers';
 
 test.beforeEach(async ({ page }) => {
@@ -305,7 +307,7 @@ test('story summary generates, persists and replaces old history in context', as
   await expect(page.getByText(/The tavern door creaks/)).toBeVisible({ timeout: 20_000 });
 
   await page.getByRole('button', { name: 'Chat menu' }).click();
-  await sheetAction(page, 'Story summary');
+  await sheetAction(page, 'The story so far');
 
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByText('Story summary')).toBeVisible();
@@ -329,8 +331,7 @@ test('story summary generates, persists and replaces old history in context', as
   expect(summaries[0].locked).toBe(true);
 
   // And it must actually reach the model's context.
-  await page.getByRole('button', { name: 'Chat menu' }).click();
-  await sheetAction(page, 'Context Inspector');
+  await openContextInspector(page);
   await page.getByRole('tab', { name: 'Raw' }).click();
   await expect(page.getByText(/The party has reached Ashfell/)).toBeVisible();
   await expect(page.getByText(/Sera and Corin are wary allies/)).toBeVisible();
@@ -458,7 +459,7 @@ test('export for AI summary produces a briefing in all three formats', async ({ 
   await expect(page.getByText(/The tavern door creaks/)).toBeVisible({ timeout: 20_000 });
 
   await page.getByRole('button', { name: 'Chat menu' }).click();
-  await sheetAction(page, 'Export for AI summary');
+  await sheetAction(page, 'Hand this story to someone else');
 
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByText('Export for AI summary')).toBeVisible();
@@ -659,7 +660,7 @@ test('backups carry image providers and story summaries, but never API keys', as
 
   // Give the story a long-run memory worth losing.
   await page.getByRole('button', { name: 'Chat menu' }).click();
-  await sheetAction(page, 'Story summary');
+  await sheetAction(page, 'The story so far');
   const summarySheet = page.getByRole('dialog');
   await fieldIn(summarySheet, 'Where things stand').fill('The party has reached Ashfell.');
   await summarySheet.getByRole('button', { name: 'Save' }).click();
@@ -744,8 +745,7 @@ test('the story timeline lists landmarks and jumps to the message', async ({ pag
   await openMessageMenu(page, 'The gate guard refused us entry.');
   await sheetAction(page, 'Mark important');
 
-  await page.getByRole('button', { name: 'Chat menu' }).click();
-  await sheetAction(page, 'Story timeline');
+  await openStoryMap(page, 'timeline');
 
   const timeline = page.getByTestId('story-timeline');
   await expect(timeline).toBeVisible();
@@ -793,8 +793,7 @@ test('the story timeline spans other chats in the story and switches to them', a
   await sendMessage(page, 'A different thread entirely.');
 
   // The landmark from the first chat is still on the spine, marked as elsewhere.
-  await page.getByRole('button', { name: 'Chat menu' }).click();
-  await sheetAction(page, 'Story timeline');
+  await openStoryMap(page, 'timeline');
   const oath = page.getByRole('button', { name: 'Jump to Checkpoint: The oath' });
   await expect(oath).toBeVisible();
 

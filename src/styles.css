@@ -2578,3 +2578,10 @@ mark {
 .qs-origin .chip {
   margin-right: 4px;
 }
+
+.qs-subheading {
+  margin: 16px 0 6px;
+  font-size: calc(13px * var(--font-scale));
+  font-weight: 600;
+  color: var(--text);
+}

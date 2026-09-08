@@ -23,6 +23,8 @@ import {
   resetDatabase,
   setupProvider,
   sheetAction,
+  openStoryMap,
+  openContextInspector,
 } from './helpers';
 
 /** Expands one of the character editor's collapsed sections. */
@@ -552,8 +554,7 @@ test('steps 55-62: edit, delete, regenerate, alternatives and branching', async 
   await sendMessage(page, 'This only exists on the branch.');
 
   // 61-62. Rename and switch back to the main timeline.
-  await page.getByRole('button', { name: 'Chat menu' }).click();
-  await sheetAction(page, 'Branches');
+  await openStoryMap(page, 'branches');
   await expect(page.getByText('What if she refuses').first()).toBeVisible();
   await page.getByRole('button', { name: 'Rename branch What if she refuses' }).click();
   const renameDialog = page.getByRole('dialog').last();
@@ -566,8 +567,7 @@ test('steps 55-62: edit, delete, regenerate, alternatives and branching', async 
   await expect(bubble(page, 'Hello there. (edited)').first()).toBeVisible();
 
   // Switch back to the branch: its message returns.
-  await page.getByRole('button', { name: 'Chat menu' }).click();
-  await sheetAction(page, 'Branches');
+  await openStoryMap(page, 'branches');
   await page.getByRole('button', { name: 'Switch to branch Refusal path' }).click();
   await expect(bubble(page, 'This only exists on the branch.').first()).toBeVisible();
 });
@@ -737,10 +737,8 @@ test('steps 76-79: a lore keyword triggers, is visible in the inspector and the 
   await field(page, 'Message').fill('Tell me about Ashfell.');
 
   // 77-78. The inspector must show the entry and why it triggered.
-  // Open the Context Inspector via the chat menu — the small chip button
-  // is not always reachable on mobile viewports.
-  await page.getByRole('button', { name: 'Chat menu' }).click();
-  await sheetAction(page, 'Context Inspector');
+  // Through Quick Settings, which is where the inspector lives now.
+  await openContextInspector(page);
   await expect(page.getByText('Context Inspector').first()).toBeVisible();
   await page.getByRole('tab', { name: /Lore & memory/ }).click();
   await expect(page.getByText('Ashfell').first()).toBeVisible();

@@ -295,3 +295,248 @@ test('the story page leads with the story, not with a form', async ({ page }) =>
   // And the first action offered is to play it.
   await expect(page.getByRole('button', { name: /Start the story|Continue story/ })).toBeVisible();
 });
+
+/* ==================================================== authoring the scene */
+
+/**
+ * The scene fields the compiler has always read but nothing could write.
+ * These assert the whole path: the panel shows what is stored, an edit is
+ * persisted through the existing chat patch, and the edit reaches the prompt.
+ */
+
+function sceneField(page: Page, label: string) {
+  return page.locator('.sheet').last().getByRole('textbox', { name: label, exact: true });
+}
+
+async function readScene(page: Page) {
+  return (await readStore<any>(page, 'chats'))[0].scene;
+}
+
+test('the scene as stored is what the panel shows', async ({ page }) => {
+  await mockOllama(page, ['Sera nods.'], 8192);
+  await setupOllamaProvider(page);
+  await seedFixtures(page);
+  await openChat(page);
+
+  const chatId = (await readStore<any>(page, 'chats'))[0].id;
+  await page.evaluate(async (id) => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const chat: any = await new Promise((r) => {
+      const q = db.transaction('chats', 'readonly').objectStore('chats').get(id);
+      q.onsuccess = () => r(q.result);
+    });
+    chat.scene = {
+      ...chat.scene,
+      location: 'The back room',
+      situation: 'The roads have been shut for three days.',
+      objective: 'Find out who sealed the cellar.',
+    };
+    await new Promise<void>((r) => {
+      const q = db.transaction('chats', 'readwrite').objectStore('chats').put(chat);
+      q.onsuccess = () => r();
+    });
+    db.close();
+  }, chatId);
+  await page.reload();
+  await boot(page);
+  await goto(page, `#/chat/${chatId}`);
+  await expect(page.locator('.chat-composer')).toBeVisible({ timeout: 20_000 });
+
+  await page.getByRole('button', { name: 'Quick settings' }).click();
+  await expect(sceneField(page, 'Where')).toHaveValue('The back room');
+  await expect(sceneField(page, 'What is happening')).toHaveValue(
+    'The roads have been shut for three days.',
+  );
+  await expect(sceneField(page, 'Right now')).toHaveValue('Find out who sealed the cellar.');
+});
+
+test('each scene field can be written, and reaches the model', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.'], 8192);
+  await setupOllamaProvider(page);
+  await seedFixtures(page);
+  await openChat(page);
+
+  await page.getByRole('button', { name: 'Quick settings' }).click();
+  await sceneField(page, 'Where').fill('The Nexus Tavern, back room');
+  await sceneField(page, 'What is happening').fill('The storm has shut the roads for a third night.');
+  await sceneField(page, 'Right now').fill('Get Sera to admit who sealed the cellar.');
+  // Committing happens on blur, so the last field needs to lose focus.
+  await page.locator('.sheet').last().getByRole('heading', { name: 'This scene' }).click();
+
+  await expect
+    .poll(async () => (await readScene(page)).objective, { timeout: 15_000 })
+    .toBe('Get Sera to admit who sealed the cellar.');
+
+  const scene = await readScene(page);
+  expect(scene.location).toBe('The Nexus Tavern, back room');
+  expect(scene.situation).toBe('The storm has shut the roads for a third night.');
+  // Writing one field must not disturb the others.
+  expect(scene.presentCharacterIds).toEqual([]);
+  expect(scene.characterStates).toEqual({});
+
+  await page.getByRole('button', { name: 'Close' }).first().click();
+  const system = await sendAndRead(page, ollama, 'Evening.');
+  expect(system).toContain('Location: The Nexus Tavern, back room');
+  expect(system).toContain('Situation: The storm has shut the roads for a third night.');
+  expect(system).toContain('Right now: Get Sera to admit who sealed the cellar.');
+});
+
+test('clearing a scene field empties it rather than leaving the old text', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.'], 8192);
+  await setupOllamaProvider(page);
+  await seedFixtures(page);
+  await openChat(page);
+
+  await page.getByRole('button', { name: 'Quick settings' }).click();
+  await sceneField(page, 'Where').fill('The back room');
+  await sceneField(page, 'Right now').click();
+  await expect.poll(async () => (await readScene(page)).location, { timeout: 15_000 }).toBe(
+    'The back room',
+  );
+
+  await sceneField(page, 'Where').fill('');
+  await sceneField(page, 'Right now').click();
+  await expect.poll(async () => (await readScene(page)).location, { timeout: 15_000 }).toBe('');
+
+  await page.getByRole('button', { name: 'Close' }).first().click();
+  const system = await sendAndRead(page, ollama, 'Evening.');
+  // Scoped to the scene block: the seeded character carries a Location field of
+  // her own, and that one is supposed to be there.
+  const sceneBlock = system.split('## ').find((s: string) => s.startsWith('Current scene')) ?? '';
+  expect(sceneBlock).not.toContain('Location:');
+});
+
+test('setting the scene does not disturb who is in it', async ({ page }) => {
+  await mockOllama(page, ['Sera nods.'], 8192);
+  await setupOllamaProvider(page);
+  await seedFixtures(page);
+  await openChat(page);
+
+  // Declared presence, put there the way an import would.
+  const chatId = (await readStore<any>(page, 'chats'))[0].id;
+  await page.evaluate(async (id) => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const chat: any = await new Promise((r) => {
+      const q = db.transaction('chats', 'readonly').objectStore('chats').get(id);
+      q.onsuccess = () => r(q.result);
+    });
+    chat.scene = { ...chat.scene, presentCharacterIds: ['c1'], primaryCharacterId: 'c1' };
+    await new Promise<void>((r) => {
+      const q = db.transaction('chats', 'readwrite').objectStore('chats').put(chat);
+      q.onsuccess = () => r();
+    });
+    db.close();
+  }, chatId);
+  await page.reload();
+  await boot(page);
+  await goto(page, `#/chat/${chatId}`);
+  await expect(page.locator('.chat-composer')).toBeVisible({ timeout: 20_000 });
+
+  const before = await readScene(page);
+  expect(before.presentCharacterIds).toEqual(['c1']);
+
+  await page.getByRole('button', { name: 'Quick settings' }).click();
+
+  await sceneField(page, 'Where').fill('The back room');
+  await sceneField(page, 'Right now').click();
+  await expect.poll(async () => (await readScene(page)).location, { timeout: 15_000 }).toBe(
+    'The back room',
+  );
+
+  const after = await readScene(page);
+  expect(after.presentCharacterIds).toEqual(before.presentCharacterIds);
+  expect(after.primaryCharacterId).toBe(before.primaryCharacterId);
+});
+
+test('how a character is right now is scene-local, and never touches the character', async ({
+  page,
+}) => {
+  const ollama = await mockOllama(page, ['Sera nods.'], 8192);
+  await setupOllamaProvider(page);
+  await seedFixtures(page);
+  await openChat(page);
+
+  const characterBefore = (await readStore<any>(page, 'characters')).find(
+    (c: any) => c.id === 'c1',
+  );
+
+  await page.getByRole('button', { name: 'Quick settings' }).click();
+  await sceneField(page, 'Sera').fill('Guarded, hands burnt.');
+  await page.locator('.sheet').last().getByRole('heading', { name: 'This scene' }).click();
+
+  await expect
+    .poll(async () => (await readScene(page)).characterStates, { timeout: 15_000 })
+    .toEqual({ c1: 'Guarded, hands burnt.' });
+
+  await page.reload();
+  await boot(page);
+  expect((await readScene(page)).characterStates).toEqual({ c1: 'Guarded, hands burnt.' });
+
+  // The character record is untouched — this is how she is now, not who she is.
+  const characterAfter = (await readStore<any>(page, 'characters')).find(
+    (c: any) => c.id === 'c1',
+  );
+  expect(characterAfter).toEqual(characterBefore);
+
+  const chatId = (await readStore<any>(page, 'chats'))[0].id;
+  await goto(page, `#/chat/${chatId}`);
+  await expect(page.locator('.chat-composer')).toBeVisible({ timeout: 20_000 });
+  const system = await sendAndRead(page, ollama, 'Evening.');
+  expect(system).toContain('- Sera: Guarded, hands burnt.');
+});
+
+test('quick settings opens on the scene, not on generation settings', async ({ page }) => {
+  await mockOllama(page, ['Sera nods.'], 8192);
+  await setupOllamaProvider(page);
+  await seedFixtures(page);
+  await openChat(page);
+
+  await page.getByRole('button', { name: 'Quick settings' }).click();
+  const headings = await page
+    .locator('.sheet')
+    .last()
+    .locator('.qs-heading')
+    .allTextContents();
+  expect(headings).toEqual(['This scene', 'How it writes', 'What it remembers', 'Go to']);
+});
+
+test('the chat menu keeps the long tail and drops what quick settings now owns', async ({
+  page,
+}) => {
+  await mockOllama(page, ['Sera nods.'], 8192);
+  await setupOllamaProvider(page);
+  await seedFixtures(page);
+  await openChat(page);
+
+  await page.getByRole('button', { name: 'Chat menu' }).click();
+  const sheet = page.locator('.sheet').last();
+  const labels = await sheet.locator('.action-list button > span').allTextContents();
+  // Label and description share one span, so an entry is matched by prefix.
+  const has = (label: string) => labels.some((text) => text.trim().startsWith(label));
+
+  // One name for one sheet.
+  expect(has('Story map')).toBe(true);
+  expect(has('Branches')).toBe(false);
+  expect(has('Story timeline')).toBe(false);
+  // Owned by Quick Settings now.
+  expect(has('Response settings')).toBe(false);
+  expect(has('Context Inspector')).toBe(false);
+  expect(has('Change your persona')).toBe(false);
+  // The long tail stays.
+  for (const kept of ['Checkpoints', 'Rename chat', 'Duplicate chat', 'Export chat', 'Delete chat']) {
+    expect(has(kept)).toBe(true);
+  }
+
+  // And everything removed is still reachable where it moved to.
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Quick settings' }).click();
+  for (const moved of ['Persona', 'Response settings', 'Context Inspector']) {
+    await expect(sheet.getByRole('button', { name: new RegExp(`^${moved}`) })).toBeVisible();
+  }
+});

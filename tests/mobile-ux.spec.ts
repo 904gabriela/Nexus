@@ -20,6 +20,7 @@ import {
   sheetAction,
   startChat,
   openContextInspector,
+  openStoryMap,
 } from './helpers';
 
 const MIN_TOUCH = 44;
@@ -203,18 +204,18 @@ for (const viewport of VIEWPORTS) {
       await collect('message action sheet');
       await closeSheet(page);
 
-      // Chat menu → branches.
+      // The chat menu itself, then the story map from the header.
       await page.getByRole('button', { name: 'Chat menu' }).click();
       await expect(page.locator('.sheet').last()).toBeVisible();
       await collect('chat menu sheet');
-      await sheetAction(page, /Branches/);
+      await closeSheet(page);
+      await openStoryMap(page, 'branches');
       await expect(page.locator('.sheet').last()).toBeVisible();
       await collect('branch panel');
       await closeSheet(page);
 
-      // Story timeline.
-      await page.getByRole('button', { name: 'Chat menu' }).click();
-      await sheetAction(page, 'Story timeline');
+      // Story timeline — a tab of the story map now, not its own menu entry.
+      await openStoryMap(page, 'timeline');
       await expect(page.getByTestId('story-timeline')).toBeVisible();
       await collect('story timeline');
       await closeSheet(page);

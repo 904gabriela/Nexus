@@ -19,6 +19,7 @@ import {
   setupProvider,
   sheetAction,
   startChat,
+  openResponseSettings,
 } from './helpers';
 
 /** The provider mounted for the current test, so requests can be inspected. */
@@ -45,10 +46,9 @@ async function nextRequest(count: number) {
   return provider.requests.at(-1)!.body;
 }
 
-/** Opens the chat menu and the Response settings sheet within it. */
-async function openResponseSettings(page: import('@playwright/test').Page) {
-  await page.getByRole('button', { name: 'Chat menu' }).click();
-  await sheetAction(page, /Response settings/);
+/** Response settings, which lives in Quick Settings rather than the chat menu. */
+async function openTuning(page: import('@playwright/test').Page) {
+  await openResponseSettings(page);
   await expect(page.getByRole('textbox', { name: /Direction sent to the AI/ })).toBeVisible();
 }
 
@@ -76,7 +76,7 @@ test("a story's own opening message replaces the character greeting", async ({ p
 
 test('direction set inside the chat reaches the model and survives a reload', async ({ page }) => {
   await startChat(page);
-  await openResponseSettings(page);
+  await openTuning(page);
 
   await page.getByRole('button', { name: 'More dialogue' }).click();
   // The nudge must write the literal sentence, so what is shown is what is sent.
@@ -95,14 +95,16 @@ test('direction set inside the chat reaches the model and survives a reload', as
   const [chat] = await readStore<{ direction: string }>(page, 'chats');
   expect(chat.direction).toContain('Favour spoken dialogue over narration.');
 
+  // The tuning already in force is still readable without opening the sheet —
+  // it moved from the chat menu to Quick Settings along with the control.
   await reloadApp(page);
-  await page.getByRole('button', { name: 'Chat menu' }).click();
+  await page.getByRole('button', { name: 'Quick settings' }).click();
   await expect(page.locator('.sheet').last()).toContainText('1 direction');
 });
 
 test('a temperature set for one chat does not affect its sibling', async ({ page }) => {
   await startChat(page);
-  await openResponseSettings(page);
+  await openTuning(page);
 
   await page.getByRole('button', { name: 'Override' }).first().click();
   await page.getByRole('slider', { name: /Temperature/ }).first().fill('0.15');

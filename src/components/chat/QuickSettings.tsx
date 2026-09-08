@@ -13,10 +13,11 @@
  * chat's SceneState, the toggles live in Settings, and everything here reads
  * and writes those.
  */
-import type { Character, Chat, ID, NarrationPreset, Settings } from '../../types';
+import type { Character, Chat, ID, NarrationPreset, SceneState, Settings } from '../../types';
+import { useEffect, useState } from 'react';
 import { Sheet } from '../ui/Sheet';
 import { Icon } from '../ui/Icon';
-import { Toggle } from '../ui/Field';
+import { TextArea, TextField, Toggle } from '../ui/Field';
 import { availablePresets } from '../../narration/presets';
 import type { ResolvedScene } from '../../context/scene';
 
@@ -38,6 +39,8 @@ export interface QuickSettingsProps {
   personaName: string | null;
   /** Token usage, when the user has asked to see counts. */
   contextSummary: string | null;
+  /** The tuning already in force, so it reads without opening the sheet. */
+  responseSummary: string;
   onPatchChat: (patch: Partial<Chat>) => void | Promise<unknown>;
   onPatchSettings: (patch: Partial<Settings>) => void | Promise<unknown>;
   onOpenInspector: () => void;
@@ -57,6 +60,7 @@ export function QuickSettings({
   settings,
   personaName,
   contextSummary,
+  responseSummary,
   onPatchChat,
   onPatchSettings,
   onOpenInspector,
@@ -100,6 +104,15 @@ export function QuickSettings({
    * alone; the first tap in here therefore writes what is already true rather
    * than suddenly emptying the room.
    */
+  /**
+   * Every scene write goes through here, so changing one field cannot drop the
+   * others. `chat.scene` is always a complete SceneState — hydrateChat merges
+   * each stored chat over emptyScene() — so spreading it is safe and there is
+   * no partial shape to guard against.
+   */
+  const patchScene = (partial: Partial<SceneState>) =>
+    onPatchChat({ scene: { ...chat.scene, ...partial } });
+
   const togglePresent = (character: Character) => {
     const current = scene.present.map((c) => c.id);
     const next = current.includes(character.id)
@@ -108,19 +121,116 @@ export function QuickSettings({
     // Everyone leaving the room is not a scene. Refusing the last removal is
     // kinder than accepting it and having the narrator address nobody.
     if (!next.length) return;
-    onPatchChat({
-      scene: {
-        ...(chat.scene ?? { location: '', situation: '', objective: '', characterStates: [] }),
-        presentCharacterIds: next,
-        primaryCharacterId: next.includes(chat.scene?.primaryCharacterId ?? '')
-          ? chat.scene?.primaryCharacterId
-          : next[0],
-      },
+    patchScene({
+      presentCharacterIds: next,
+      primaryCharacterId: next.includes(chat.scene.primaryCharacterId ?? '')
+        ? chat.scene.primaryCharacterId
+        : next[0],
     });
+  };
+
+  /**
+   * Scene-local state for one character: what is true of them right now, not
+   * who they are. Clearing the text removes the key rather than storing an
+   * empty string, so the compiler sees no line at all for that character.
+   */
+  const setCharacterState = (id: ID, text: string) => {
+    const next = { ...chat.scene.characterStates };
+    if (text.trim()) next[id] = text.trim();
+    else delete next[id];
+    patchScene({ characterStates: next });
   };
 
   return (
     <Sheet open={open} onClose={onClose} title="Chat settings" large>
+      <section className="qs-section">
+        <h3 className="qs-heading">This scene</h3>
+        <p className="small muted" style={{ marginTop: 0 }}>
+          Where you are and what is going on. This is the top of every prompt and the one part the
+          model is told it may not contradict.
+        </p>
+
+        <SceneField
+          label="Where"
+          value={chat.scene.location}
+          placeholder="The Nexus Tavern, back room"
+          onCommit={(location) => patchScene({ location })}
+        />
+        <SceneField
+          label="What is happening"
+          value={chat.scene.situation}
+          placeholder="The storm has shut the roads for a third night."
+          multiline
+          onCommit={(situation) => patchScene({ situation })}
+        />
+        <SceneField
+          label="Right now"
+          value={chat.scene.objective}
+          placeholder="Get Sera to admit who sealed the cellar."
+          hint="The immediate goal or open question driving this scene."
+          onCommit={(objective) => patchScene({ objective })}
+        />
+
+        <h4 className="qs-subheading">Who is here</h4>
+        {!scene.declared && (
+          <p className="small muted" style={{ marginTop: 0 }}>
+            Nobody has been placed in this scene yet, so only{' '}
+            {scene.primary?.name ?? 'the lead'} is treated as present. Tap a name to say who else
+            is in the room.
+          </p>
+        )}
+        {!cast.length ? (
+          <p className="small muted">This chat has no cast yet.</p>
+        ) : (
+          <div className="qs-cast">
+            {cast.map((character) => {
+              const here = scene.present.some((c) => c.id === character.id);
+              return (
+                <button
+                  key={character.id}
+                  type="button"
+                  className={`chip chip-tap ${here ? 'chip-accent' : ''}`}
+                  aria-pressed={here}
+                  onClick={() => togglePresent(character)}
+                >
+                  <Icon name={here ? 'check' : 'user'} width={13} height={13} />
+                  {character.name}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        <p className="small muted">
+          Only the people in the room are described as present, and only their relationships are
+          sent. Everyone else stays in the story without crowding the prompt.
+        </p>
+
+        {/*
+          Scene-local state: what is true of someone right now. Deliberately
+          only for the people actually present, and deliberately not a place to
+          describe who they are — that is the character record, and this is
+          cleared when the scene moves on.
+        */}
+        {!!scene.present.length && (
+          <>
+            <h4 className="qs-subheading">How they are right now</h4>
+            {scene.present.map((character) => (
+              <SceneField
+                key={character.id}
+                label={character.displayName || character.name}
+                value={chat.scene.characterStates[character.id] ?? ''}
+                placeholder="Injured, guarded, hiding something…"
+                onCommit={(text) => setCharacterState(character.id, text)}
+              />
+            ))}
+            <p className="small muted">
+              Temporary, and only for this scene — injuries, mood, what they are concealing. Who
+              they are belongs on the character.
+            </p>
+          </>
+        )}
+      </section>
+
       <section className="qs-section">
         <h3 className="qs-heading">How it writes</h3>
         <p className="small muted" style={{ marginTop: 0 }}>
@@ -176,58 +286,6 @@ export function QuickSettings({
       </section>
 
       <section className="qs-section">
-        <h3 className="qs-heading">This scene</h3>
-        {(scene.location || scene.situation) && (
-          <dl className="qs-facts">
-            {scene.location && (
-              <>
-                <dt>Where</dt>
-                <dd>{scene.location}</dd>
-              </>
-            )}
-            {scene.situation && (
-              <>
-                <dt>What is happening</dt>
-                <dd>{scene.situation}</dd>
-              </>
-            )}
-          </dl>
-        )}
-        {!scene.declared && (
-          <p className="small muted" style={{ marginTop: 0 }}>
-            Nobody has been placed in this scene yet, so only{' '}
-            {scene.primary?.name ?? 'the lead'} is treated as present. Tap a name to say who else
-            is in the room.
-          </p>
-        )}
-        {!cast.length ? (
-          <p className="small muted">This chat has no cast yet.</p>
-        ) : (
-          <div className="qs-cast">
-            {cast.map((character) => {
-              const here = scene.present.some((c) => c.id === character.id);
-              return (
-                <button
-                  key={character.id}
-                  type="button"
-                  className={`chip chip-tap ${here ? 'chip-accent' : ''}`}
-                  aria-pressed={here}
-                  onClick={() => togglePresent(character)}
-                >
-                  <Icon name={here ? 'check' : 'user'} width={13} height={13} />
-                  {character.name}
-                </button>
-              );
-            })}
-          </div>
-        )}
-        <p className="small muted">
-          Only the people in the room are described as present, and only their relationships are
-          sent. Everyone else stays in the story without crowding the prompt.
-        </p>
-      </section>
-
-      <section className="qs-section">
         <h3 className="qs-heading">What it remembers</h3>
         <Toggle
           label="Write memories automatically"
@@ -264,7 +322,7 @@ export function QuickSettings({
           <QuickLink
             icon="settings"
             label="Response settings"
-            detail="Direction and sampling for this chat."
+            detail={responseSummary}
             onClick={() => {
               onClose();
               onOpenResponseSettings();
@@ -323,5 +381,66 @@ function QuickLink({
       </span>
       <Icon name="chevronRight" width={15} height={15} />
     </button>
+  );
+}
+
+/**
+ * A scene field that writes when you leave it, not as you type.
+ *
+ * Every keystroke through onPatchChat would be a database write per character
+ * and a re-render of the chat behind the sheet. Holding the text locally and
+ * committing on blur keeps the stored scene in step with what is on screen
+ * without making typing expensive.
+ */
+function SceneField({
+  label,
+  value,
+  placeholder,
+  hint,
+  multiline,
+  onCommit,
+}: {
+  label: string;
+  value: string;
+  placeholder?: string;
+  hint?: string;
+  multiline?: boolean;
+  onCommit: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+
+  // Re-seed when the stored value changes underneath — reopening the sheet, or
+  // another surface editing the same chat.
+  useEffect(() => setDraft(value), [value]);
+
+  const commit = () => {
+    const next = draft.trim();
+    if (next !== value) onCommit(next);
+  };
+
+  // The shared field components take no onBlur, and adding one to them for a
+  // single caller is a worse trade than a wrapper: focusout bubbles, so this
+  // catches the same event without changing a component every form uses.
+  return (
+    <div onBlur={commit}>
+      {multiline ? (
+        <TextArea
+          label={label}
+          value={draft}
+          onChange={setDraft}
+          placeholder={placeholder}
+          hint={hint}
+          rows={2}
+        />
+      ) : (
+        <TextField
+          label={label}
+          value={draft}
+          onChange={setDraft}
+          placeholder={placeholder}
+          hint={hint}
+        />
+      )}
+    </div>
   );
 }
