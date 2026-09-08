@@ -6,6 +6,7 @@ import type {
   Chat,
   ID,
   MediaMeta,
+  Memory,
   Message,
   Persona,
   Provider,
@@ -178,17 +179,46 @@ export function useGeneration() {
     [state.alternatives],
   );
 
+  /**
+   * Memories that the branch being played can actually have witnessed.
+   *
+   * Branching never copies messages, so a memory extracted from a turn that
+   * only exists on a sibling branch stayed in context after forking away from
+   * it — the alternative timeline remembered a conversation it never had.
+   * Provenance already answers this: an automatic memory is a claim about
+   * specific messages, and a branch that cannot see any of them cannot have
+   * seen the thing they say happened.
+   *
+   * Only `origin: 'auto'` is judged. A memory the author wrote or imported is
+   * theirs, deliberate, and belongs wherever they put it. `pinned` is not
+   * consulted either way: it raises a memory's priority and protects it from
+   * trimming, but it is not a claim about which timeline the memory happened
+   * in, and pinning something must not resurrect it on a branch that never saw
+   * it.
+   */
+  const visibleMessageIds = useMemo(() => new Set(timeline.map((m) => m.id)), [timeline]);
+  const onBranch = useCallback(
+    (memory: Memory): boolean => {
+      if (memory.origin !== 'auto') return true;
+      // Nothing to judge: no provenance means no evidence it is off-branch.
+      if (!memory.sourceMessageIds.length) return true;
+      // Another chat's branch structure says nothing about this one's.
+      if (memory.sourceChatId && memory.sourceChatId !== activeChat?.id) return true;
+      return memory.sourceMessageIds.some((id) => visibleMessageIds.has(id));
+    },
+    [visibleMessageIds, activeChat?.id],
+  );
+
   const memoriesForContext = useMemo(() => {
-    if (!story) return state.memories;
+    const inScope = state.memories.filter(onBranch);
+    if (!story) return inScope;
     // Story-attached memories first, then unattached global ones.
-    const attached = state.memories.filter(
+    const attached = inScope.filter(
       (m) => story.memoryIds.includes(m.id) || m.sourceStoryId === story.id,
     );
-    const global = state.memories.filter(
-      (m) => !m.sourceStoryId && !story.memoryIds.includes(m.id),
-    );
+    const global = inScope.filter((m) => !m.sourceStoryId && !story.memoryIds.includes(m.id));
     return [...attached, ...global];
-  }, [state.memories, story]);
+  }, [state.memories, story, onBranch]);
 
   const buildCompileInput = useCallback(
     (

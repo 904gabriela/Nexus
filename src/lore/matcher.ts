@@ -17,6 +17,19 @@ export interface LoreScanScope {
   storyLorebookIds: ID[];
   chatLorebookIds: ID[];
   characterLorebookIds: ID[];
+  /**
+   * Books belonging to the character actually being asked to reply.
+   *
+   * `character-only` is the one activation that means "this character's own
+   * knowledge". Gating it on the whole cast made it mean "anyone in the story",
+   * so a book attached to a character standing elsewhere in the world was in
+   * every turn. Reachability is unchanged — a cast member's book still reaches
+   * the scan through `characterLorebookIds`; only `character-only` narrows.
+   *
+   * Omitted means no responder was resolved, in which case the cast is the
+   * best available answer and behaviour is exactly what it was.
+   */
+  responderLorebookIds?: ID[];
 }
 
 export interface LoreScanInput {
@@ -105,14 +118,20 @@ function matchTerms(terms: string[], entry: LoreEntry, haystack: string): string
   return matched;
 }
 
-function scopeAllows(entry: LoreEntry, scope: LoreScanScope, attachedVia: string[]): boolean {
+function scopeAllows(
+  entry: LoreEntry,
+  scope: LoreScanScope,
+  attachedVia: string[],
+  /** True when the book belongs to the character being asked to reply. */
+  responderAttached: boolean,
+): boolean {
   switch (entry.activation) {
     case 'story-only':
       return scope.source === 'story' || scope.source === 'test' || attachedVia.includes('story');
     case 'chat-only':
       return scope.source === 'chat' || scope.source === 'test' || attachedVia.includes('chat');
     case 'character-only':
-      return attachedVia.includes('character') || scope.source === 'test';
+      return responderAttached || scope.source === 'test';
     default:
       return true;
   }
@@ -190,6 +209,7 @@ export function scanLore(input: LoreScanInput): LoreScanResult {
 
   const ambient = input.ambientText ?? '';
   const recentWindow = Math.max(1, input.recentWindow ?? 6);
+  const responderBooks = new Set(scope.responderLorebookIds ?? scope.characterLorebookIds);
 
   for (const entry of entries) {
     const book = bookById.get(entry.lorebookId);
@@ -221,11 +241,14 @@ export function scanLore(input: LoreScanInput): LoreScanResult {
       });
       continue;
     }
-    if (!scopeAllows(entry, scope, via)) {
+    if (!scopeAllows(entry, scope, via, responderBooks.has(book.id))) {
       misses.push({
         entry,
         lorebookName: bookName,
-        reason: `Activation is "${entry.activation}" but this lookup came from "${scope.source}".`,
+        reason:
+          entry.activation === 'character-only'
+            ? 'Activation is "character-only" and this book does not belong to the character replying.'
+            : `Activation is "${entry.activation}" but this lookup came from "${scope.source}".`,
       });
       continue;
     }

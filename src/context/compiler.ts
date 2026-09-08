@@ -99,7 +99,26 @@ function line(label: string, value: string): string {
   return value && value.trim() ? `${label}: ${value.trim()}` : '';
 }
 
-export function describeCharacter(character: Character, detailed = true): string {
+export interface DescribeCharacterOptions {
+  /**
+   * Whether the character's `secrets` field is included.
+   *
+   * A secret is the one field written to be unknown inside the story. Handing
+   * every present character's secrets to the model on every turn is how they
+   * get hinted at by someone who has no way of knowing them. The character
+   * being asked to reply keeps their own; the rest of the scene does not.
+   *
+   * Defaults to true, so exports and any other caller are unchanged.
+   */
+  includeSecrets?: boolean;
+}
+
+export function describeCharacter(
+  character: Character,
+  detailed = true,
+  options: DescribeCharacterOptions = {},
+): string {
+  const includeSecrets = options.includeSecrets ?? true;
   const name = character.displayName || character.name;
   const parts: string[] = [`# ${name}`];
 
@@ -133,7 +152,7 @@ export function describeCharacter(character: Character, detailed = true): string
       line('Goals', character.goals),
       line('Motivations', character.motivations),
       line('Fears', character.fears),
-      line('Secrets', character.secrets),
+      includeSecrets ? line('Secrets', character.secrets) : '',
       line('Likes', character.likes),
       line('Dislikes', character.dislikes),
       line('Hobbies', character.hobbies),
@@ -588,10 +607,10 @@ function compileContextInner(input: CompileInput): CompileResult {
         `character:${character.id}`,
         `Character — ${character.displayName || character.name}${isResponder ? ' (speaking)' : ''}`,
         'character',
-        macro(describeCharacter(character, true)),
+        macro(describeCharacter(character, true, { includeSecrets: isResponder })),
         isResponder
           ? 'The character generating this reply.'
-          : `Present in the scene (#${index + 1}).`,
+          : `Present in the scene (#${index + 1}) — described without their secrets.`,
         isResponder ? PRIORITY.character : PRIORITY.character - 10 - index,
       ),
     );
@@ -847,14 +866,15 @@ function compileContextInner(input: CompileInput): CompileResult {
           'Story summary — character state',
           'memory',
           macro(
-            `## Character state\n${states
+            `## Where each character stands\n${states
               .map(([id, state]) => {
                 const character = activeCharacters.find((c) => c.id === id);
                 return `- ${character?.displayName || character?.name || id}: ${state}`;
               })
               .join('\n')}`,
           ),
-          'Long-run memory: each character\u2019s current condition and goal.',
+          'Long-run memory: each character\u2019s standing and goal. Where they are and ' +
+            'what shape they are in is the current scene\u2019s to state, not this.',
           PRIORITY.summary - 20,
         ),
       );
@@ -895,6 +915,10 @@ function compileContextInner(input: CompileInput): CompileResult {
       storyLorebookIds: story?.lorebookIds ?? [],
       chatLorebookIds: chat?.lorebookIds ?? [],
       characterLorebookIds: activeCharacters.flatMap((c) => c.lorebookIds),
+      // `character-only` means the replying character's own knowledge, not the
+      // cast's shared pool. Books still reach the scan through the cast above;
+      // this only decides which of them may unlock a character-only entry.
+      responderLorebookIds: responding?.lorebookIds ?? [],
     },
     defaultScanDepth: scanDepth,
     maxEntries: Math.min(Math.max(settings.maxLoreEntries || 12, 1), MAX_LORE_ENTRIES),

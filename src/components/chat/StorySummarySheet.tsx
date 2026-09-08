@@ -179,7 +179,8 @@ export function StorySummarySheet({
           <div className="field">
             <span className="field-label">Character state</span>
             <div className="field-hint" style={{ marginBottom: 8 }}>
-              Each character's current condition, location and immediate goal.
+              Where each character stands over the long run and what they want. Where they
+              are right now, and what shape they are in, belongs to the scene instead.
             </div>
             <div className="stack">
               {gen.characters.map((character) => (

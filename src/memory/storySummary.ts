@@ -70,8 +70,10 @@ Produce an updated memory. Return ONLY a JSON object with these keys:
   "rollingSummary": string,      // the previous summary merged with the new scenes, compact but complete
   "importantEvents": string[],   // up to 12 short factual beats, newest last
   "relationshipState": string,   // 1-3 sentences on how the characters stand with each other
-  "characterState": { "<character name>": string }  // one short line per character: condition, location, goal
+  "characterState": { "<character name>": string }  // one short line per character: where they stand and what they want
 }
+Character state is long-run standing, not a scene report: what each character has become, what they are committed to, what they are after.
+Do not put their present location or physical condition here — those belong to the current scene and change from turn to turn.
 Never invent events. Preserve earlier facts unless the new scenes contradict them. No commentary.`;
 
 function extractJson(text: string): Record<string, unknown> | null {
