@@ -24,6 +24,7 @@ import {
   setupOllamaProvider,
   type MockOllama,
 } from './helpers';
+import { seedTavern } from './tavern-fixture';
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/');
@@ -50,332 +51,43 @@ async function turn(page: Page, ollama: MockOllama, text: string): Promise<strin
   return systemOf(ollama);
 }
 
-/* ------------------------------------------------------------------ seeds */
-
-interface Seed {
-  /** Which branch the chat opens on. */
-  activeBranchId?: 'main' | 'alt';
+/**
+ * Asks a named character to reply through the real speaker picker, which is the
+ * only path that sets `respondingCharacterId` explicitly.
+ */
+async function askToReply(page: Page, ollama: MockOllama, name: string): Promise<string> {
+  const before = ollama.requests.length;
+  await page.getByRole('button', { name: 'Chat menu' }).click();
+  await page
+    .locator('.sheet')
+    .last()
+    .getByRole('button', { name: 'Ask another character to reply' })
+    .click();
+  await page.locator('.sheet').last().getByRole('button', { name: new RegExp(`^${name}`) }).click();
+  await expect.poll(() => ollama.requests.length, { timeout: 25_000 }).toBeGreaterThan(before);
+  return systemOf(ollama);
 }
 
-/**
- * Two characters in one room, each with a secret and a private lorebook, plus a
- * forked timeline carrying one automatic and one hand-written memory.
- *
- * One fixture covers all three claims because they are all statements about the
- * same prompt: who is replying decides what is private, and which branch is
- * being played decides what has happened.
- */
-async function seedTavern(page: Page, seed: Seed = {}) {
-  await page.evaluate(async (options) => {
-    const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('nexus-tavern-pro');
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
+/** Overwrites one settings key, then reboots so the app reads it back. */
+async function patchSettings(page: Page, patch: Record<string, unknown>) {
+  await page.evaluate(async (values) => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
     });
-    const put = (store: string, value: unknown) =>
-      new Promise<void>((resolve, reject) => {
-        const tx = db.transaction(store, 'readwrite');
-        const r = tx.objectStore(store).put(value);
-        r.onsuccess = () => resolve();
-        r.onerror = () => reject(r.error);
-      });
-    const now = Date.now();
-
-    const character = (
-      id: string,
-      name: string,
-      secrets: string,
-      lorebookIds: string[],
-    ) => ({
-      id,
-      name,
-      displayName: '',
-      nickname: '',
-      age: '38',
-      gender: '',
-      pronouns: 'they/them',
-      species: 'human',
-      race: '',
-      occupation: 'innkeeper',
-      role: '',
-      tags: [],
-      shortDescription: `${name} of the Nexus Tavern.`,
-      description: `${name} keeps the Nexus Tavern through the long storm.`,
-      appearance: '',
-      physicalTraits: '',
-      personality: 'Wry and watchful.',
-      temperament: '',
-      traits: [],
-      backstory: '',
-      history: '',
-      goals: '',
-      motivations: '',
-      fears: '',
-      secrets,
-      likes: '',
-      dislikes: '',
-      hobbies: '',
-      values: '',
-      beliefs: '',
-      scenario: '',
-      greetings: [],
-      defaultGreetingId: null,
-      speakingStyle: '',
-      speechPatterns: '',
-      exampleDialogue: '',
-      systemPrompt: '',
-      authorNote: '',
-      relationships: '',
-      friends: '',
-      enemies: '',
-      family: '',
-      romantic: '',
-      home: '',
-      location: '',
-      faction: '',
-      world: '',
-      lorebookIds,
-      creator: '',
-      creatorNotes: '',
-      version: '1',
-      customFields: [],
-      metadata: {},
-      avatarMediaId: null,
-      avatarUrl: '',
-      favorite: false,
-      createdAt: now,
-      updatedAt: now,
+    const settings: any = await new Promise((r) => {
+      const q = db.transaction('settings', 'readonly').objectStore('settings').get('settings');
+      q.onsuccess = () => r(q.result);
     });
-
-    await put(
-      'characters',
-      character(
-        'sera',
-        'Sera',
-        'Sera keeps a false-bottomed drawer beneath the bar.',
-        ['book-sera'],
-      ),
-    );
-    await put(
-      'characters',
-      character(
-        'halda',
-        'Halda',
-        'Halda has been skimming coin from the harvest tithe.',
-        ['book-halda'],
-      ),
-    );
-
-    await put('personas', {
-      id: 'corin',
-      name: 'Corin',
-      displayName: '',
-      nickname: '',
-      age: '',
-      gender: '',
-      pronouns: 'they/them',
-      species: '',
-      occupation: '',
-      appearance: '',
-      personality: 'Curious and reckless.',
-      traits: [],
-      backstory: '',
-      goals: '',
-      likes: '',
-      dislikes: '',
-      speechStyle: '',
-      customFields: [],
-      customInstructions: '',
-      avatarMediaId: null,
-      avatarUrl: '',
-      favorite: false,
-      isDefault: true,
-      createdAt: now,
-      updatedAt: now,
+    Object.assign(settings, values);
+    await new Promise<void>((r) => {
+      const q = db.transaction('settings', 'readwrite').objectStore('settings').put(settings);
+      q.onsuccess = () => r();
     });
-
-    const book = (id: string, name: string) => ({
-      id,
-      name,
-      description: '',
-      tags: [],
-      enabled: true,
-      global: false,
-      scanDepth: 0,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await put('lorebooks', book('book-sera', "Sera's own"));
-    await put('lorebooks', book('book-halda', "Halda's own"));
-
-    // Both entries key on the same word, so only the responder's may fire.
-    const entry = (id: string, lorebookId: string, name: string, content: string) => ({
-      id,
-      lorebookId,
-      name,
-      content,
-      primaryKeys: ['ledger'],
-      secondaryKeys: [],
-      aliases: [],
-      enabled: true,
-      priority: 100,
-      position: 'after-character',
-      depth: 4,
-      scanDepth: 0,
-      matchMode: 'word-boundary',
-      caseSensitive: false,
-      activation: 'character-only',
-      category: '',
-      scope: '',
-      comment: '',
-      customFields: [],
-      order: 0,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await put(
-      'loreEntries',
-      entry('lore-sera', 'book-sera', 'The bar ledger', 'The ledger lists every debt owed to the tavern.'),
-    );
-    await put(
-      'loreEntries',
-      entry('lore-halda', 'book-halda', 'The tithe roll', 'The ledger Halda fears is the tithe roll in the chapel.'),
-    );
-
-    // One memory the app extracted from a turn, one the author wrote by hand.
-    // Both point at the same message, which lives past the fork.
-    await put('memories', {
-      id: 'mem-auto',
-      origin: 'auto',
-      title: 'The cellar confession',
-      content: 'Halda confessed to the theft in the cellar.',
-      category: 'Event',
-      importance: 'normal',
-      pinned: false,
-      sourceMessageIds: ['m3'],
-      sourceChatId: 'tavern-chat',
-      sourceStoryId: 'tavern-story',
-      characterIds: [],
-      tags: [],
-      createdAt: now,
-      updatedAt: now,
-    });
-    await put('memories', {
-      id: 'mem-manual',
-      origin: 'manual',
-      title: 'A standing promise',
-      content: 'Corin swore never to cross the Ashfell bridge again.',
-      category: 'Fact',
-      importance: 'normal',
-      pinned: false,
-      sourceMessageIds: ['m3'],
-      sourceChatId: 'tavern-chat',
-      sourceStoryId: 'tavern-story',
-      characterIds: [],
-      tags: [],
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    await put('stories', {
-      id: 'tavern-story',
-      title: 'The Long Storm',
-      description: '',
-      scenario: 'Travellers wait out a storm in the Nexus Tavern.',
-      authorNote: '',
-      openingMessage: '',
-      tags: [],
-      characters: [
-        { characterId: 'sera', primary: true, note: '', enabled: true },
-        { characterId: 'halda', primary: false, note: '', enabled: true },
-      ],
-      personaId: 'corin',
-      lorebookIds: [],
-      memoryIds: ['mem-auto', 'mem-manual'],
-      coverMediaId: null,
-      backgroundMediaId: null,
-      defaultChatId: 'tavern-chat',
-      settings: {},
-      favorite: false,
-      archived: false,
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    await put('chats', {
-      id: 'tavern-chat',
-      storyId: 'tavern-story',
-      title: 'The common room',
-      activeBranchId: options.activeBranchId ?? 'main',
-      personaId: 'corin',
-      favorite: false,
-      archived: false,
-      settings: {},
-      direction: '',
-      lorebookIds: [],
-      orderCounter: 4,
-      scene: {
-        location: 'The common room of the Nexus Tavern',
-        situation: 'The storm has kept everyone indoors for three days.',
-        presentCharacterIds: ['sera', 'halda'],
-        primaryCharacterId: 'sera',
-        objective: '',
-        characterStates: {},
-        updatedAt: now,
-      },
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    await put('branches', {
-      id: 'main',
-      chatId: 'tavern-chat',
-      parentBranchId: null,
-      createdFromMessageId: null,
-      forkOrder: 0,
-      name: 'Main',
-      createdAt: now,
-      updatedAt: now,
-    });
-    // Forked after m1, so m2 and m3 exist only on main.
-    await put('branches', {
-      id: 'alt',
-      chatId: 'tavern-chat',
-      parentBranchId: 'main',
-      createdFromMessageId: 'm1',
-      forkOrder: 1,
-      name: 'Alternative',
-      createdAt: now + 1,
-      updatedAt: now + 1,
-    });
-
-    const message = (id: string, order: number, role: 'user' | 'assistant', content: string) => ({
-      id,
-      chatId: 'tavern-chat',
-      branchId: 'main',
-      role,
-      characterId: role === 'assistant' ? 'sera' : null,
-      content,
-      attachments: [],
-      order,
-      model: '',
-      tokens: 0,
-      favorite: false,
-      activeAlternativeId: null,
-      createdAt: now + order,
-      updatedAt: now + order,
-    });
-    await put('messages', message('m0', 0, 'user', 'Evening.'));
-    await put('messages', message('m1', 1, 'assistant', 'Sera sets down a cup without being asked.'));
-    await put('messages', message('m2', 2, 'user', 'Where did Halda go?'));
-    await put('messages', message('m3', 3, 'assistant', 'Halda came up from the cellar white-faced.'));
-
     db.close();
-  }, seed);
-
+  }, patch);
   await page.reload();
   await boot(page);
-  await goto(page, '#/chat/tavern-chat');
 }
 
 /* ------------------------------------------------ per-responder compilation */
@@ -406,6 +118,86 @@ test('only the replying character brings their secrets and their own lore', asyn
   expect(system).toContain('Halda keeps the Nexus Tavern');
 });
 
+test('the same group scene compiles differently for each responder', async ({ page }) => {
+  const ollama = await mockOllama(page, ['A reply.']);
+  await setupOllamaProvider(page);
+  await seedTavern(page);
+
+  const asSera = await askToReply(page, ollama, 'Sera');
+  const asHalda = await askToReply(page, ollama, 'Halda');
+
+  // Each turn carries exactly one character's private material.
+  expect(asSera).toContain('false-bottomed drawer');
+  expect(asSera).not.toContain('skimming coin');
+  expect(asHalda).toContain('skimming coin');
+  expect(asHalda).not.toContain('false-bottomed drawer');
+
+  // Character-only lore follows the same line.
+  expect(asSera).toContain('every debt owed to the tavern');
+  expect(asSera).not.toContain('tithe roll in the chapel');
+  expect(asHalda).toContain('tithe roll in the chapel');
+  expect(asHalda).not.toContain('every debt owed to the tavern');
+
+  // What is public about the other character survives both turns, so the
+  // scene is shared even though the private material is not.
+  expect(asSera).toContain('Halda keeps the Nexus Tavern');
+  expect(asHalda).toContain('Sera keeps the Nexus Tavern');
+  for (const system of [asSera, asHalda]) {
+    expect(system).toMatch(/Present:.*Sera/);
+    expect(system).toMatch(/Present:.*Halda/);
+    expect(system).toContain('Travellers wait out a storm in the Nexus Tavern.');
+    // Global lore is not responder-scoped and must be in both.
+    expect(system).toContain('Ashfell keeps its debts in ink');
+  }
+
+  // One speaker per turn, named once: the control block and the narrator's
+  // brief must not disagree about who is leading.
+  expect(asSera).toContain('Sera is the focus of this scene.');
+  expect(asSera).not.toContain('Halda is the focus of this scene.');
+  expect(asHalda).toContain('Halda is the focus of this scene.');
+  expect(asHalda).not.toContain('Sera is the focus of this scene.');
+});
+
+test('with no story lead, the responder is the first cast member and only theirs is private', async ({
+  page,
+}) => {
+  const ollama = await mockOllama(page, ['A reply.']);
+  await setupOllamaProvider(page);
+  // No cast link carries `primary`, and the scene names no focal character
+  // either: the fallback is on its own.
+  await seedTavern(page, { storyPrimary: 'none', primaryCharacterId: null });
+
+  const first = await turn(page, ollama, 'Who keeps the ledger?');
+  const second = await turn(page, ollama, 'And who else?');
+
+  // Exactly one character is the responder, and it is the same one twice.
+  expect(first).toContain('Sera is the focus of this scene.');
+  expect(second).toContain('Sera is the focus of this scene.');
+
+  // The fallback does not hand over everybody's secrets.
+  expect(first).toContain('false-bottomed drawer');
+  expect(first).not.toContain('skimming coin');
+  expect(first).not.toContain('tithe roll in the chapel');
+});
+
+test('a third character in the room is described without becoming a second speaker', async ({
+  page,
+}) => {
+  const ollama = await mockOllama(page, ['A reply.']);
+  await setupOllamaProvider(page);
+  await seedTavern(page, { withToma: true });
+
+  const system = await turn(page, ollama, 'Who keeps the ledger?');
+
+  expect(system).toMatch(/Present:.*Toma/);
+  expect(system).toContain('Toma keeps the Nexus Tavern');
+  // Only the responder's secret, however many people are present.
+  expect(system).toContain('false-bottomed drawer');
+  expect(system).not.toContain('skimming coin');
+  expect(system).not.toContain('sold the storm-glass');
+  expect((system.match(/is the focus of this scene\./g) ?? []).length).toBe(1);
+});
+
 /* ---------------------------------------------- branch-derived memory scope */
 
 test('the branch that lived the scene remembers it', async ({ page }) => {
@@ -418,6 +210,7 @@ test('the branch that lived the scene remembers it', async ({ page }) => {
   // m3 is on this branch, so the memory extracted from it applies.
   expect(system).toContain('Halda confessed to the theft in the cellar.');
   expect(system).toContain('Corin swore never to cross the Ashfell bridge again.');
+  expect(system).toContain('Sera swore the hearth oath in front of witnesses.');
 });
 
 test('a branch forked before the event does not remember it', async ({ page }) => {
@@ -431,7 +224,179 @@ test('a branch forked before the event does not remember it', async ({ page }) =
   // confession the app extracted from it.
   expect(system).not.toContain('Halda confessed to the theft in the cellar.');
 
-  // A memory the author wrote is theirs, not an observation about a timeline,
-  // so it is untouched. This is the line the scope rule must not cross.
+  // Pinning is retrieval priority, not a claim about which timeline something
+  // happened in. A pinned automatic memory from the abandoned branch stays
+  // gone — this is the line the locked semantics must not cross.
+  expect(system).not.toContain('Sera swore the hearth oath in front of witnesses.');
+
+  // Memories the author wrote or imported are theirs, not observations about a
+  // timeline, so they are untouched.
   expect(system).toContain('Corin swore never to cross the Ashfell bridge again.');
+  expect(system).toContain('The tavern sign was repainted the year of the flood.');
+
+  // A sibling chat's branch structure says nothing about this one's, so its
+  // memories must not be filtered out for lack of a message id here.
+  expect(system).toContain('A courier left a sealed writ at the door.');
+});
+
+test('an automatic memory whose source message is gone is dropped, not promoted', async ({
+  page,
+}) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedTavern(page, { activeBranchId: 'main' });
+
+  const system = await turn(page, ollama, 'What happened downstairs?');
+
+  // Nothing on any branch can show it happened, so it does not reach the
+  // model — and in particular it is not silently treated as a standing fact.
+  expect(system).not.toContain('Someone broke the shutter latch in the night.');
+
+  // It is still stored: this is a scoping rule, not a deletion.
+  const ids = await page.evaluate(
+    () =>
+      new Promise<string[]>((resolve) => {
+        const q = indexedDB.open('nexus-tavern-pro');
+        q.onsuccess = () => {
+          const all = q.result.transaction('memories', 'readonly').objectStore('memories').getAll();
+          all.onsuccess = () => resolve(all.result.map((m: any) => m.id));
+        };
+      }),
+  );
+  expect(ids).toContain('mem-dangling');
+});
+
+test('branch scope is applied before ranking, not after the shortlist is cut', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedTavern(page, { activeBranchId: 'alt' });
+  // Room for exactly one memory. The off-branch pinned+critical memory would
+  // win that slot on rank alone, so if scope were applied to the shortlist
+  // instead of to the candidates, the prompt would carry no memory at all.
+  await patchSettings(page, { maxMemories: 1 });
+  await goto(page, '#/chat/tavern-chat');
+
+  const system = await turn(page, ollama, 'What happened downstairs?');
+
+  expect(system).not.toContain('Sera swore the hearth oath in front of witnesses.');
+  expect(system).toMatch(
+    /Corin swore never to cross the Ashfell bridge again\.|The tavern sign was repainted the year of the flood\.|A courier left a sealed writ at the door\./,
+  );
+});
+
+/* ------------------------------------------- summary vs scene, and the tester */
+
+test('long-run standing and the scene right now are separate blocks', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedTavern(page);
+
+  // A summary that says where Sera stands over the whole story, and a scene
+  // that says what is true of her this minute.
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const now = Date.now();
+    await new Promise<void>((r) => {
+      const q = db
+        .transaction('storySummaries', 'readwrite')
+        .objectStore('storySummaries')
+        .put({
+          id: 'tavern-story',
+          storyId: 'tavern-story',
+          currentSummary: 'The storm has held the road shut for three nights.',
+          rollingSummary: '',
+          importantEvents: [],
+          relationshipState: '',
+          characterState: {
+            sera: 'Has stopped denying she sealed the cellar; wants the debt forgiven.',
+          },
+          locked: false,
+          coveredThroughOrder: -1,
+          lastGeneratedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        });
+      q.onsuccess = () => r();
+    });
+    const chat: any = await new Promise((r) => {
+      const q = db.transaction('chats', 'readonly').objectStore('chats').get('tavern-chat');
+      q.onsuccess = () => r(q.result);
+    });
+    chat.scene.characterStates = { sera: 'Bleeding from a cut above the eye.' };
+    await new Promise<void>((r) => {
+      const q = db.transaction('chats', 'readwrite').objectStore('chats').put(chat);
+      q.onsuccess = () => r();
+    });
+    db.close();
+  });
+  await page.reload();
+  await boot(page);
+  await goto(page, '#/chat/tavern-chat');
+
+  const system = await turn(page, ollama, 'Quiet tonight.');
+
+  // The volatile line is the scene's, and only the scene's.
+  const sceneBlock = system.slice(
+    system.indexOf('## Current scene'),
+    system.indexOf('## Who controls whom'),
+  );
+  expect(sceneBlock).toContain('- Sera: Bleeding from a cut above the eye.');
+
+  // The durable line is the summary's, under its own heading, and it does not
+  // restate where anyone is or what shape they are in.
+  const standingBlock = system.slice(system.indexOf('## Where each character stands'));
+  expect(standingBlock).toContain('Has stopped denying she sealed the cellar');
+  expect(standingBlock).not.toContain('Bleeding from a cut above the eye');
+
+  // Location, situation and objective stay the scene's alone.
+  expect(sceneBlock).toContain('Location: The common room of the Nexus Tavern');
+  expect(sceneBlock).toContain('Situation: The storm has kept everyone indoors');
+  expect(system.indexOf('## Current scene')).toBeLessThan(
+    system.indexOf('## Where each character stands'),
+  );
+
+  // No section is emitted twice: each present character is described once.
+  for (const name of ['Sera', 'Halda']) {
+    expect((system.match(new RegExp(`^# ${name}$`, 'gm')) ?? []).length).toBe(1);
+  }
+});
+
+test('the summary the model is asked to write is standing, not a scene report', async ({ page }) => {
+  const ollama = await mockOllama(page, ['{"currentSummary":"Nothing yet."}']);
+  await setupOllamaProvider(page);
+  await seedTavern(page);
+
+  await page.getByRole('button', { name: 'Chat menu' }).click();
+  await page.locator('.sheet').last().getByRole('button', { name: 'The story so far' }).click();
+  const before = ollama.utility.length;
+  await page.getByRole('button', { name: /^(Generate|Regenerate)$/ }).click();
+  await expect.poll(() => ollama.utility.length, { timeout: 25_000 }).toBeGreaterThan(before);
+
+  const sent = JSON.stringify(ollama.utility.at(-1)!.body);
+  expect(sent).toContain('where they stand and what they want');
+  expect(sent).toContain('Do not put their present location or physical condition here');
+  // The old contract asked for exactly what the scene already owns.
+  expect(sent).not.toContain('condition, location, goal');
+});
+
+test('the lorebook tester still judges a character-only entry on its own rules', async ({
+  page,
+}) => {
+  await mockOllama(page, ['Unused.']);
+  await setupOllamaProvider(page);
+  await seedTavern(page);
+
+  await goto(page, '#/settings');
+  await page.getByRole('tab', { name: 'Tools' }).click();
+  await page.getByRole('textbox', { name: 'Test text', exact: true }).fill('Show me the ledger.');
+
+  // In test mode every book counts as attached, so a character-only entry is
+  // judged on its keywords rather than on who happens to be replying — the
+  // tester has no responder to scope to.
+  await expect(page.getByText('The bar ledger').first()).toBeVisible();
+  await expect(page.getByText('The tithe roll').first()).toBeVisible();
+  await expect(page.getByText(/Keyword matched: ledger/).first()).toBeVisible();
 });
