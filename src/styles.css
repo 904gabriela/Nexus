@@ -1033,27 +1033,57 @@ textarea {
 /*
  * Atmosphere, not a backdrop.
  *
- * A full-bleed image behind a page of prose makes every line's contrast depend
- * on what happens to be under it. This one is anchored to the top and faded
- * out by a mask before the reading area starts, so the scene gets a sense of
- * place and the text keeps the flat page colour it was designed against.
+ * This used to be a full-bleed layer 380px tall behind the whole screen, faded
+ * by a mask measured against its own height rather than against where the
+ * transcript begins — so on a phone the first two replies, and their action
+ * icons, were rendered over hard-edged blocks of artwork.
+ *
+ * It now lives inside the header and fills exactly that box, which makes the
+ * overlap structurally impossible instead of tuned away. The blur removes the
+ * image's own edges, which read as broken layout rather than as a scene, and
+ * the scrim below carries the contrast so the title never depends on what the
+ * picture happens to be.
  */
 .chat-bg {
   position: absolute;
-  inset: 0 0 auto;
-  height: min(46vh, 380px);
+  inset: 0;
   background-size: cover;
-  background-position: center 30%;
-  opacity: 0.28;
+  background-position: center 42%;
+  opacity: 0.55;
+  /* Blur only. Scaling the element up to hide the blur's soft rim also grew
+     its box past the header that clips it, which put the artwork's rectangle
+     back over the transcript by a few pixels — exactly the overlap this
+     composition exists to prevent. The soft rim reads as a vignette anyway. */
+  filter: blur(9px) saturate(1.15);
   pointer-events: none;
   z-index: 0;
-  -webkit-mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.9), transparent 82%);
-  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.9), transparent 82%);
+}
+
+/*
+ * The scrim. Header text sits above this, so its contrast is a property of the
+ * page colours rather than of the artwork.
+ */
+.chat-bg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--bg-elevated) 58%, transparent),
+    color-mix(in srgb, var(--bg-elevated) 88%, transparent)
+  );
+}
+
+/* The header's own children have to paint above the art. */
+.chat-header > *:not(.chat-bg) {
+  position: relative;
+  z-index: 1;
 }
 
 .chat-header {
   position: relative;
   z-index: 2;
+  overflow: hidden;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2523,4 +2553,28 @@ mark {
   font-size: calc(13px * var(--font-scale));
   color: var(--text-dim);
   line-height: 1.55;
+}
+
+/*
+ * A control that reads as a link rather than a button. Already referenced by
+ * the touch-target rules; this is the base it never had.
+ */
+.link-button {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.qs-origin {
+  margin-top: 10px;
+  line-height: 1.5;
+}
+
+.qs-origin .chip {
+  margin-right: 4px;
 }

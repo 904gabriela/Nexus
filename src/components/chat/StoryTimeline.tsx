@@ -166,9 +166,12 @@ export function StoryTimeline({
   summary,
   activeChatId,
   onJump,
+  embedded,
 }: {
   open: boolean;
   onClose: () => void;
+  /** Render the body without its own sheet, for hosting inside the Story Map. */
+  embedded?: boolean;
   story: Story | null;
   /** Every chat in the story — the spine spans all of them, not just the open one. */
   chats: Chat[];
@@ -226,8 +229,8 @@ export function StoryTimeline({
 
   const recorded = summary?.importantEvents?.filter((e) => e.trim()) ?? [];
 
-  return (
-    <Sheet open={open} onClose={onClose} title="Story timeline" large>
+  const body = (
+    <>
       <p className="small muted">
         {story ? `Every landmark in “${story.title}”` : 'Every landmark in this chat'}, oldest first.
         Tap one to jump straight to that message.
@@ -308,6 +311,13 @@ export function StoryTimeline({
           </ul>
         </>
       )}
+    </>
+  );
+
+  if (embedded) return body;
+  return (
+    <Sheet open={open} onClose={onClose} title="Story timeline" large>
+      {body}
     </Sheet>
   );
 }

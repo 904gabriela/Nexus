@@ -13,7 +13,7 @@
  * chat's SceneState, the toggles live in Settings, and everything here reads
  * and writes those.
  */
-import type { Character, Chat, NarrationPreset, Settings } from '../../types';
+import type { Character, Chat, ID, NarrationPreset, Settings } from '../../types';
 import { Sheet } from '../ui/Sheet';
 import { Icon } from '../ui/Icon';
 import { Toggle } from '../ui/Field';
@@ -24,6 +24,13 @@ export interface QuickSettingsProps {
   open: boolean;
   onClose: () => void;
   chat: Chat;
+  /**
+   * The story's own selection. A chat inherits it until it overrides, so the
+   * panel needs both to say which is in force — the compiler's precedence is
+   * `chat ?? story ?? none`, and showing only the chat's value made a story
+   * preset look inactive while it was being sent.
+   */
+  storyPresetIds: ID[];
   /** The story's cast, so presence can be set from the people who exist. */
   cast: Character[];
   scene: ResolvedScene;
@@ -44,6 +51,7 @@ export function QuickSettings({
   open,
   onClose,
   chat,
+  storyPresetIds,
   cast,
   scene,
   settings,
@@ -58,8 +66,21 @@ export function QuickSettings({
   onOpenAdvanced,
 }: QuickSettingsProps) {
   const presets = availablePresets(settings.narrationPresets ?? []);
-  const selected = chat.narrationPresetIds ?? [];
 
+  /*
+   * Mirror the compiler exactly: `chat ?? story ?? none`. `null` on the chat
+   * means inherit; an empty array is a deliberate "no style at all", which is
+   * why the test is for null rather than for length.
+   */
+  const overridden = chat.narrationPresetIds != null;
+  const selected = overridden ? chat.narrationPresetIds! : storyPresetIds;
+
+  /*
+   * The first edit of an inherited selection starts from that selection rather
+   * than from nothing. Otherwise tapping one chip would silently drop
+   * everything the story had chosen — the edit would read as "add Cinematic"
+   * and behave as "replace the story's styles with Cinematic".
+   */
   const togglePreset = (preset: NarrationPreset) => {
     const on = selected.includes(preset.id);
     onPatchChat({
@@ -68,6 +89,9 @@ export function QuickSettings({
         : [...selected, preset.id],
     });
   };
+
+  /** Back to whatever the story says, now and in future. */
+  const useStoryPresets = () => onPatchChat({ narrationPresetIds: null });
 
   /**
    * Presence is stored, never inferred, so setting it is an explicit act.
@@ -120,6 +144,35 @@ export function QuickSettings({
             );
           })}
         </div>
+        {/*
+          Where the active selection came from. Without this the panel is
+          ambiguous in the one case that matters: styles are active, none of
+          them was chosen here, and nothing on screen says why.
+        */}
+        <p className="small muted qs-origin" style={{ marginBottom: 0 }}>
+          {overridden ? (
+            <>
+              <span className="chip">This chat</span>
+              {storyPresetIds.length ? (
+                <>
+                  {' '}Overriding the story’s selection.{' '}
+                  <button type="button" className="link-button" onClick={useStoryPresets}>
+                    Use story presets
+                  </button>
+                </>
+              ) : (
+                ' Set for this chat only.'
+              )}
+            </>
+          ) : selected.length ? (
+            <>
+              <span className="chip">From story</span> These come from the story and apply to every
+              chat in it. Changing one here affects only this chat.
+            </>
+          ) : (
+            'No style selected, here or on the story. The scene decides.'
+          )}
+        </p>
       </section>
 
       <section className="qs-section">

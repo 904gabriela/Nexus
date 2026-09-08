@@ -15,12 +15,19 @@ export function BranchPanel({
   chat,
   branches,
   messages,
+  embedded,
 }: {
   open: boolean;
   onClose: () => void;
   chat: Chat;
   branches: Branch[];
   messages: Message[];
+  /**
+   * Render the body without its own sheet, so the Story Map can host it as a
+   * tab. The panel is otherwise unchanged — same tree, same actions, same
+   * data — because there is only one branch view and this is it.
+   */
+  embedded?: boolean;
 }) {
   const actions = useActions();
   const confirm = useConfirm();
@@ -54,9 +61,8 @@ export function BranchPanel({
     actions.toast({ kind: 'success', title: 'Branch deleted' });
   };
 
-  return (
+  const body = (
     <>
-      <Sheet open={open} onClose={onClose} title="Timeline branches" large>
         <p className="small muted">
           Branching forks the conversation at a message. Every branch keeps the history it inherited
           and adds its own messages — the original timeline is never changed.
@@ -125,7 +131,18 @@ export function BranchPanel({
             );
           })}
         </div>
-      </Sheet>
+    </>
+  );
+
+  return (
+    <>
+      {embedded ? (
+        body
+      ) : (
+        <Sheet open={open} onClose={onClose} title="Timeline branches" large>
+          {body}
+        </Sheet>
+      )}
 
       {renaming && (
         <Sheet

@@ -444,9 +444,18 @@ export function StoryEditor({
         <button type="button" className="btn btn-ghost btn-icon" onClick={close} aria-label="Back">
           <Icon name="chevronLeft" />
         </button>
+        {/*
+          The story leads. "Edit Story" over the title framed the whole page as
+          a form for a record, when the first question anyone opens it with is
+          where their story currently stands — the fields below answer the
+          second question, not the first.
+        */}
         <h1>
-          {existing ? 'Edit Story' : 'New Story'}
-          <span className="subtitle">{draft.title || 'Untitled'}{dirty ? ' · unsaved' : ''}</span>
+          {existing ? draft.title || 'Untitled story' : 'New Story'}
+          <span className="subtitle">
+            {existing ? 'Story' : 'Set up the world, cast and opening'}
+            {dirty ? ' · unsaved' : ''}
+          </span>
         </h1>
         <button type="button" className="btn btn-primary btn-sm" onClick={save} disabled={saving}>
           {saving ? <span className="spinner" /> : <Icon name="save" />}
@@ -477,6 +486,7 @@ export function StoryEditor({
               cast={castCharacters}
               memories={state.memories.filter((m) => m.sourceStoryId === draft.id)}
               chatCount={state.chats.filter((c) => c.storyId === draft.id).length}
+              saved={Boolean(existing)}
               onOpenChat={onOpenChat}
             />
             <TextField
@@ -1064,15 +1074,19 @@ function StoryStanding({
   cast,
   memories,
   chatCount,
+  saved,
   onOpenChat,
 }: {
   story: Story;
+  /** False while the story is new and unsaved — nothing to continue yet. */
+  saved: boolean;
   cast: Character[];
   memories: Memory[];
   chatCount: number;
   onOpenChat: (chatId: string) => void;
 }) {
   const state = useAppState();
+  const actions = useActions();
   const stateBlock = story.state ?? emptyStoryState();
   const threads = (stateBlock.threads ?? []).filter(Boolean);
   const recent = memories
@@ -1091,33 +1105,38 @@ function StoryStanding({
     ['Working towards', stateBlock.objective],
   ].filter(([, value]) => Boolean(value?.trim())) as Array<[string, string]>;
 
-  // A story with nothing in it yet has nothing to stand on; the form below is
-  // the whole of what it needs, and an empty panel above it is just furniture.
-  if (!cast.length && !facts.length && !recent.length && !chatCount) return null;
+  // A story that has never been saved cannot be opened as a chat and has
+  // nothing to stand on yet, so the form below is the whole of what it needs.
+  if (!saved) return null;
 
   return (
     <section className="story-standing">
+      {/*
+        No title here — the page header above carries it, and repeating it
+        directly over a Title field was the clearest sign that this page was
+        still a form wearing a summary.
+      */}
       <div className="row row-between row-wrap" style={{ gap: 8, marginBottom: 10 }}>
-        <div style={{ minWidth: 0 }}>
-          <h2 className="story-standing-title">{story.title || 'Untitled story'}</h2>
-          <p className="small muted" style={{ margin: 0 }}>
-            {chatCount
-              ? `${chatCount} chat${chatCount === 1 ? '' : 's'}`
-              : 'No chats yet'}
-            {cast.length ? ` · ${cast.length} in the cast` : ''}
-            {waiting ? ` · ${waiting} memor${waiting === 1 ? 'y' : 'ies'} to review` : ''}
-          </p>
-        </div>
-        {latestChat && (
-          <button
-            type="button"
-            className="btn btn-sm btn-primary"
-            onClick={() => onOpenChat(latestChat.id)}
-          >
-            <Icon name="chat" />
-            Continue
-          </button>
-        )}
+        <p className="small muted" style={{ margin: 0, minWidth: 0 }}>
+          {chatCount ? `${chatCount} chat${chatCount === 1 ? '' : 's'}` : 'No chats yet'}
+          {cast.length ? ` · ${cast.length} in the cast` : ''}
+          {waiting ? ` · ${waiting} memor${waiting === 1 ? 'y' : 'ies'} to review` : ''}
+        </p>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={async () => {
+            if (latestChat) {
+              onOpenChat(latestChat.id);
+              return;
+            }
+            const chat = await actions.createChat({ storyId: story.id });
+            onOpenChat(chat.id);
+          }}
+        >
+          <Icon name="chat" />
+          {latestChat ? 'Continue story' : 'Start the story'}
+        </button>
       </div>
 
       {!!cast.length && (

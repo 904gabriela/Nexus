@@ -10,11 +10,12 @@ import {
 import { useGeneration, chatDisplayTitle, speakerFor } from '../hooks/useGeneration';
 import { MessageItem, type QuickAction } from '../components/chat/MessageItem';
 import { ContextInspector } from '../components/chat/ContextInspector';
-import { BranchPanel, CheckpointPanel } from '../components/chat/BranchPanel';
+import { CheckpointPanel } from '../components/chat/BranchPanel';
 import { ImageGenPanel } from '../components/chat/ImageGenPanel';
 import { AiSummarySheet } from '../components/chat/AiSummarySheet';
 import { StorySummarySheet } from '../components/chat/StorySummarySheet';
-import { StoryTimeline, type JumpTarget } from '../components/chat/StoryTimeline';
+import { type JumpTarget } from '../components/chat/StoryTimeline';
+import { StoryMap } from '../components/chat/StoryMap';
 import { ResponseSettingsSheet } from '../components/chat/ResponseSettingsSheet';
 import { QuickSettings } from '../components/chat/QuickSettings';
 import { resolveScene } from '../context/scene';
@@ -193,7 +194,8 @@ export function ChatPage({
   const [chatMenu, setChatMenu] = useState(false);
   const [responseSettings, setResponseSettings] = useState(false);
   const [showContext, setShowContext] = useState(false);
-  const [showBranches, setShowBranches] = useState(false);
+  const [storyMapTab, setStoryMapTab] = useState<'branches' | 'timeline'>('branches');
+  const [showStoryMap, setShowStoryMap] = useState(false);
   const [showCheckpoints, setShowCheckpoints] = useState(false);
   const [checkpointFor, setCheckpointFor] = useState<Message | null>(null);
   const [checkpointName, setCheckpointName] = useState('');
@@ -213,7 +215,7 @@ export function ChatPage({
   const [aiSummary, setAiSummary] = useState(false);
   const [storySummary, setStorySummary] = useState(false);
   const [newChatFrom, setNewChatFrom] = useState<Message | null>(null);
-  const [showTimeline, setShowTimeline] = useState(false);
+
   const [quickSettings, setQuickSettings] = useState(false);
   const [pendingJump, setPendingJump] = useState<JumpTarget | null>(null);
   const [highlighted, setHighlighted] = useState<ID | null>(null);
@@ -447,7 +449,7 @@ export function ChatPage({
 
   const jumpToMessage = useCallback(
     (target: JumpTarget) => {
-      setShowTimeline(false);
+      setShowStoryMap(false);
       pendingJumpRef.current = target;
       setPendingJump(target);
       if (target.chatId !== state.activeChatId) navigate('chat', target.chatId);
@@ -711,16 +713,21 @@ export function ChatPage({
 
   return (
     <div className="chat-screen">
-      {/*
-        Whatever artwork the story already has, in order of how deliberate it
-        is: a background was chosen to be one, a cover was chosen to represent
-        the story, an avatar is at least the right face. It is atmosphere only
-        — the gradient fades it out well above the prose, so nothing about
-        legibility depends on which image, or whether there is one at all.
-      */}
-      {sceneArtMediaId && <ChatBackground mediaId={sceneArtMediaId} />}
-
       <header className="chat-header">
+        {/*
+          Whatever artwork the story already has, in order of how deliberate it
+          is: a background was chosen to be one, a cover was chosen to
+          represent the story, an avatar is at least the right face.
+
+          It lives inside the header rather than behind the whole screen. As a
+          full-bleed backdrop it ran 380px down the page and the first two
+          replies were rendered over hard-edged blocks of it — the fade was
+          measured against the image's own height, not against where the prose
+          starts. Bounding it to the header makes the overlap impossible rather
+          than merely unlikely, and the scrim underneath means the title's
+          contrast never depends on which image it is.
+        */}
+        {sceneArtMediaId && <ChatBackground mediaId={sceneArtMediaId} />}
         <button
           type="button"
           className="btn btn-ghost btn-icon"
@@ -757,7 +764,10 @@ export function ChatPage({
         <button
           type="button"
           className="btn btn-ghost btn-icon"
-          onClick={() => setShowTimeline(true)}
+          onClick={() => {
+            setStoryMapTab('branches');
+            setShowStoryMap(true);
+          }}
           aria-label="Story map"
           title="Story map"
         >
@@ -1001,6 +1011,7 @@ export function ChatPage({
         open={quickSettings}
         onClose={() => setQuickSettings(false)}
         chat={activeChat}
+        storyPresetIds={gen.story?.narrationPresetIds ?? []}
         cast={gen.characters}
         scene={scene}
         settings={state.settings}
@@ -1094,17 +1105,18 @@ export function ChatPage({
         />
       )}
 
-      <BranchPanel
-        open={showBranches}
-        onClose={() => setShowBranches(false)}
+      {/*
+        One surface for both views. The ⋯ menu's Branches and Story timeline
+        entries open it on the tab they name, so nothing that used to be
+        reachable stopped being reachable.
+      */}
+      <StoryMap
+        initialTab={storyMapTab}
+        open={showStoryMap}
+        onClose={() => setShowStoryMap(false)}
         chat={activeChat}
         branches={state.branches}
         messages={state.messages}
-      />
-
-      <StoryTimeline
-        open={showTimeline}
-        onClose={() => setShowTimeline(false)}
         story={gen.story}
         chats={storyChats}
         summary={gen.summary ?? null}
@@ -1153,14 +1165,20 @@ export function ChatPage({
               ? 'Every landmark in this story, oldest first.'
               : 'Every landmark in this chat, oldest first.',
             icon: 'clock',
-            onSelect: () => setShowTimeline(true),
+            onSelect: () => {
+              setStoryMapTab('timeline');
+              setShowStoryMap(true);
+            },
           },
           {
             key: 'branches',
             label: 'Branches',
             description: `${branchCount} timeline${branchCount === 1 ? '' : 's'}`,
             icon: 'branch',
-            onSelect: () => setShowBranches(true),
+            onSelect: () => {
+              setStoryMapTab('branches');
+              setShowStoryMap(true);
+            },
           },
           {
             key: 'checkpoints',

@@ -194,10 +194,21 @@ test('older messages are still reachable by scrolling back', async ({ page }) =>
     () => {
       const el = document.querySelector('.chat-scroll');
       if (!el) return false;
-      const w = window as unknown as { __lastTop?: number; __stable?: number };
-      const settled = el.scrollTop === w.__lastTop;
+      const w = window as unknown as {
+        __lastTop?: number;
+        __lastHeight?: number;
+        __stable?: number;
+      };
+      // Scroll position alone is not enough. Messages are windowed with
+      // content-visibility, so their real heights are only measured as they
+      // come into view — the content keeps growing under a scrollTop that has
+      // already stopped moving, and the click then lands on whichever message
+      // is still shifting. Waiting for the height as well waits for the thing
+      // that actually intercepts it.
+      const settled = el.scrollTop === w.__lastTop && el.scrollHeight === w.__lastHeight;
       w.__stable = settled ? (w.__stable ?? 0) + 1 : 0;
       w.__lastTop = el.scrollTop;
+      w.__lastHeight = el.scrollHeight;
       return (w.__stable ?? 0) >= 3;
     },
     undefined,
