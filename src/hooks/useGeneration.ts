@@ -25,7 +25,12 @@ import {
   useStore,
 } from '../state/store';
 import { maybeCreateAutoMemory } from '../memory/autoMemory';
-import { acceptMemory, applyRelationshipImpacts, memoryStatus } from '../memory/matrix';
+import {
+  acceptMemory,
+  applyDiscoveries,
+  applyRelationshipImpacts,
+  memoryStatus,
+} from '../memory/matrix';
 import {
   applyDraft,
   generateStorySummary,
@@ -312,7 +317,7 @@ export function useGeneration() {
       if (assistantCount > 0 && assistantCount % current.settings.autoMemoryEvery === 0) {
         try {
           const exchange = line.slice(-2);
-          const { results, readable } = await maybeCreateAutoMemory({
+          const { results, discovered, readable } = await maybeCreateAutoMemory({
             messages: exchange.map((m) => ({ ...m, content: contentOf(m) })),
             characters: currentCharacters,
             persona: currentPersona,
@@ -372,13 +377,33 @@ export function useGeneration() {
             });
           }
 
-          // A beat that moved two people is also a change to where they stand.
+          // A beat that moved two people is also a change to where they stand,
+          // and a name the story invented is someone the cast may want. Both
+          // land on the story, so they are folded in one write.
           if (currentStory) {
-            const updated = applyRelationshipImpacts(
-              currentStory,
-              results.map((r) => r.memory),
+            const withRelationships =
+              applyRelationshipImpacts(
+                currentStory,
+                results.map((r) => r.memory),
+              ) ?? currentStory;
+            const withDiscoveries = applyDiscoveries(
+              withRelationships,
+              discovered,
+              current.characters,
             );
-            if (updated) await actions.saveStory(updated);
+            const updated = withDiscoveries ?? withRelationships;
+            if (updated !== currentStory) await actions.saveStory(updated);
+
+            const added = (withDiscoveries?.discovered?.length ?? 0) -
+              (currentStory.discovered?.length ?? 0);
+            if (added > 0) {
+              actions.toast({
+                kind: 'info',
+                title: added === 1 ? 'Someone new was named' : `${added} new people were named`,
+                detail:
+                  'They are not in the cast — the story just mentioned them. Add or dismiss them under the story’s Cast tab.',
+              });
+            }
           }
         } catch {
           // Automatic memory is an assist, never a hard requirement.

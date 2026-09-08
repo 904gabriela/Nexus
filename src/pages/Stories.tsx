@@ -1,7 +1,13 @@
 import { useMemo, useState } from 'react';
-import type { Character, Relationship, Story, StoryCharacterLink } from '../types';
+import type {
+  Character,
+  DiscoveredPerson,
+  Relationship,
+  Story,
+  StoryCharacterLink,
+} from '../types';
 import { emptyStoryState } from '../types';
-import { newStory } from '../types/factories';
+import { newCharacter, newStory } from '../types/factories';
 import { uid } from '../utils/uid';
 import { generateOpeningScene } from '../ai/openingScene';
 import { availablePresets } from '../narration/presets';
@@ -683,6 +689,25 @@ export function StoryEditor({
               personaId={draft.personaId}
               onPersonaChange={(personaId) => patch({ personaId })}
             />
+            <DiscoveredPeople
+              discovered={draft.discovered ?? []}
+              onChange={(discovered) => patch({ discovered })}
+              onAddToCast={(person) => {
+                const character = newCharacter({
+                  name: person.name,
+                  shortDescription: person.note,
+                });
+                void actions.saveCharacter(character).then(() => {
+                  setCharacters([
+                    ...draft.characters,
+                    { characterId: character.id, primary: false, note: '', enabled: true },
+                  ]);
+                });
+                patch({
+                  discovered: (draft.discovered ?? []).filter((p) => p.id !== person.id),
+                });
+              }}
+            />
             <RelationshipEditor
               relationships={draft.relationships ?? []}
               onChange={(relationships) => patch({ relationships })}
@@ -1008,6 +1033,79 @@ function CastEditor({
         }))}
       />
     </>
+  );
+}
+
+/**
+ * People the story named who are not in the cast.
+ *
+ * The extractor notices them; this is where a person decides. Most names a
+ * story invents should stay names — a courier, a sister who never appears — so
+ * the default is that nothing happens, and adding one to the cast is a
+ * deliberate act rather than something that happened while you were reading.
+ */
+function DiscoveredPeople({
+  discovered,
+  onChange,
+  onAddToCast,
+}: {
+  discovered: DiscoveredPerson[];
+  onChange: (discovered: DiscoveredPerson[]) => void;
+  onAddToCast: (person: DiscoveredPerson) => void;
+}) {
+  const pending = discovered.filter((p) => !p.dismissed);
+  if (!pending.length) return null;
+
+  return (
+    <section className="section">
+      <h3 className="section-title">
+        Named in the story
+        <span className="chip">{pending.length}</span>
+      </h3>
+      <p className="small muted" style={{ marginBottom: 8 }}>
+        The story mentioned these people and they are not in the cast. Add the ones who matter;
+        the rest can be dismissed and will not be offered again.
+      </p>
+      <div className="stack">
+        {pending.map((person) => (
+          <div className="card" key={person.id}>
+            <div className="row row-between" style={{ gap: 8 }}>
+              <div style={{ minWidth: 0 }}>
+                <strong className="truncate">{person.name}</strong>
+                {person.note && (
+                  <div className="small muted" style={{ marginTop: 2 }}>
+                    {person.note}
+                  </div>
+                )}
+              </div>
+              <div className="row" style={{ gap: 6, flexShrink: 0 }}>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  onClick={() => onAddToCast(person)}
+                >
+                  Add to cast
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  aria-label={`Dismiss ${person.name}`}
+                  onClick={() =>
+                    onChange(
+                      discovered.map((p) =>
+                        p.id === person.id ? { ...p, dismissed: true, updatedAt: Date.now() } : p,
+                      ),
+                    )
+                  }
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

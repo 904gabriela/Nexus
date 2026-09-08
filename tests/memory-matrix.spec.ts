@@ -483,3 +483,126 @@ test('extraction never overwrites a relationship someone wrote by hand', async (
     'She has been letting them drink on credit for a year.',
   );
 });
+
+/* ================================================ automatic character discovery */
+
+test('a person the story names is offered to the cast, not added to it', async ({ page }) => {
+  const ollama = await mockOllama(
+    page,
+    [
+      'Sera sets down the glass. "Halda will not come through in this," she says.',
+      JSON.stringify({
+        changes: [
+          {
+            title: 'The road is shut',
+            content: 'The caravan road is shut until the storm passes.',
+            category: 'World',
+            subjects: ['Sera'],
+            basis: 'observed',
+            confidence: 0.9,
+            importance: 'normal',
+            relationship: null,
+          },
+        ],
+        newPeople: [
+          { name: 'Halda', note: 'The caravan master, expected through the pass.' },
+          // Neither of these is a person, and both are what a model reaches
+          // for when it feels obliged to fill the list.
+          { name: 'Narrator', note: 'The narrator.' },
+          { name: 'Sera', note: 'The innkeeper.' },
+        ],
+      }),
+    ],
+    8192,
+  );
+  await setupOllamaProvider(page);
+  await seedFixtures(page);
+  await enableAutoMemoryEveryTurn(page);
+
+  await sendTurn(page, ollama, 'Promise me the road stays open.');
+
+  await expect
+    .poll(
+      async () => (await readStore<any>(page, 'stories'))[0].discovered?.length ?? 0,
+      { timeout: 40_000 },
+    )
+    .toBe(1);
+
+  const story = (await readStore<any>(page, 'stories'))[0];
+  expect(story.discovered[0].name).toBe('Halda');
+  expect(story.discovered[0].dismissed).toBe(false);
+  // Discovering is not creating: the library is untouched until someone says so.
+  const characters = await readStore<any>(page, 'characters');
+  expect(characters.map((c: any) => c.name)).toEqual(['Sera']);
+
+  // And it is offered where the cast is decided.
+  await goto(page, '#/stories');
+  await page.getByRole('button', { name: 'Edit' }).first().click();
+  await page.getByRole('tab', { name: 'Cast' }).click();
+  await expect(page.getByText('Named in the story')).toBeVisible();
+  await expect(page.getByText('The caravan master, expected through the pass.')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Add to cast' }).click();
+  await page.getByRole('button', { name: 'Save' }).first().click();
+  await expect(page.getByText(/^Saved /).first()).toBeVisible({ timeout: 15_000 });
+
+  await expect
+    .poll(async () => (await readStore<any>(page, 'characters')).length, { timeout: 15_000 })
+    .toBe(2);
+  const after = (await readStore<any>(page, 'stories'))[0];
+  expect(after.discovered).toHaveLength(0);
+  expect(after.characters).toHaveLength(2);
+});
+
+test('someone already dismissed is not offered again', async ({ page }) => {
+  const ollama = await mockOllama(
+    page,
+    [
+      'Sera shrugs. "Halda knows the road."',
+      JSON.stringify({
+        changes: [],
+        newPeople: [{ name: 'Halda', note: 'The caravan master.' }],
+      }),
+    ],
+    8192,
+  );
+  await setupOllamaProvider(page);
+  await seedFixtures(page);
+
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('nexus-tavern-pro');
+      q.onsuccess = () => r(q.result);
+    });
+    const story: any = await new Promise((r) => {
+      const q = db.transaction('stories', 'readonly').objectStore('stories').get('s1');
+      q.onsuccess = () => r(q.result);
+    });
+    story.discovered = [
+      {
+        id: 'disc-halda',
+        name: 'Halda',
+        note: 'The caravan master.',
+        sourceMessageIds: [],
+        dismissed: true,
+        updatedAt: Date.now(),
+      },
+    ];
+    await new Promise<void>((r) => {
+      const q = db.transaction('stories', 'readwrite').objectStore('stories').put(story);
+      q.onsuccess = () => r();
+    });
+    db.close();
+  });
+  await page.reload();
+  await boot(page);
+  await enableAutoMemoryEveryTurn(page);
+
+  await sendTurn(page, ollama, 'Promise me the road stays open.');
+
+  // Give the upkeep pass time to run before concluding nothing was added.
+  await page.waitForTimeout(4000);
+  const story = (await readStore<any>(page, 'stories'))[0];
+  expect(story.discovered).toHaveLength(1);
+  expect(story.discovered[0].dismissed).toBe(true);
+});

@@ -14,6 +14,7 @@
 import type {
   AutoMemoryTrigger,
   Character,
+  DiscoveredPerson,
   Memory,
   MemoryCategory,
   Message,
@@ -149,9 +150,13 @@ export interface AutoMemoryResult {
  */
 export async function maybeCreateAutoMemory(
   input: AutoMemoryInput,
-): Promise<{ results: AutoMemoryResult[]; readable: boolean }> {
+): Promise<{
+  results: AutoMemoryResult[];
+  discovered: DiscoveredPerson[];
+  readable: boolean;
+}> {
   const { settings } = input;
-  const nothing = { results: [], readable: true };
+  const nothing = { results: [], discovered: [], readable: true };
   if (!settings.autoMemory) return nothing;
 
   const hits = detectTriggers(input.messages, settings.autoMemoryTriggers);
@@ -178,6 +183,7 @@ export async function maybeCreateAutoMemory(
       hit,
       reason,
     })),
+    discovered: extracted.discovered,
     readable: extracted.readable,
   };
 }

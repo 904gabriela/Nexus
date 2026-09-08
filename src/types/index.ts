@@ -400,6 +400,26 @@ export interface NarrationPreset {
   builtIn: boolean;
 }
 
+/**
+ * Someone the story named who has no character record.
+ *
+ * The story invents people constantly — a courier, a name dropped in an
+ * argument, a sister who never appears. Most of them should stay names. This
+ * records the ones the extractor noticed so a person can decide, rather than
+ * silently creating characters nobody asked for.
+ */
+export interface DiscoveredPerson {
+  id: ID;
+  name: string;
+  /** What the story has said about them so far, in a line. */
+  note: string;
+  /** Where they were first named, so the claim can be checked. */
+  sourceMessageIds: ID[];
+  /** Turned down. Kept so the same name is not proposed again. */
+  dismissed: boolean;
+  updatedAt: number;
+}
+
 export interface Story extends Timestamped {
   id: ID;
   title: string;
@@ -427,6 +447,16 @@ export interface Story extends Timestamped {
   state: StoryState;
   /** How the cast stand with each other and with the persona. */
   relationships: Relationship[];
+  /**
+   * People the story has named who are not in the cast yet.
+   *
+   * Optional: a story saved before this existed simply has none. Kept on the
+   * story rather than written straight into the character library, because a
+   * name the story mentioned once is not yet a character — turning every
+   * passing innkeeper into a library entry is how the library becomes
+   * unusable.
+   */
+  discovered?: DiscoveredPerson[];
   authorNote: string;
   /**
    * The message a new chat opens with. Takes precedence over the primary

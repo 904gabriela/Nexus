@@ -28,6 +28,7 @@
 
 import type {
   Character,
+  DiscoveredPerson,
   ID,
   Memory,
   MemoryBasis,
@@ -85,7 +86,16 @@ export function isUsable(memory: Memory): boolean {
 
 const EXTRACT_SYSTEM = `You watch a roleplay and record only what CHANGED in the latest exchange.
 
-Return ONLY a JSON array, no prose around it. Each item:
+Return ONLY a JSON object, no prose around it, of the form:
+{"changes": [...], "newPeople": [...]}
+
+"newPeople" lists anyone NAMED in the exchange who is not in the cast you were
+given, as {"name": string, "note": one short line on who they are}. Include a
+person only if they were named. Do not include the cast, do not include the
+narrator, and do not invent a name for someone the text left unnamed. An empty
+list is the usual answer.
+
+Each item of "changes":
 {"title": string (max 60 chars),
  "content": string (1-2 short factual sentences, third person),
  "category": one of ["Plot","Event","Character","Relationship","World","Location","Item","Preference","System","Other"],
@@ -146,18 +156,48 @@ function transcript(input: ExtractionInput): string {
     .join('\n\n');
 }
 
-function extractJsonArray(text: string): unknown[] | null {
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
-  const candidate = fenced ? fenced[1] : text;
-  const start = candidate.indexOf('[');
-  const end = candidate.lastIndexOf(']');
+interface ExtractionPayload {
+  changes: unknown[];
+  newPeople: unknown[];
+}
+
+function slice(text: string, open: string, close: string): unknown | null {
+  const start = text.indexOf(open);
+  const end = text.lastIndexOf(close);
   if (start === -1 || end <= start) return null;
   try {
-    const parsed: unknown = JSON.parse(candidate.slice(start, end + 1));
-    return Array.isArray(parsed) ? parsed : null;
+    return JSON.parse(text.slice(start, end + 1)) as unknown;
   } catch {
     return null;
   }
+}
+
+/**
+ * Reads the extractor's answer.
+ *
+ * The requested shape is an object with two lists, but a smaller model asked
+ * for changes very often returns just the changes as a bare array. That answer
+ * is complete and correct as far as it goes, so it is read rather than thrown
+ * away — the alternative is discarding good work over a wrapper.
+ */
+function readExtraction(text: string): ExtractionPayload | null {
+  const candidate = /```(?:json)?\s*([\s\S]*?)```/i.exec(text)?.[1] ?? text;
+
+  const object = slice(candidate, '{', '}');
+  if (object && typeof object === 'object' && !Array.isArray(object)) {
+    const record = object as Record<string, unknown>;
+    if (Array.isArray(record.changes) || Array.isArray(record.newPeople)) {
+      return {
+        changes: Array.isArray(record.changes) ? record.changes : [],
+        newPeople: Array.isArray(record.newPeople) ? record.newPeople : [],
+      };
+    }
+  }
+
+  const array = slice(candidate, '[', ']');
+  if (Array.isArray(array)) return { changes: array, newPeople: [] };
+
+  return null;
 }
 
 const IMPORTANCES: MemoryImportance[] = ['low', 'normal', 'high', 'critical'];
@@ -270,6 +310,8 @@ export interface ExtractedMemory {
 
 export interface ExtractionResult {
   memories: ExtractedMemory[];
+  /** People the exchange named who have no character record. */
+  discovered: DiscoveredPerson[];
   /**
    * False when the model's answer could not be read as the requested JSON.
    *
@@ -291,9 +333,19 @@ export interface ExtractionResult {
  * run that records nothing is the common case rather than a failure.
  */
 export async function extractMemories(input: ExtractionInput): Promise<ExtractionResult> {
-  const nothing: ExtractionResult = { memories: [], readable: true };
+  const nothing: ExtractionResult = { memories: [], discovered: [], readable: true };
   if (!input.messages.length) return nothing;
   if (!input.provider || !input.provider.model) return nothing;
+
+  // The cast is named so the extractor can tell an existing character from
+  // someone new. Without it every reply "discovers" the people already in the
+  // room.
+  const known = [
+    ...input.characters.map((c) => c.displayName || c.name),
+    input.persona ? input.persona.displayName || input.persona.name : '',
+  ]
+    .map((n) => n.trim())
+    .filter(Boolean);
 
   const reply = await complete({
     // Background work: it must never displace the roleplay request in the
@@ -304,12 +356,19 @@ export async function extractMemories(input: ExtractionInput): Promise<Extractio
     settings: { temperature: 0.2, maxTokens: 700, streaming: false },
     messages: [
       { role: 'system', content: EXTRACT_SYSTEM },
-      { role: 'user', content: `Latest exchange:\n\n${truncate(transcript(input), 8000)}` },
+      {
+        role: 'user',
+        content: [
+          `Cast (already known): ${known.length ? known.join(', ') : 'nobody yet'}`,
+          '',
+          `Latest exchange:\n\n${truncate(transcript(input), 8000)}`,
+        ].join('\n'),
+      },
     ],
   });
 
-  const rows = extractJsonArray(reply);
-  if (!rows) return { memories: [], readable: false };
+  const payload = readExtraction(reply);
+  if (!payload) return { memories: [], discovered: [], readable: false };
 
   const cast = input.characters;
   const results: ExtractedMemory[] = [];
@@ -317,7 +376,7 @@ export async function extractMemories(input: ExtractionInput): Promise<Extractio
   // other, so one run cannot emit the same beat twice.
   const seen = [...input.existing];
 
-  for (const row of rows) {
+  for (const row of payload.changes) {
     const parsed = toMemory(row, input, cast);
     if (!parsed) continue;
     if (seen.some((existing) => isSameBeat(parsed, existing))) continue;
@@ -344,7 +403,112 @@ export async function extractMemories(input: ExtractionInput): Promise<Extractio
     });
   }
 
-  return { memories: results, readable: true };
+  return {
+    memories: results,
+    discovered: toDiscoveries(payload.newPeople, input),
+    readable: true,
+  };
+}
+
+/**
+ * Turns the extractor's `newPeople` into records worth showing.
+ *
+ * The filtering here is the whole feature. A model asked "who is new" will
+ * cheerfully answer with the narrator, a title, a species, or somebody already
+ * in the room, and every one of those becomes a prompt the user has to dismiss.
+ * Anything that resolves to somebody known is dropped, and so is anything that
+ * does not look like a name.
+ */
+function toDiscoveries(rows: unknown[], input: ExtractionInput): DiscoveredPerson[] {
+  const at = Date.now();
+  const out: DiscoveredPerson[] = [];
+  const taken = new Set<string>();
+
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const record = row as Record<string, unknown>;
+    const name = String(record.name ?? '').trim();
+    if (!isPlausibleName(name)) continue;
+
+    const key = name.toLowerCase();
+    if (taken.has(key)) continue;
+    // Already someone the app knows: not a discovery.
+    if (resolveName(name, input.characters, input.persona)) continue;
+
+    taken.add(key);
+    out.push({
+      id: uid('disc_'),
+      name,
+      note: truncate(String(record.note ?? '').trim(), 200),
+      sourceMessageIds: input.messages.map((m) => m.id),
+      dismissed: false,
+      updatedAt: at,
+    });
+  }
+
+  return out;
+}
+
+/**
+ * Words the model reaches for when it has nobody to report but feels obliged
+ * to fill the list. None of them is a person.
+ */
+const NOT_A_NAME = new Set([
+  'narrator',
+  'nobody',
+  'none',
+  'unknown',
+  'unnamed',
+  'someone',
+  'stranger',
+  'user',
+  'character',
+  'the narrator',
+  'n/a',
+]);
+
+function isPlausibleName(name: string): boolean {
+  if (name.length < 2 || name.length > 60) return false;
+  if (NOT_A_NAME.has(name.toLowerCase())) return false;
+  // A name, not a sentence about one. Four words is generous for "Sera of the
+  // Ashfell Road" and still excludes a description.
+  if (name.split(/\s+/).length > 4) return false;
+  return /\p{Lu}/u.test(name);
+}
+
+/**
+ * Records newly named people on the story.
+ *
+ * Never re-proposes: a name already discovered, already dismissed, or already
+ * in the cast is skipped, so the same courier does not reappear every few
+ * turns. Returns null when nothing is new, so the caller can skip the write.
+ */
+export function applyDiscoveries(
+  story: Story,
+  discovered: DiscoveredPerson[],
+  characters: Character[],
+): Story | null {
+  if (!discovered.length) return null;
+
+  const existing = story.discovered ?? [];
+  const seen = new Set(existing.map((p) => p.name.trim().toLowerCase()));
+  // The story's own cast, by name — a character can be added to the cast by
+  // hand between one discovery and the next.
+  const castIds = new Set(story.characters.map((link) => link.characterId));
+  for (const character of characters) {
+    if (!castIds.has(character.id)) continue;
+    seen.add(character.name.trim().toLowerCase());
+    if (character.displayName) seen.add(character.displayName.trim().toLowerCase());
+  }
+
+  const fresh = discovered.filter((person) => !seen.has(person.name.trim().toLowerCase()));
+  if (!fresh.length) return null;
+
+  return {
+    ...story,
+    discovered: [...existing, ...fresh],
+    updatedAt: Date.now(),
+  };
 }
 
 function toMemory(
@@ -438,13 +602,6 @@ function toRelationshipImpact(
 /* ------------------------------------------------------------- accepting */
 
 /**
- * Accepting a proposed memory is what makes its supersessions real.
- *
- * Returns every memory that needs saving: the accepted one, and the ones it
- * replaces. The replaced ones are marked, never deleted — a superseded memory
- * is still the record of what the story believed at the time.
- */
-/**
  * Folds relationship changes from committed memories into the story.
  *
  * Only memories that actually committed count: a proposal is not yet something
@@ -503,6 +660,13 @@ function samePair(a: [ID, ID], b: [ID, ID]): boolean {
   return (a[0] === b[0] && a[1] === b[1]) || (a[0] === b[1] && a[1] === b[0]);
 }
 
+/**
+ * Accepting a proposed memory is what makes its supersessions real.
+ *
+ * Returns every memory that needs saving: the accepted one, and the ones it
+ * replaces. The replaced ones are marked, never deleted — a superseded memory
+ * is still the record of what the story believed at the time.
+ */
 export function acceptMemory(memory: Memory, all: Memory[]): Memory[] {
   const at = Date.now();
   const replaced = memorySupersedes(memory)
