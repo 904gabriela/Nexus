@@ -1337,6 +1337,35 @@ function RelationshipEditor({
         <div className="stack">
           {relationships.map((r) => (
             <div className="card" key={r.id}>
+              {/*
+                Nothing writes an automatic row here any more — the story's own
+                conclusions are RelationshipDeltas now, resolved per branch and
+                undoable from the chat. So a row that is not `manual` was
+                written by the old extractor, before any of that was recorded,
+                and there is no way to work out afterwards which turns it came
+                from or which timeline it belonged to. It is left exactly as it
+                is rather than quietly deleted — it may well be true — but it is
+                said plainly, because it behaves differently from everything
+                written since.
+              */}
+              {!r.manual && (
+                <p className="small muted" style={{ margin: '0 0 10px' }}>
+                  The story wrote this before Nexus recorded which turns a change came from, so it
+                  shows on every branch and cannot be undone from a chat. Editing it makes it
+                  yours, or{' '}
+                  <button
+                    type="button"
+                    className="btn-link"
+                    onClick={() => patchOne(r.id, {})}
+                    aria-label={`Keep the relationship between ${nameOf(r.betweenIds[0])} and ${nameOf(
+                      r.betweenIds[1],
+                    )} as written`}
+                  >
+                    keep it as written
+                  </button>
+                  . Remove it and the story can say so again as it goes.
+                </p>
+              )}
               <div className="field-row field-row-2">
                 <SelectField
                   label="Between"

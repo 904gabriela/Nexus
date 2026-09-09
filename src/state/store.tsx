@@ -1062,6 +1062,18 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         });
       },
 
+      /**
+       * A copy is a new timeline, not a continuation of the old one.
+       *
+       * Messages, branches and alternatives are copied under fresh ids; the
+       * derived layers — scene changes and relationship changes — deliberately
+       * are not. Both are claims about specific turns, and the turns they name
+       * no longer exist once the copy has its own ids, so carrying them would
+       * mean either rewriting their provenance to point at messages they were
+       * never read from, or keeping rows that can never resolve. The copy
+       * starts from what the author wrote: `chat.scene` and
+       * `story.relationships`, both of which come along untouched.
+       */
       async duplicateChat(id) {
         return guard('Duplicating the chat', async () => {
           const original = await repo.chats.get(id);

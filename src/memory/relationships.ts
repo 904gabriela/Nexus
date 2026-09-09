@@ -19,6 +19,13 @@
  * they settled it, and it is read here rather than stamped onto the deltas, so
  * deleting the manual row brings the story's own version back rather than
  * leaving it superseded by a row that no longer exists.
+ *
+ * For anything built on top of this: read `effectiveRelationships`, never
+ * `story.relationships` and never the delta rows. Where two people stand is
+ * already an answer about one timeline, and a layer that asks a narrower
+ * question — what a particular character knows about where they stand — has to
+ * start from the branch-resolved value or it inherits the same bug one storey
+ * up.
  */
 
 import type { ID, Memory, Relationship, RelationshipDelta } from '../types';

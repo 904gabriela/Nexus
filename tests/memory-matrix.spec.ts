@@ -446,6 +446,10 @@ test('extraction commits what it saw and holds back what it concluded', async ({
   expect(impact.status).toBe('applied');
   expect([...impact.betweenIds].sort()).toEqual(['c1', 'p1']);
   expect(impact.sourceMemoryId).toBe(observed.id);
+  // Exactly the memory's own turns, neither widened nor narrowed: this is what
+  // decides which branches can see the change, so a copy that drifted from the
+  // memory would be resolving against evidence the memory never had.
+  expect(impact.sourceMessageIds).toEqual(observed.sourceMessageIds);
   expect(impact.sourceMessageIds.length).toBeGreaterThan(0);
   // Carried from the memory, so how the claim was arrived at survives with it.
   expect(impact.basis).toBe('observed');

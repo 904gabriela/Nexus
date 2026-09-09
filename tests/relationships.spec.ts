@@ -324,6 +324,94 @@ test('a standing written by hand is never folded into', async ({ page }) => {
   expect(system).not.toContain(TRUST);
 });
 
+test('a pair is the same pair whichever way round it was named', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    relationships: [{ id: 'rel-1', betweenIds: ['sera', 'corin'], summary: AUTHORED }],
+    relationshipDeltas: [
+      // The extractor names them in whatever order the sentence used.
+      { id: 'rd-1', branchId: 'main', betweenIds: ['corin', 'sera'], sourceMessageIds: ['m3'], change: TRUST },
+    ],
+  });
+
+  await turn(page, ollama, 'Go on.');
+  const system = systemOf(ollama);
+  // Folded into the row the author wrote, not said a second time beside it.
+  expect(system).toContain(`${TRUST} (previously: ${AUTHORED})`);
+  expect(system.match(/Trust broken over the cellar/g) ?? []).toHaveLength(1);
+});
+
+test('removing a hand-written standing lets the story’s own be heard again', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    relationships: [
+      { id: 'rel-1', betweenIds: ['sera', 'corin'], summary: AUTHORED, manual: true },
+    ],
+    relationshipDeltas: [{ id: 'rd-1', branchId: 'main', sourceMessageIds: ['m3'], change: TRUST }],
+  });
+
+  await turn(page, ollama, 'Go on.');
+  expect(systemOf(ollama)).toContain(AUTHORED);
+  expect(systemOf(ollama)).not.toContain(TRUST);
+
+  // This is why there is no `superseded` status: a hand-written row overrides
+  // by existing, so removing it has to hand the story its voice back rather
+  // than leave the change stamped out by a row that is no longer there.
+  await goto(page, '#/stories');
+  await page.getByRole('button', { name: 'Edit' }).first().click();
+  await page.getByRole('tab', { name: 'Cast' }).click();
+  await page
+    .getByRole('button', { name: 'Remove the relationship between Sera and Corin' })
+    .click();
+  await page.getByRole('button', { name: 'Save' }).first().click();
+  await expect(page.getByText(/^Saved /).first()).toBeVisible({ timeout: 15_000 });
+
+  await goto(page, '#/chat/chat-1');
+  await turn(page, ollama, 'And now?');
+  const system = systemOf(ollama);
+  expect(system).toContain(TRUST);
+  expect(system).not.toContain(AUTHORED);
+  // The delta was never touched to make that happen.
+  expect((await rows(page))[0].status).toBe('applied');
+});
+
+/* ---------------------------------------------------- rows from before 8.4 */
+
+test('a standing the old extractor wrote is marked, and can be kept or cleared', async ({
+  page,
+}) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    // `manual: false` in the canonical array can only be a row the old
+    // destructive write left behind: nothing writes one there any more.
+    relationships: [{ id: 'rel-old', betweenIds: ['sera', 'corin'], summary: TRUST }],
+  });
+
+  await goto(page, '#/stories');
+  await page.getByRole('button', { name: 'Edit' }).first().click();
+  await page.getByRole('tab', { name: 'Cast' }).click();
+  await expect(page.getByText(/The story wrote this before Nexus recorded/)).toBeVisible();
+
+  // Keeping it makes it the author's, and the notice goes.
+  await page
+    .getByRole('button', { name: 'Keep the relationship between Sera and Corin as written' })
+    .click();
+  await page.getByRole('button', { name: 'Save' }).first().click();
+  await expect(page.getByText(/^Saved /).first()).toBeVisible({ timeout: 15_000 });
+
+  const story = (await readStore<any>(page, 'stories'))[0];
+  expect(story.relationships[0].manual).toBe(true);
+  expect(story.relationships[0].summary).toBe(TRUST);
+
+  // And it is still sent, unchanged: keeping is not a rewrite.
+  await goto(page, '#/chat/chat-1');
+  await turn(page, ollama, 'Go on.');
+  expect(systemOf(ollama)).toContain(TRUST);
+});
+
 /* ------------------------------------------------------------ reversal */
 
 test('undoing a change puts the standing back without touching the record', async ({ page }) => {
@@ -425,6 +513,79 @@ test('deleting a branch takes its changes and leaves the ancestor’s', async ({
   await expect
     .poll(async () => (await rows(page)).map((d: any) => d.id).sort(), { timeout: 20_000 })
     .toEqual(['rd-main']);
+});
+
+test('deleting the chat takes the changes read from its turns', async ({ page }) => {
+  await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    secondChat: true,
+    relationshipDeltas: [
+      { id: 'rd-1', chatId: 'chat-1', branchId: 'main', sourceMessageIds: ['m3'], change: TRUST },
+      { id: 'rd-2', chatId: 'chat-2', branchId: 'main-2', sourceMessageIds: ['s3'], change: CLOSER },
+    ],
+  });
+
+  await page.getByRole('button', { name: 'Chat menu' }).click();
+  await page.locator('.sheet').last().getByRole('button', { name: 'Delete chat' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
+
+  // A change is a claim about one chat's turns, so it cannot outlive them.
+  await expect
+    .poll(async () => (await rows(page)).map((d: any) => d.id).sort(), { timeout: 20_000 })
+    .toEqual(['rd-2']);
+});
+
+test('deleting the story takes every change in it', async ({ page }) => {
+  await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    secondChat: true,
+    relationshipDeltas: [
+      { id: 'rd-1', chatId: 'chat-1', branchId: 'main', sourceMessageIds: ['m3'], change: TRUST },
+      { id: 'rd-2', chatId: 'chat-2', branchId: 'main-2', sourceMessageIds: ['s3'], change: CLOSER },
+    ],
+  });
+
+  await goto(page, '#/stories');
+  await page.getByRole('button', { name: /Actions for The Fork/ }).click();
+  await page.locator('.sheet').last().getByRole('button', { name: /^Delete/ }).first().click();
+  await page.getByRole('dialog').getByRole('button', { name: /^Delete/ }).first().click();
+
+  await expect.poll(async () => (await rows(page)).length, { timeout: 20_000 }).toBe(0);
+});
+
+test('a duplicated chat is a new timeline, and carries no derived rows', async ({ page }) => {
+  await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    scene: { location: 'The kitchen' },
+    relationshipDeltas: [{ id: 'rd-1', branchId: 'main', sourceMessageIds: ['m3'], change: TRUST }],
+    sceneDeltas: [
+      { id: 'sd-1', branchId: 'main', sourceMessageIds: ['m3'], fields: { location: 'the rooftop' } },
+    ],
+  });
+
+  await page.getByRole('button', { name: 'Chat menu' }).click();
+  await page.locator('.sheet').last().getByRole('button', { name: 'Duplicate chat' }).click();
+  await expect
+    .poll(async () => (await readStore<any>(page, 'chats')).length, { timeout: 20_000 })
+    .toBe(2);
+
+  /*
+   * Deliberate, not an oversight. A copy gets fresh message ids, so a delta
+   * carried across would name turns that no longer exist — either its
+   * provenance gets rewritten to point at messages it was never read from, or
+   * it can never resolve again. The copy starts from what the author wrote.
+   */
+  const copy = (await readStore<any>(page, 'chats')).find((c: any) => c.id !== 'chat-1');
+  expect((await rows(page)).filter((d: any) => d.chatId === copy.id)).toHaveLength(0);
+  expect(
+    (await readStore<any>(page, 'sceneDeltas')).filter((d: any) => d.chatId === copy.id),
+  ).toHaveLength(0);
+  // The canonical base does come along.
+  expect(copy.scene.location).toBe('The kitchen');
+  expect((await rows(page)).map((d: any) => d.id)).toEqual(['rd-1']);
 });
 
 /* ------------------------------------------------------- export/import */
