@@ -511,8 +511,10 @@ test('the propose setting never applies anything by itself', async ({ page }) =>
     sceneReply([]),
   ];
   await setupOllamaProvider(page);
-  // The shipped default.
-  await seedBranchedStory(page, { scene: { location: 'The kitchen' } });
+  await seedBranchedStory(page, {
+    scene: { location: 'The kitchen' },
+    settings: { sceneEvolution: 'propose' },
+  });
 
   await turn(page, ollama, 'Where are we going?');
   await expect.poll(async () => (await deltas(page)).length, { timeout: 25_000 }).toBe(1);
@@ -520,6 +522,54 @@ test('the propose setting never applies anything by itself', async ({ page }) =>
 
   await turn(page, ollama, 'And now?');
   expect(systemOf(ollama)).toContain('Location: The kitchen');
+});
+
+test('a fresh install leaves the scene alone until asked', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  ollama.sceneReplies = [
+    sceneReply([
+      {
+        field: 'location',
+        character: null,
+        value: 'the rooftop',
+        basis: 'observed',
+        confidence: 0.99,
+        evidence: ROOFTOP,
+      },
+    ]),
+  ];
+  await setupOllamaProvider(page);
+  // No sceneEvolution override: whatever a new install ships with.
+  await seedBranchedStory(page, { scene: { location: 'The kitchen' } });
+
+  expect((await readStore<any>(page, 'settings'))[0].sceneEvolution).toBe('off');
+
+  await turn(page, ollama, 'Where are we going?');
+  await page.waitForTimeout(700);
+  // Nothing is asked of the model, and nothing is recorded, until a person
+  // turns it on — proposals have nowhere to be reviewed yet.
+  expect(ollama.scene).toHaveLength(0);
+  expect(await deltas(page)).toHaveLength(0);
+});
+
+test('all three scene-change modes persist across a reload', async ({ page }) => {
+  await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {});
+
+  for (const mode of ['propose', 'apply', 'off'] as const) {
+    await goto(page, '#/settings');
+    await page.getByRole('tab', { name: 'Memory' }).click().catch(() => {});
+    await page
+      .getByRole('combobox', { name: 'When the story moves the scene' })
+      .selectOption(mode);
+    await expect
+      .poll(async () => (await readStore<any>(page, 'settings'))[0].sceneEvolution)
+      .toBe(mode);
+    await page.reload();
+    await boot(page);
+    expect((await readStore<any>(page, 'settings'))[0].sceneEvolution).toBe(mode);
+  }
 });
 
 test('turning scene changes off asks the model nothing', async ({ page }) => {

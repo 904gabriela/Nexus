@@ -418,9 +418,13 @@ export function defaultSettings(): Settings {
     activeImageProviderId: null,
 
     useStorySummary: true,
-    // Reads scene changes but asks before moving anything: the extractor has
-    // not been measured against real transcripts yet.
-    sceneEvolution: 'propose',
+    // Off until proposals have somewhere to be seen.
+    //
+    // 'propose' costs a second background call on every turn and writes rows
+    // nobody can currently inspect, accept or promote — the user would pay for
+    // output they cannot reach. Both other modes are complete and one setting
+    // away; this is a product default, not a limit on the feature.
+    sceneEvolution: 'off',
     summaryWindow: 30,
     autoSummaryEvery: 20,
 
