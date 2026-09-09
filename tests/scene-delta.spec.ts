@@ -363,6 +363,79 @@ test('a completed move is applied, announced and reaches the prompt', async ({ p
   expect(systemOf(ollama)).toContain('Location: the rooftop');
 });
 
+test('a change is attributed to the turn that established it', async ({ page }) => {
+  const NARRATION = 'Kenta opens the door and steps onto the rooftop.';
+  const ollama = await mockOllama(page, [NARRATION, 'ok']);
+  ollama.sceneReplies = [
+    sceneReply([
+      {
+        field: 'location',
+        character: null,
+        value: 'the rooftop',
+        basis: 'observed',
+        confidence: 0.93,
+        evidence: NARRATION,
+      },
+    ]),
+    sceneReply([]),
+  ];
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    scene: { location: 'Kitchen' },
+    settings: { sceneEvolution: 'apply' },
+  });
+
+  await turn(page, ollama, 'We should get some air.');
+  await expect.poll(async () => (await deltas(page)).length, { timeout: 25_000 }).toBe(1);
+
+  const row = (await deltas(page))[0];
+  const messages = await readStore<any>(page, 'messages');
+  const narration = messages.find((m: any) => m.content === NARRATION);
+  const asked = messages.find((m: any) => m.content === 'We should get some air.');
+
+  // The assistant turn narrated the move; the user turn only asked for air.
+  // Naming both would leave it unanswerable which one established the change.
+  expect(row.sourceMessageIds).toEqual([narration.id]);
+  expect(row.sourceMessageIds).not.toContain(asked.id);
+});
+
+test('the role that established a change is recoverable from the stored delta', async ({
+  page,
+}) => {
+  const NARRATION = 'Kenta opens the door and steps onto the rooftop.';
+  const ollama = await mockOllama(page, [NARRATION, 'ok']);
+  ollama.sceneReplies = [
+    sceneReply([
+      {
+        field: 'location',
+        character: null,
+        value: 'the rooftop',
+        basis: 'observed',
+        confidence: 0.93,
+        evidence: NARRATION,
+      },
+    ]),
+    sceneReply([]),
+  ];
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    scene: { location: 'Kitchen' },
+    settings: { sceneEvolution: 'apply' },
+  });
+
+  await turn(page, ollama, 'We should get some air.');
+  await expect.poll(async () => (await deltas(page)).length, { timeout: 25_000 }).toBe(1);
+
+  // Resolving the stored ids back to messages answers "who said so", which is
+  // what the contract said provenance would support.
+  const row = (await deltas(page))[0];
+  const messages = await readStore<any>(page, 'messages');
+  const roles = row.sourceMessageIds.map(
+    (id: string) => messages.find((m: any) => m.id === id)?.role,
+  );
+  expect(roles).toEqual(['assistant']);
+});
+
 test('the extractor is told which sentences are not scene changes', async ({ page }) => {
   const ollama = await mockOllama(page, [ROOFTOP]);
   await setupOllamaProvider(page);

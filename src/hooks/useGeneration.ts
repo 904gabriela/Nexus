@@ -511,7 +511,7 @@ export function useGeneration() {
 
         const candidates = await extractSceneChanges({
           scene: before,
-          exchange: exchange.map((m) => ({ role: m.role, content: contentOf(m) })),
+          exchange: exchange.map((m) => ({ id: m.id, role: m.role, content: contentOf(m) })),
           characters: currentCharacters,
           persona: currentPersona,
           provider: currentProvider,
@@ -521,14 +521,18 @@ export function useGeneration() {
         // Halda still in the doorway" is a single thing that happened, and
         // undoing it should undo all of it. Candidates that may only be
         // proposed are kept apart, because status belongs to the row.
-        const bundles = new Map<'applied' | 'proposed', Partial<SceneState>>();
+        const bundles = new Map<
+          'applied' | 'proposed',
+          { fields: Partial<SceneState>; sources: Set<ID> }
+        >();
         for (const candidate of candidates) {
           const status =
             current.settings.sceneEvolution === 'apply'
               ? decideSceneStatus(candidate.field, candidate.basis, candidate.confidence)
               : 'proposed';
           const bucket = status === 'applied' ? 'applied' : 'proposed';
-          const fields = bundles.get(bucket) ?? {};
+          const entry = bundles.get(bucket) ?? { fields: {}, sources: new Set<ID>() };
+          const { fields } = entry;
           if (candidate.field === 'characterStates') {
             fields.characterStates = {
               ...(fields.characterStates ?? {}),
@@ -543,19 +547,22 @@ export function useGeneration() {
           } else {
             fields[candidate.field] = candidate.value;
           }
-          bundles.set(bucket, fields);
+          // The turn that said it, not the pair it arrived with.
+          for (const id of candidate.sourceMessageIds) entry.sources.add(id);
+          bundles.set(bucket, entry);
         }
 
         const rows: SceneDelta[] = [];
-        for (const [bucket, fields] of bundles) {
-          if (!Object.keys(fields).length) continue;
+        for (const [bucket, entry] of bundles) {
+          const { fields, sources } = entry;
+          if (!Object.keys(fields).length || !sources.size) continue;
           const strongest = candidates.reduce(
             (best, c) => (c.confidence > best ? c.confidence : best),
             0,
           );
           rows.push(
             newSceneDelta(chat.id, chat.activeBranchId, {
-              sourceMessageIds: exchange.map((m) => m.id),
+              sourceMessageIds: [...sources],
               fields,
               previous: previousFor(before, fields),
               basis: 'observed',

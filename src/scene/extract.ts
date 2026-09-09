@@ -38,6 +38,14 @@ export interface SceneChangeCandidate {
   confidence: number;
   /** The sentence it was read from. Used to check the claim, never stored. */
   evidence: string;
+  /**
+   * The message(s) whose own text establishes the claim.
+   *
+   * Not the whole exchange: a delta is a conclusion about what was said, and
+   * naming both turns leaves it unanswerable which one said it. Resolving
+   * these back to `message.role` is how authorship is known.
+   */
+  sourceMessageIds: ID[];
 }
 
 const SCENE_SYSTEM = `You watch one exchange of a roleplay and decide whether the CURRENT SCENE has already changed.
@@ -80,7 +88,7 @@ export interface SceneExtractionInput {
   /** The scene as it stands, so the model can tell a change from a restatement. */
   scene: SceneState;
   /** The exchange to read, oldest first. */
-  exchange: Array<{ role: string; content: string }>;
+  exchange: Array<{ id: ID; role: string; content: string }>;
   characters: Character[];
   persona: Persona | null;
   provider: Provider | null;
@@ -115,19 +123,33 @@ function normalise(text: string): string {
 }
 
 /**
- * Whether the exchange really says what the model claims it says.
+ * Which messages actually say what the model claims they say.
  *
  * A quoted sentence that appears nowhere in the text is the cheapest possible
- * sign of a hallucinated change, and rejecting it costs nothing.
+ * sign of a hallucinated change, and rejecting it costs nothing. Checking each
+ * message rather than the two of them run together answers a second question
+ * for free — which turn established this — and that answer is the delta's
+ * provenance. An empty result means nothing supports the claim.
  */
-function grounded(candidate: SceneChangeCandidate, exchangeText: string): boolean {
-  const haystack = normalise(exchangeText);
+function groundingMessages(
+  candidate: Pick<SceneChangeCandidate, 'evidence' | 'value'>,
+  exchange: SceneExtractionInput['exchange'],
+): ID[] {
   const evidence = normalise(candidate.evidence);
-  if (evidence && haystack.includes(evidence)) return true;
-  // Some models paraphrase the evidence. Fall back to the value itself, which
-  // has to come from somewhere in the text to be a change the story made.
+  // Models paraphrase their own quotes, so the value is the fallback: it has
+  // to come from somewhere in the text to be a change the story made.
   const value = normalise(candidate.value);
-  return value.length > 2 && haystack.includes(value);
+
+  const byEvidence: ID[] = [];
+  const byValue: ID[] = [];
+  for (const message of exchange) {
+    const haystack = normalise(message.content);
+    if (evidence && haystack.includes(evidence)) byEvidence.push(message.id);
+    else if (value.length > 2 && haystack.includes(value)) byValue.push(message.id);
+  }
+  // A quoted sentence is the stronger claim, so it wins outright when one
+  // message has it and another merely mentions the place.
+  return byEvidence.length ? byEvidence : byValue;
 }
 
 /**
@@ -156,7 +178,6 @@ export function parseSceneChanges(
 ): SceneChangeCandidate[] {
   const parsed = extractJson(reply);
   const raw = Array.isArray(parsed?.changes) ? (parsed!.changes as unknown[]) : [];
-  const exchangeText = input.exchange.map((m) => m.content).join('\n');
 
   const out: SceneChangeCandidate[] = [];
   for (const item of raw) {
@@ -189,16 +210,10 @@ export function parseSceneChanges(
     // A character state about nobody the app knows cannot be stored under a key.
     if (field === 'characterStates' && !characterId) continue;
 
-    const candidate: SceneChangeCandidate = {
-      field,
-      characterId,
-      value,
-      basis,
-      confidence,
-      evidence: String(record.evidence ?? '').trim(),
-    };
-    if (!grounded(candidate, exchangeText)) continue;
-    out.push(candidate);
+    const evidence = String(record.evidence ?? '').trim();
+    const sourceMessageIds = groundingMessages({ evidence, value }, input.exchange);
+    if (!sourceMessageIds.length) continue;
+    out.push({ field, characterId, value, basis, confidence, evidence, sourceMessageIds });
   }
   return out;
 }
