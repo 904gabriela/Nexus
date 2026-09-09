@@ -13,6 +13,8 @@ import type {
   Persona,
   Provider,
   ImageProvider,
+  KnowledgeEdge,
+  KnowledgeSubject,
   RelationshipDelta,
   Settings,
   Story,
@@ -426,6 +428,7 @@ export function defaultSettings(): Settings {
     // output they cannot reach. Both other modes are complete and one setting
     // away; this is a product default, not a limit on the feature.
     sceneEvolution: 'off',
+    knowledgeMode: 'off',
     summaryWindow: 30,
     autoSummaryEvery: 20,
 
@@ -528,6 +531,32 @@ export function newRelationshipDelta(
     basis: 'observed',
     confidence: 0,
     status: 'proposed',
+    createdAt: t,
+    updatedAt: t,
+    ...partial,
+  };
+}
+
+export function newKnowledgeEdge(
+  chatId: string,
+  branchId: string,
+  knowerId: string,
+  subject: KnowledgeSubject,
+  partial: Partial<KnowledgeEdge> = {},
+): KnowledgeEdge {
+  const t = now();
+  return {
+    id: uid(),
+    chatId,
+    branchId,
+    knowerId,
+    subject,
+    basis: 'inferred',
+    toldById: null,
+    sourceMessageIds: [],
+    confidence: 0,
+    status: 'proposed',
+    appliedAt: t,
     createdAt: t,
     updatedAt: t,
     ...partial,

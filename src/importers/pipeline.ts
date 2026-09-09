@@ -24,6 +24,7 @@ import type {
   Provider,
   Settings,
   Story,
+  KnowledgeEdge,
   RelationshipDelta,
   SceneDelta,
   StorySummary,
@@ -146,6 +147,7 @@ export interface ImportPayload {
   storySummaries?: StorySummary[];
   sceneDeltas?: SceneDelta[];
   relationshipDeltas?: RelationshipDelta[];
+  knowledgeEdges?: KnowledgeEdge[];
   settings?: Settings;
   /** mediaId → data URL, restored into blob storage on commit. */
   media?: Record<ID, string>;
@@ -395,6 +397,7 @@ const COLLECTION_LABELS: Partial<Record<CollectionKey, string>> = {
   storySummaries: 'story summaries',
   sceneDeltas: 'scene changes',
   relationshipDeltas: 'relationship changes',
+  knowledgeEdges: 'knowledge',
   providers: 'text providers (keys not included)',
   imageProviders: 'image providers (keys not included)',
 };
@@ -1138,6 +1141,7 @@ async function buildBackupImport(
     storySummaries: (body.storySummaries as StorySummary[]) ?? [],
     sceneDeltas: (body.sceneDeltas as SceneDelta[]) ?? [],
     relationshipDeltas: (body.relationshipDeltas as RelationshipDelta[]) ?? [],
+    knowledgeEdges: (body.knowledgeEdges as KnowledgeEdge[]) ?? [],
     settings: isPlainObject(body.settings) ? (body.settings as unknown as Settings) : undefined,
     media: isPlainObject(body.media) ? (body.media as Record<ID, string>) : undefined,
   };
@@ -1811,6 +1815,10 @@ export async function commitImport(
   if (parsed.payload.relationshipDeltas?.length) {
     await repo.relationshipDeltas.saveMany(parsed.payload.relationshipDeltas);
     counts.relationshipDeltas = parsed.payload.relationshipDeltas.length;
+  }
+  if (parsed.payload.knowledgeEdges?.length) {
+    await repo.knowledgeEdges.saveMany(parsed.payload.knowledgeEdges);
+    counts.knowledgeEdges = parsed.payload.knowledgeEdges.length;
   }
   if (parsed.payload.storySummaries?.length) {
     await repo.storySummaries.saveMany(parsed.payload.storySummaries);

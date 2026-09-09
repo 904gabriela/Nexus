@@ -26,6 +26,7 @@ import type {
   ImageProvider,
   Settings,
   Story,
+  KnowledgeEdge,
   RelationshipDelta,
   SceneDelta,
   StorySummary,
@@ -232,6 +233,18 @@ export const relationshipDeltas = {
   removeMany: (ids: ID[]) => dbDeleteMany(STORES.relationshipDeltas, ids),
 };
 
+export const knowledgeEdges = {
+  all: () => dbGetAll<KnowledgeEdge>(STORES.knowledgeEdges),
+  byChat: (chatId: ID) =>
+    dbGetAllByIndex<KnowledgeEdge>(STORES.knowledgeEdges, 'chatId', chatId),
+  byBranch: (branchId: ID) =>
+    dbGetAllByIndex<KnowledgeEdge>(STORES.knowledgeEdges, 'branchId', branchId),
+  save: (value: KnowledgeEdge) => dbPut(STORES.knowledgeEdges, touch(value)),
+  saveMany: (values: KnowledgeEdge[]) => dbPutMany(STORES.knowledgeEdges, values),
+  remove: (id: ID) => dbDelete(STORES.knowledgeEdges, id),
+  removeMany: (ids: ID[]) => dbDeleteMany(STORES.knowledgeEdges, ids),
+};
+
 export const settingsRepo = {
   async load(): Promise<Settings> {
     const stored = await dbGet<Settings>(STORES.settings, 'settings');
@@ -268,6 +281,7 @@ export async function deleteChatCascade(chatId: ID): Promise<void> {
     chatSummaries,
     chatDeltas,
     chatRelationshipDeltas,
+    chatKnowledgeEdges,
   ] = await Promise.all([
     messages.byChat(chatId),
     branches.byChat(chatId),
@@ -280,6 +294,8 @@ export async function deleteChatCascade(chatId: ID): Promise<void> {
     sceneDeltas.byChat(chatId),
     // And so is a relationship delta: it names this chat's messages.
     relationshipDeltas.byChat(chatId),
+    // A knowledge edge names them too, so it cannot outlive them either.
+    knowledgeEdges.byChat(chatId),
   ]);
   await Promise.all([
     messages.removeMany(chatMessages.map((m) => m.id)),
@@ -289,6 +305,7 @@ export async function deleteChatCascade(chatId: ID): Promise<void> {
     storySummaries.removeMany(chatSummaries.map((s) => s.id)),
     sceneDeltas.removeMany(chatDeltas.map((d) => d.id)),
     relationshipDeltas.removeMany(chatRelationshipDeltas.map((d) => d.id)),
+    knowledgeEdges.removeMany(chatKnowledgeEdges.map((e) => e.id)),
     chats.remove(chatId),
   ]);
 }

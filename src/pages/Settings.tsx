@@ -1340,6 +1340,20 @@ function MemorySection() {
 
       <hr className="divider" />
 
+      <h3 className="section-title">Who knows what</h3>
+      <SelectField
+        label="Track what each character knows of"
+        value={s.knowledgeMode}
+        onChange={(knowledgeMode) => actions.saveSettings({ knowledgeMode })}
+        options={[
+          { value: 'off', label: 'Do not track it' },
+          { value: 'annotate', label: 'Track and show it, change nothing' },
+        ]}
+        hint="Records that a character has heard something — not that they believe it, and not that it is true. Nothing here is sent to the model or costs any context; it appears in the Context Inspector. Nothing recorded means nothing is being tracked, never that a character does not know."
+      />
+
+      <hr className="divider" />
+
       <h3 className="section-title">Automatic memory</h3>
       <Toggle
         label="Create memories automatically"

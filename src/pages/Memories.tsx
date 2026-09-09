@@ -95,6 +95,26 @@ export function MemoriesPage({
   }, [state.memories, query, category, sort, shelf]);
 
   /**
+   * How many chat/branch contexts have recorded knowledge about each memory.
+   *
+   * Counted in contexts rather than in people on purpose. This page is the
+   * global library and has no timeline, so "2 characters" would read as one
+   * settled fact about the story when the two could be on branches that
+   * contradict each other. A context count claims only what it can back up;
+   * who knows what, where, is the Context Inspector's job.
+   */
+  const knowledgeContexts = useMemo(() => {
+    const byMemory = new Map<string, Set<string>>();
+    for (const edge of state.knowledgeEdges) {
+      if (edge.subject.kind !== 'memory') continue;
+      const seen = byMemory.get(edge.subject.id) ?? new Set<string>();
+      seen.add(`${edge.chatId}/${edge.branchId}`);
+      byMemory.set(edge.subject.id, seen);
+    }
+    return byMemory;
+  }, [state.knowledgeEdges]);
+
+  /**
    * Accepting is the only thing that makes a supersession real, so it goes
    * through acceptMemory rather than flipping the status here: rejecting a
    * proposal must leave the memories it would have replaced untouched.
@@ -314,6 +334,12 @@ export function MemoriesPage({
                     {memoryBasis(memory) !== 'observed' && (
                       <span className="chip">{memoryBasis(memory)}</span>
                     )}
+                    {!!knowledgeContexts.get(memory.id)?.size && (
+                      <span className="chip">
+                        Knowledge tracked · {knowledgeContexts.get(memory.id)!.size} context
+                        {knowledgeContexts.get(memory.id)!.size === 1 ? '' : 's'}
+                      </span>
+                    )}
                   </div>
                   <div className="small muted clamp-2" style={{ marginTop: 4 }}>
                     {truncate(memory.content, 150)}
@@ -442,6 +468,40 @@ export function MemoryEditor({
   const [error, setError] = useState<string | null>(null);
 
   const patch = (changes: Partial<Memory>) => setDraft((current) => ({ ...current, ...changes }));
+
+  const nameOf = (id: string) => {
+    const character = state.characters.find((c) => c.id === id);
+    if (character) return character.displayName || character.name;
+    const persona = state.personas.find((p) => p.id === id);
+    if (persona) return persona.displayName || persona.name;
+    return 'Someone';
+  };
+
+  /** Stored edges about this memory, grouped by the context that recorded them. */
+  const knowledgeHere = useMemo(() => {
+    const groups = new Map<
+      string,
+      { key: string; chatTitle: string; branchName: string; edges: typeof state.knowledgeEdges }
+    >();
+    for (const edge of state.knowledgeEdges) {
+      if (edge.subject.kind !== 'memory' || edge.subject.id !== memory.id) continue;
+      const key = `${edge.chatId}/${edge.branchId}`;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.edges.push(edge);
+        continue;
+      }
+      groups.set(key, {
+        key,
+        chatTitle: state.chats.find((c) => c.id === edge.chatId)?.title ?? 'A chat that is gone',
+        // Only the open chat's branches are loaded, so a branch elsewhere is
+        // named honestly rather than shown as a raw id.
+        branchName: state.branches.find((b) => b.id === edge.branchId)?.name ?? 'a branch',
+        edges: [edge],
+      });
+    }
+    return [...groups.values()];
+  }, [state.knowledgeEdges, state.chats, state.branches, memory.id]);
 
   const submit = async () => {
     if (!draft.content.trim()) {
@@ -581,6 +641,37 @@ export function MemoryEditor({
           Created from {draft.sourceMessageIds.length} selected message
           {draft.sourceMessageIds.length === 1 ? '' : 's'}.
         </p>
+      )}
+
+      {/*
+        Grouped by the chat and branch each attribution belongs to, never merged
+        into one list. Two branches can have recorded different people knowing
+        this, and flattening that would invent a story-wide state that does not
+        exist. Read-only: this page has no timeline, and the scoped view lives
+        in the Context Inspector.
+      */}
+      {!!knowledgeHere.length && (
+        <section className="section">
+          <h3 className="section-title">Knowledge tracked</h3>
+          <p className="small muted" style={{ marginTop: 0 }}>
+            Recorded as having heard this. Not that they believe it, and not that it is true.
+          </p>
+          {knowledgeHere.map((group) => (
+            <div className="card" key={group.key} style={{ marginBottom: 6 }}>
+              <div className="small">
+                <strong>{group.chatTitle}</strong>
+                <span className="muted"> — {group.branchName}</span>
+              </div>
+              {group.edges.map((edge) => (
+                <div className="small muted" key={edge.id} style={{ marginTop: 3 }}>
+                  {nameOf(edge.knowerId)} — {edge.basis === 'told' && edge.toldById
+                    ? `told by ${nameOf(edge.toldById)}`
+                    : edge.basis}
+                </div>
+              ))}
+            </div>
+          ))}
+        </section>
       )}
     </Sheet>
   );

@@ -291,6 +291,7 @@ export async function buildBackup(options: BackupOptions): Promise<string> {
     storySummaries,
     deltas,
     relationshipRows,
+    knowledge,
     settings,
   ] = await Promise.all([
     repo.characters.all(),
@@ -310,6 +311,7 @@ export async function buildBackup(options: BackupOptions): Promise<string> {
     repo.storySummaries.all(),
     repo.sceneDeltas.all(),
     repo.relationshipDeltas.all(),
+    repo.knowledgeEdges.all(),
     repo.settingsRepo.load(),
   ]);
 
@@ -332,6 +334,7 @@ export async function buildBackup(options: BackupOptions): Promise<string> {
     storySummaries,
     sceneDeltas: deltas,
     relationshipDeltas: relationshipRows,
+    knowledgeEdges: knowledge,
     settings: { ...settings },
   };
 

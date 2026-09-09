@@ -40,6 +40,7 @@ import type {
   Provider,
   Settings,
   Story,
+  KnowledgeEdge,
   RelationshipDelta,
   SceneDelta,
   StorySummary,
@@ -88,6 +89,7 @@ export interface NexusCollections {
   storySummaries?: StorySummary[];
   sceneDeltas?: SceneDelta[];
   relationshipDeltas?: RelationshipDelta[];
+  knowledgeEdges?: KnowledgeEdge[];
   providers?: Provider[];
   imageProviders?: ImageProvider[];
   mediaMeta?: MediaMeta[];
@@ -130,6 +132,7 @@ export const COLLECTION_KEYS = [
   'storySummaries',
   'sceneDeltas',
   'relationshipDeltas',
+  'knowledgeEdges',
   'providers',
   'imageProviders',
   'mediaMeta',
@@ -353,6 +356,7 @@ export function fromLegacyEnvelope(envelope: unknown): NexusDocument | null {
         storySummaries: d.storySummaries ?? [],
         sceneDeltas: d.sceneDeltas ?? [],
         relationshipDeltas: d.relationshipDeltas ?? [],
+        knowledgeEdges: d.knowledgeEdges ?? [],
         providers: d.providers ?? [],
         imageProviders: d.imageProviders ?? [],
         mediaMeta: d.mediaMeta ?? [],

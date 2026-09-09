@@ -35,6 +35,7 @@ import {
   effectiveRelationships,
   relationshipDeltasFrom,
 } from '../memory/relationships';
+import { resolveKnowledge } from '../memory/knowledge';
 import {
   applyDraft,
   generateStorySummary,
@@ -335,6 +336,7 @@ export function useGeneration() {
     [actions],
   );
 
+
   /** Alternative-aware content for a message. */
   const contentOf = useCallback(
     (message: Message): string => {
@@ -385,6 +387,26 @@ export function useGeneration() {
     return [...attached, ...global];
   }, [state.memories, story, onBranch]);
 
+  /**
+   * Who knows of what, on this branch.
+   *
+   * Resolved only when the setting is on, so an install that has not asked for
+   * this pays nothing — not a store scan, not a render, and above all not a
+   * token. `memoriesForContext` is already branch-filtered, so the derived
+   * `stated` edges inherit that scope without asking a second time.
+   */
+  const knowledgeEdgesHere = useMemo(
+    () => state.knowledgeEdges.filter((e) => e.chatId === activeChat?.id),
+    [state.knowledgeEdges, activeChat?.id],
+  );
+  const knowledge = useMemo(
+    () =>
+      state.settings.knowledgeMode === 'annotate'
+        ? resolveKnowledge(knowledgeEdgesHere, memoriesForContext, visibleMessages)
+        : [],
+    [state.settings.knowledgeMode, knowledgeEdgesHere, memoriesForContext, visibleMessages],
+  );
+
   const buildCompileInput = useCallback(
     (
       history: Message[],
@@ -430,6 +452,7 @@ export function useGeneration() {
       // array holds what the author wrote, and what the story itself did to it
       // belongs to the timeline being played.
       relationships,
+      knowledge,
       budgetOverride: options.budgetOverride,
       visionEnabled: capabilities.vision,
       imageResolver: options.imageMap
@@ -451,6 +474,7 @@ export function useGeneration() {
       resolvedSummary?.watermarkTrusted,
       sceneFor,
       relationships,
+      knowledge,
     ],
   );
 
@@ -1135,6 +1159,7 @@ export function useGeneration() {
     relationships,
     relationshipsDerived,
     reverseRelationshipDelta,
+    knowledge,
     contentOf,
     provider,
     imageProvider,

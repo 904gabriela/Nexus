@@ -21,8 +21,10 @@ import type {
   Memory,
   Message,
   MessagePipelineRow,
+  KnowledgeAnnotation,
   Persona,
   Relationship,
+  ResolvedKnowledge,
   SceneState,
   Settings,
   Story,
@@ -40,6 +42,7 @@ import {
   relevantRelationships,
 } from './storyState';
 import { MEMORY_TIER_RANK, rankMemories } from '../memory/relevance';
+import { knowledgeAnnotations } from '../memory/knowledge';
 import { memoryBasis } from '../memory/matrix';
 import { truncate } from '../utils/text';
 import { IMAGE_TOKEN_COST, estimateTokens } from './tokens';
@@ -78,6 +81,16 @@ export interface CompileInput {
    */
   relationships?: Relationship[] | null;
   /**
+   * Who knows of what, resolved for this branch.
+   *
+   * Passed only when knowledge tracking is on, and it reaches the model
+   * nowhere: it produces no part, claims no priority band and costs no tokens.
+   * It rides here so the Context Inspector stays a verbatim view of one compile
+   * rather than growing a second source of truth, which is the same trick
+   * `loreMisses` already uses for lore that did not get in.
+   */
+  knowledge?: ResolvedKnowledge[] | null;
+  /**
    * The real usable prompt window, negotiated with the provider. Overrides the
    * configured context size, which is an aspiration rather than a capability.
    */
@@ -100,6 +113,8 @@ export interface CompileInput {
 
 export interface CompileResult extends CompiledContext {
   loreMisses: LoreMiss[];
+  /** Inspector-only, like `loreMisses`. Never part of the prompt. */
+  knowledge: KnowledgeAnnotation[];
 }
 
 /** Substitutes {{char}} / {{user}} / {{persona}} style macros. */
@@ -1365,6 +1380,22 @@ function compileContextInner(input: CompileInput): CompileResult {
     loreHits: loreScan.hits,
     loreMisses: loreScan.misses,
     memoryHits,
+    /*
+     * Computed last and folded into nothing. Knowledge annotates what the
+     * prompt already says; it never adds to it, which is why this is built
+     * after `totalTokens` is final and can be shown to have no effect on it.
+     */
+    knowledge: input.knowledge?.length
+      ? knowledgeAnnotations(input.knowledge, {
+          memories: input.memories,
+          relationships: input.relationships ?? story?.relationships ?? [],
+          nameOf: (id) =>
+            characters.find((c) => c.id === id)?.displayName ||
+            characters.find((c) => c.id === id)?.name ||
+            (persona && persona.id === id ? persona.displayName || persona.name : '') ||
+            'Someone',
+        })
+      : [],
   };
 }
 

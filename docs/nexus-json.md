@@ -54,6 +54,7 @@ app stores, with no renaming, nesting or per-kind wrapper.
 | `storySummaries` | Long-run rolling summaries |
 | `sceneDeltas` | Scene changes the story established, each naming the turns it was read from |
 | `relationshipDeltas` | Changes to where two people stand, likewise named to their turns |
+| `knowledgeEdges` | Who is recorded as knowing of a memory or a pair's standing, and how |
 | `providers` / `imageProviders` | Provider config, **never** API keys |
 | `mediaMeta` | Metadata for stored images |
 | `settings` | App settings. Whole-library documents only. |

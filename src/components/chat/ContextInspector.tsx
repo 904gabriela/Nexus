@@ -37,7 +37,9 @@ export function ContextInspector({
   open: boolean;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<'included' | 'excluded' | 'lore' | 'raw' | 'request'>(
+  const [tab, setTab] = useState<
+    'included' | 'excluded' | 'lore' | 'knowledge' | 'raw' | 'request'
+  >(
     'included',
   );
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -115,6 +117,7 @@ export function ContextInspector({
           { id: 'included', label: 'Included', badge: compiled.parts.length },
           { id: 'excluded', label: 'Excluded', badge: compiled.excluded.length },
           { id: 'lore', label: 'Lore & memory' },
+          { id: 'knowledge', label: 'Knowledge' },
           { id: 'raw', label: 'Raw' },
           { id: 'request', label: 'Provider request' },
         ]}
@@ -242,6 +245,64 @@ export function ContextInspector({
                 <div className="small" style={{ color: 'var(--accent-text)' }}>
                   Included because: {hit.reason}
                 </div>
+              </div>
+            ))
+          )}
+        </>
+      )}
+
+      {tab === 'knowledge' && (
+        <>
+          <p className="small muted">
+            Who has been recorded as knowing of something, on this branch. Knowing of a claim is
+            not believing it, agreeing with it, or the claim being true — a character can hold
+            something someone lied to them about.
+          </p>
+          {/*
+            Nothing here was sent. Knowledge is recorded and shown; it does not
+            change what the model is given, which is why this tab can exist
+            without the Included tab moving by a single token.
+          */}
+          <p className="small muted">
+            None of this is sent to the model. It costs no context.
+          </p>
+
+          {!compiled.knowledge.length ? (
+            <p className="small muted">
+              <strong>Not tracked.</strong> Nothing has been recorded about who knows what here.
+              That is not the same as nobody knowing — Nexus simply has nothing on file.
+            </p>
+          ) : (
+            compiled.knowledge.map((entry) => (
+              <div className="card" key={entry.label + entry.subject.kind} style={{ marginBottom: 8 }}>
+                <div className="row row-between row-wrap">
+                  <strong className="truncate">{entry.label}</strong>
+                  <span className="chip">
+                    {entry.subject.kind === 'memory' ? 'Memory' : 'Relationship'}
+                  </span>
+                </div>
+                {entry.unresolved && (
+                  <div className="small muted">
+                    {entry.subject.kind === 'relationship'
+                      ? 'They have no standing right now. What was known of them is kept, and shows again if they stand somewhere.'
+                      : 'The memory this is about is no longer here.'}
+                  </div>
+                )}
+                {entry.knowers.map(({ knower, knowerName, toldByName }) => (
+                  <div className="small" key={knower.id} style={{ marginTop: 4 }}>
+                    <strong>{knowerName}</strong>
+                    <span className="muted">
+                      {' knows of this — '}
+                      {knower.basis === 'told' && toldByName
+                        ? `told by ${toldByName}`
+                        : knower.basis}
+                      {` · ${Math.round(knower.confidence * 100)}% sure of the attribution`}
+                      {` · from ${knower.sourceMessageIds.length} message`}
+                      {knower.sourceMessageIds.length === 1 ? '' : 's'}
+                      {knower.derived ? ' · derived from a stated memory, not stored' : ''}
+                    </span>
+                  </div>
+                ))}
               </div>
             ))
           )}

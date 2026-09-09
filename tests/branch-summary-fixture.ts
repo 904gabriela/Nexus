@@ -63,6 +63,34 @@ export interface RelationshipDeltaSeed {
   appliedAt?: number;
 }
 
+export interface KnowledgeEdgeSeed {
+  id: string;
+  branchId?: string;
+  chatId?: string;
+  knowerId: string;
+  subject:
+    | { kind: 'memory'; id: string }
+    | { kind: 'relationship'; betweenIds: [string, string] };
+  basis?: string;
+  toldById?: string | null;
+  sourceMessageIds: string[];
+  confidence?: number;
+  status?: 'proposed' | 'applied' | 'reversed';
+  appliedAt?: number;
+}
+
+export interface MemorySeed {
+  id: string;
+  title: string;
+  content: string;
+  basis?: string;
+  statedById?: string | null;
+  status?: string;
+  confidence?: number;
+  sourceMessageIds?: string[];
+  sourceChatId?: string | null;
+}
+
 export interface BranchSeed {
   summaries?: SummarySeed[];
   /** Which branch of chat-1 is active. */
@@ -79,6 +107,8 @@ export interface BranchSeed {
   /** The story's canonical, author-owned standings. */
   relationships?: RelationshipSeed[];
   relationshipDeltas?: RelationshipDeltaSeed[];
+  knowledgeEdges?: KnowledgeEdgeSeed[];
+  memories?: MemorySeed[];
 }
 
 export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
@@ -376,6 +406,50 @@ export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
         basis: d.basis ?? 'observed',
         confidence: d.confidence ?? 0.9,
         status: d.status ?? 'applied',
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    for (const e of options.knowledgeEdges ?? []) {
+      await put('knowledgeEdges', {
+        id: e.id,
+        chatId: e.chatId ?? 'chat-1',
+        branchId: e.branchId ?? 'main',
+        knowerId: e.knowerId,
+        subject: e.subject,
+        basis: e.basis ?? 'witnessed',
+        toldById: e.toldById ?? null,
+        sourceMessageIds: e.sourceMessageIds,
+        confidence: e.confidence ?? 0.9,
+        status: e.status ?? 'applied',
+        appliedAt: e.appliedAt ?? now,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    for (const m of options.memories ?? []) {
+      await put('memories', {
+        id: m.id,
+        origin: 'auto',
+        title: m.title,
+        content: m.content,
+        category: 'Event',
+        importance: 'normal',
+        pinned: false,
+        sourceMessageIds: m.sourceMessageIds ?? ['m2', 'm3'],
+        sourceChatId: m.sourceChatId === undefined ? 'chat-1' : m.sourceChatId,
+        sourceStoryId: 'forked-story',
+        characterIds: [],
+        tags: [],
+        subjects: [],
+        basis: m.basis ?? 'observed',
+        confidence: m.confidence ?? 0.9,
+        statedById: m.statedById ?? null,
+        status: m.status ?? 'active',
+        supersedes: [],
+        relationshipImpact: null,
         createdAt: now,
         updatedAt: now,
       });

@@ -29,6 +29,7 @@ import type {
   ModelCapabilities,
   Settings,
   Story,
+  KnowledgeEdge,
   RelationshipDelta,
   SceneDelta,
   StorySummary,
@@ -70,6 +71,7 @@ export interface AppState {
   storySummaries: StorySummary[];
   sceneDeltas: SceneDelta[];
   relationshipDeltas: RelationshipDelta[];
+  knowledgeEdges: KnowledgeEdge[];
   media: MediaMeta[];
   checkpoints: Checkpoint[];
   /** Working set for the currently open chat. */
@@ -102,6 +104,7 @@ const initialState: AppState = {
   storySummaries: [],
   sceneDeltas: [],
   relationshipDeltas: [],
+  knowledgeEdges: [],
   media: [],
   checkpoints: [],
   activeChatId: null,
@@ -199,6 +202,13 @@ export interface AppActions {
     ids: ID[],
     status: RelationshipDelta['status'],
   ) => Promise<void>;
+
+  /**
+   * Records who knows of what. Annotation only: nothing here reaches the
+   * prompt, and nothing here writes to a memory, a relationship or a story.
+   */
+  saveKnowledgeEdges: (edges: KnowledgeEdge[]) => Promise<void>;
+  setKnowledgeEdgeStatus: (ids: ID[], status: KnowledgeEdge['status']) => Promise<void>;
 
   refreshMedia: () => Promise<MediaMeta[]>;
   removeMedia: (id: ID) => Promise<void>;
@@ -301,6 +311,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         summaries,
         deltas,
         relationshipRows,
+        knowledge,
         media,
         checkpoints,
       ] = await Promise.all([
@@ -317,6 +328,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         repo.storySummaries.all(),
         repo.sceneDeltas.all(),
         repo.relationshipDeltas.all(),
+        repo.knowledgeEdges.all(),
         listMedia(),
         repo.checkpoints.all(),
       ]);
@@ -336,6 +348,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           storySummaries: summaries,
           sceneDeltas: deltas,
           relationshipDeltas: relationshipRows,
+          knowledgeEdges: knowledge,
           media,
           checkpoints,
           v2Scan: settings.migratedV2 ? null : scanV2(),
@@ -438,10 +451,27 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       });
     };
 
+    /**
+     * And the same again for an attribution: an edge says a character learned
+     * something from particular turns, so a turn that no longer says what it
+     * said takes the attribution with it.
+     */
+    const dropKnowledgeEdgesFor = async (messageIds: ID[]) => {
+      const wanted = new Set(messageIds);
+      const doomed = stateRef.current.knowledgeEdges.filter((edge) =>
+        edge.sourceMessageIds.some((id) => wanted.has(id)),
+      );
+      if (!doomed.length) return;
+      await repo.knowledgeEdges.removeMany(doomed.map((e) => e.id));
+      const gone = new Set(doomed.map((e) => e.id));
+      set({ knowledgeEdges: stateRef.current.knowledgeEdges.filter((e) => !gone.has(e.id)) });
+    };
+
     /** Everything derived from these turns, dropped in one call. */
     const dropDerivedFor = async (messageIds: ID[]) => {
       await dropSceneDeltasFor(messageIds);
       await dropRelationshipDeltasFor(messageIds);
+      await dropKnowledgeEdgesFor(messageIds);
     };
 
     const loadChatWorkingSet = async (chatId: ID) => {
@@ -756,12 +786,29 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             await repo.relationshipDeltas.removeMany(doomed.map((d) => d.id));
           }
           const gone = new Set(doomed.map((d) => d.id));
+          // And an attribution about a memory has nothing left to be about.
+          // (A `stated` edge needs no cleanup: it is derived from the memory
+          // at read time and disappears with it.)
+          const orphaned = stateRef.current.knowledgeEdges.filter(
+            (e) => e.subject.kind === 'memory' && e.subject.id === id,
+          );
+          if (orphaned.length) {
+            await repo.knowledgeEdges.removeMany(orphaned.map((e) => e.id));
+          }
+          const lost = new Set(orphaned.map((e) => e.id));
           set({
             memories: stateRef.current.memories.filter((m) => m.id !== id),
             ...(gone.size
               ? {
                   relationshipDeltas: stateRef.current.relationshipDeltas.filter(
                     (d) => !gone.has(d.id),
+                  ),
+                }
+              : {}),
+            ...(lost.size
+              ? {
+                  knowledgeEdges: stateRef.current.knowledgeEdges.filter(
+                    (e) => !lost.has(e.id),
                   ),
                 }
               : {}),
@@ -864,6 +911,27 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           set({
             relationshipDeltas: upsertMany(stateRef.current.relationshipDeltas, patched),
           });
+        });
+      },
+
+      async saveKnowledgeEdges(edges) {
+        if (!edges.length) return;
+        return guard('Recording who knows this', async () => {
+          await repo.knowledgeEdges.saveMany(edges);
+          set({ knowledgeEdges: upsertMany(stateRef.current.knowledgeEdges, edges) });
+        });
+      },
+
+      async setKnowledgeEdgeStatus(ids, status) {
+        if (!ids.length) return;
+        return guard('Updating who knows this', async () => {
+          const wanted = new Set(ids);
+          const patched = stateRef.current.knowledgeEdges
+            .filter((e) => wanted.has(e.id))
+            .map((e) => ({ ...e, status }));
+          if (!patched.length) return;
+          await repo.knowledgeEdges.saveMany(patched);
+          set({ knowledgeEdges: upsertMany(stateRef.current.knowledgeEdges, patched) });
         });
       },
 
@@ -1045,6 +1113,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             relationshipDeltas: stateRef.current.relationshipDeltas.filter(
               (d) => d.chatId !== id,
             ),
+            knowledgeEdges: stateRef.current.knowledgeEdges.filter((e) => e.chatId !== id),
             ...(wasActive
               ? { activeChatId: null, messages: [], branches: [], alternatives: [] }
               : {}),
@@ -1365,6 +1434,9 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           const relationshipDeltaIds = current.relationshipDeltas
             .filter((d) => doomed.includes(d.branchId))
             .map((d) => d.id);
+          const knowledgeEdgeIds = current.knowledgeEdges
+            .filter((e) => doomed.includes(e.branchId))
+            .map((e) => e.id);
 
           await Promise.all([
             repo.branches.removeMany(doomed),
@@ -1374,6 +1446,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             repo.storySummaries.removeMany(summaryIds),
             repo.sceneDeltas.removeMany(deltaIds),
             repo.relationshipDeltas.removeMany(relationshipDeltaIds),
+            repo.knowledgeEdges.removeMany(knowledgeEdgeIds),
           ]);
 
           const remaining = current.branches.filter((b) => !doomed.includes(b.id));
@@ -1393,6 +1466,9 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             sceneDeltas: current.sceneDeltas.filter((d) => !deltaIds.includes(d.id)),
             relationshipDeltas: current.relationshipDeltas.filter(
               (d) => !relationshipDeltaIds.includes(d.id),
+            ),
+            knowledgeEdges: current.knowledgeEdges.filter(
+              (e) => !knowledgeEdgeIds.includes(e.id),
             ),
             chats: upsert(current.chats, nextChat),
           });

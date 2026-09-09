@@ -449,6 +449,137 @@ export interface RelationshipDelta extends Timestamped {
 
 export type RelationshipDeltaStatus = 'proposed' | 'applied' | 'reversed';
 
+/* -------------------------------------------------------------- knowledge */
+
+/**
+ * How a character came to have access to a claim.
+ *
+ * Deliberately not `MemoryBasis`, which sits one layer down and answers a
+ * different question: that one says how the *extractor* arrived at a claim,
+ * this one says how a *character in the story* came to hold it. Two fields
+ * called `basis` meaning different things is worth two type names.
+ */
+export type KnowledgeBasis =
+  | 'witnessed'
+  | 'participated'
+  | 'told'
+  | 'discovered'
+  | 'inferred'
+  | 'authored'
+  /**
+   * Derivation only. Produced at read time from a memory's own `statedById`
+   * and never written to the store; extraction must not emit it.
+   */
+  | 'stated';
+
+/**
+ * What a character knows of.
+ *
+ * A relationship is named by its pair, never by the id of the row that
+ * currently describes it. `effectiveRelationships` gives a pair one id when the
+ * author has written it down and another when only the story has, so removing a
+ * hand-written standing — which the story editor allows — changes that id. An
+ * edge keyed by it would quietly stop matching. The pair is stable through
+ * every operation the author can perform, and is the truer subject anyway:
+ * knowledge is about how two people stand, not about a database row.
+ */
+export type KnowledgeSubject =
+  | { kind: 'memory'; id: ID }
+  | { kind: 'relationship'; betweenIds: [ID, ID] };
+
+/**
+ * One character's access to one claim.
+ *
+ * "Knows of", never "knows". Holding a claim is not believing it, agreeing
+ * with it, having witnessed it, or the claim being true — the memory layer
+ * already refuses that conflation for `stated` memories, and this is the same
+ * refusal one storey up. A character can hold a claim that is a lie they were
+ * told, and the store has to be able to say so.
+ *
+ * `confidence` is confidence in the *attribution*: how sure Nexus is that this
+ * character was told this, not how likely the thing is to be true.
+ *
+ * Absence of an edge means nothing is tracked. It never means the character
+ * does not know — there is no negative-knowledge system, and reading absence
+ * as denial would make every story written before this feature amnesiac.
+ */
+export interface KnowledgeEdge extends Timestamped {
+  id: ID;
+  chatId: ID;
+  /** The branch whose timeline established this. */
+  branchId: ID;
+  /** Character or persona id. One edge per knower; never a `knownBy` array. */
+  knowerId: ID;
+  subject: KnowledgeSubject;
+  basis: KnowledgeBasis;
+  /**
+   * Who did the telling, for `told`. Communication provenance only: it does
+   * not mean the teller knows, believes, or is telling the truth, and it is
+   * never traversed to give the teller knowledge of anything.
+   */
+  toldById: ID | null;
+  /** The exchange it was read from. Its visibility decides the edge's. */
+  sourceMessageIds: ID[];
+  confidence: number;
+  status: KnowledgeEdgeStatus;
+  appliedAt: number;
+}
+
+export type KnowledgeEdgeStatus = 'proposed' | 'applied' | 'reversed';
+
+/**
+ * An edge as it applies on the branch being played.
+ *
+ * Stored rows and read-time derivations arrive here as one shape, the way
+ * `ResolvedScene` and `ResolvedSummary` already do for their layers. A derived
+ * edge reports no branch of origin because the memory it came from records
+ * none — `null` says that rather than inventing one.
+ */
+export interface ResolvedKnowledge {
+  id: ID;
+  knowerId: ID;
+  subject: KnowledgeSubject;
+  basis: KnowledgeBasis;
+  toldById: ID | null;
+  sourceMessageIds: ID[];
+  confidence: number;
+  branchId: ID | null;
+  /** True when nothing is stored: not exported, not reversible. */
+  derived: boolean;
+}
+
+/**
+ * One subject and everyone recorded as knowing of it.
+ *
+ * Carried on the compile result beside `loreMisses` — inspector-visible and
+ * prompt-invisible. Knowledge contributes no context part and no tokens.
+ */
+export interface KnowledgeAnnotation {
+  subject: KnowledgeSubject;
+  /** The memory's title, or the two names, for display. */
+  label: string;
+  /**
+   * True for a relationship subject with no standing in this scene right now.
+   * The edge survives the standing disappearing — someone's knowledge of how
+   * two people stood is not erased by the standing being taken back — so this
+   * distinguishes "nothing to show it against" from "no edge exists".
+   */
+  unresolved: boolean;
+  /**
+   * Names resolved here rather than in the view, so the Context Inspector
+   * stays a verbatim renderer of one compile and never has to look anything up
+   * for itself.
+   */
+  knowers: Array<{
+    knower: ResolvedKnowledge;
+    knowerName: string;
+    toldByName: string | null;
+  }>;
+}
+
+/** Off, or tracked and shown without touching generation. */
+export type KnowledgeMode = 'off' | 'annotate';
+
 export interface NarrationPreset {
   id: ID;
   name: string;
@@ -927,6 +1058,16 @@ export interface Settings {
    * reversible from Quick Settings.
    */
   sceneEvolution: SceneEvolutionMode;
+  /**
+   * Whether the story tracks what each character knows of.
+   *
+   * 'annotate' records and shows it and changes nothing about generation:
+   * knowledge contributes no prompt text and no tokens. There is deliberately
+   * no gating mode yet — a value nothing can act on is a state later readers
+   * have to reason about for no benefit, and settings merge forward, so adding
+   * one later needs no migration.
+   */
+  knowledgeMode: KnowledgeMode;
   /** Messages kept verbatim before older turns fold into the rolling summary. */
   summaryWindow: number;
   /** Auto-regenerate the summary once this many new messages accumulate. */
