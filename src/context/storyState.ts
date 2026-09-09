@@ -14,7 +14,7 @@
  * two people stand *now*, not the history of how they got there.
  */
 
-import type { Relationship, StoryState } from '../types';
+import type { DiscoveredPerson, Relationship, StoryState } from '../types';
 
 /** Anyone a relationship can be about: a cast member or the persona. */
 export interface Participant {
@@ -81,6 +81,66 @@ export function describeRelationships(
     '## How they stand',
     'Where these people are with each other as the scene opens. Play them from here ' +
       'rather than from nothing, and let the scene change them rather than restating them.',
+    '',
+    ...lines,
+  ].join('\n');
+}
+
+/* ------------------------------------------------- people the story named */
+
+/** How many named strangers are worth carrying. */
+const MAX_DISCOVERED = 12;
+
+/**
+ * People the story has named who this branch has actually heard of.
+ *
+ * Automatic discovery notices a name, records where it was named, and offers
+ * the person in the story's Cast tab. Until now that was the whole of it: the
+ * model was never told, so the turn after Aizawa walked in it had no idea who
+ * Aizawa was and invented him again — a different teacher every time, which is
+ * exactly the discontinuity discovery exists to prevent.
+ *
+ * Filtered by the same rule the memories use, and for the same reason: a person
+ * first named on a sibling branch was never named on this one. A row with no
+ * provenance is kept — an imported or pre-provenance story is not evidence of
+ * anything being off-branch.
+ *
+ * Dismissed people are left out. The author said they were not worth keeping,
+ * and that answer should not be quietly ignored in the prompt.
+ */
+export function relevantDiscovered(
+  people: DiscoveredPerson[] | null | undefined,
+  visibleMessageIds: Set<string>,
+): DiscoveredPerson[] {
+  return (people ?? [])
+    .filter((person) => {
+      if (person.dismissed || !person.name.trim()) return false;
+      const sources = person.sourceMessageIds ?? [];
+      if (!sources.length) return true;
+      return sources.some((id) => visibleMessageIds.has(id));
+    })
+    .slice(-MAX_DISCOVERED);
+}
+
+/**
+ * A line each, and an instruction not to fill in the rest.
+ *
+ * The danger of naming someone the model knows nothing about is that it
+ * cheerfully invents a biography. So the block says what the story said and
+ * explicitly refuses the gap — this is a reminder that a person exists, not a
+ * character sheet.
+ */
+export function describeDiscovered(people: DiscoveredPerson[]): string {
+  if (!people.length) return '';
+  const lines = people.map((person) => {
+    const note = person.note.trim();
+    return note ? `- ${person.name.trim()}: ${note}` : `- ${person.name.trim()}`;
+  });
+
+  return [
+    '## People the story has named',
+    'Mentioned already, but not part of the cast and not described anywhere. Keep them ' +
+      'consistent with what is said here, and do not invent a history for them.',
     '',
     ...lines,
   ].join('\n');

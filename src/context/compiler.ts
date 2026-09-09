@@ -37,8 +37,10 @@ import { describeControl, describeScene, resolveScene, type ResolvedScene } from
 import { describeNarration, describeTurnDirective } from './narration';
 import { describeNarrationStyle, selectedPresets } from '../narration/presets';
 import {
+  describeDiscovered,
   describeRelationships,
   describeStoryState,
+  relevantDiscovered,
   relevantRelationships,
 } from './storyState';
 import { MEMORY_TIER_RANK, rankMemories } from '../memory/relevance';
@@ -388,6 +390,12 @@ const PRIORITY = {
   relationships: 858,
   /** A cast member who is not in the scene: recognisable, not detailed. */
   absentCharacter: 640,
+  /**
+   * Someone the story named who is not in the cast at all. Below an absent
+   * cast member, because a name the story mentioned once is less established
+   * than a character the author put in the story on purpose.
+   */
+  discoveredPerson: 630,
   global: 950,
   /** The user's own identity. Outranks every character description. */
   persona: 920,
@@ -737,6 +745,31 @@ function compileContextInner(input: CompileInput): CompileResult {
         PRIORITY.storyState,
       ),
     );
+  }
+
+  /*
+   * People the story has named. Placed with the cast rather than with the
+   * memories: this answers "who is this", not "what happened", and the model
+   * needs it at the same moment it needs to know who is in the room.
+   */
+  if (story) {
+    const named = relevantDiscovered(
+      story.discovered,
+      new Set(input.history.map((message) => message.id)),
+    );
+    const namedBlock = macro(describeDiscovered(named));
+    if (namedBlock.trim()) {
+      parts.push(
+        part(
+          'discovered-people',
+          'People the story has named',
+          'character',
+          namedBlock,
+          `${named.length} named in the story but not in the cast.`,
+          PRIORITY.discoveredPerson,
+        ),
+      );
+    }
   }
 
   if (story) {

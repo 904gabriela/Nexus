@@ -25,6 +25,7 @@ import {
   type MockOllama,
 } from './helpers';
 import { seedTavern } from './tavern-fixture';
+import { seedBranchedStory } from './branch-summary-fixture';
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/');
@@ -493,4 +494,80 @@ test('a scene lead pointing at nobody falls back to the room, not to the story',
   expect((system.match(/is the focus of this scene\./g) ?? []).length).toBe(1);
   expect(system).toContain('false-bottomed drawer');
   expect(system).not.toContain('skimming coin');
+});
+
+/* --------------------------------------------- people the story has named */
+
+test('someone the story named is described to the model', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    discovered: [
+      { id: 'p-halda', name: 'Halda', note: 'A caravan driver who never arrived.' },
+    ],
+  });
+
+  await turn(page, ollama, 'Go on.');
+  const system = systemOf(ollama);
+  // Discovery used to stop at the Cast tab: the model was never told, so the
+  // next turn it invented whoever had just walked in.
+  expect(system).toContain('## People the story has named');
+  expect(system).toContain('Halda: A caravan driver who never arrived.');
+  // And it is told not to fill in the rest.
+  expect(system).toContain('do not invent a history for them');
+});
+
+test('a name from a sibling branch is not someone this branch has heard of', async ({
+  page,
+}) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    activeBranchId: 'd',
+    discovered: [
+      { id: 'p-halda', name: 'Halda', note: 'Came in from the storm.', sourceMessageIds: ['c10'] },
+    ],
+  });
+
+  await turn(page, ollama, 'Go on.');
+  expect(systemOf(ollama)).not.toContain('Halda');
+});
+
+test('a descendant branch still knows the name its ancestor heard', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    activeBranchId: 'deep',
+    discovered: [
+      { id: 'p-halda', name: 'Halda', note: 'Came in from the storm.', sourceMessageIds: ['c10'] },
+    ],
+  });
+
+  await turn(page, ollama, 'Go on.');
+  expect(systemOf(ollama)).toContain('Halda');
+});
+
+test('someone the author turned down is not mentioned', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    discovered: [
+      { id: 'p-halda', name: 'Halda', note: 'A caravan driver.', dismissed: true },
+      { id: 'p-tam', name: 'Tam', note: 'The stablehand.' },
+    ],
+  });
+
+  await turn(page, ollama, 'Go on.');
+  const system = systemOf(ollama);
+  expect(system).toContain('Tam');
+  expect(system).not.toContain('Halda');
+});
+
+test('a story that has named nobody says nothing about it', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {});
+
+  await turn(page, ollama, 'Go on.');
+  expect(systemOf(ollama)).not.toContain('People the story has named');
 });

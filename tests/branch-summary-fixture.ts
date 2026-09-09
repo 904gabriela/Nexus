@@ -91,6 +91,14 @@ export interface MemorySeed {
   sourceChatId?: string | null;
 }
 
+export interface DiscoveredSeed {
+  id: string;
+  name: string;
+  note?: string;
+  sourceMessageIds?: string[];
+  dismissed?: boolean;
+}
+
 export interface BranchSeed {
   summaries?: SummarySeed[];
   /** Which branch of chat-1 is active. */
@@ -109,6 +117,8 @@ export interface BranchSeed {
   relationshipDeltas?: RelationshipDeltaSeed[];
   knowledgeEdges?: KnowledgeEdgeSeed[];
   memories?: MemorySeed[];
+  /** People the story named who are not in the cast. */
+  discovered?: DiscoveredSeed[];
 }
 
 export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
@@ -225,6 +235,14 @@ export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
       openingMessage: '',
       tags: [],
       characters: [{ characterId: 'sera', primary: true, note: '', enabled: true }],
+      discovered: (options.discovered ?? []).map((d) => ({
+        id: d.id,
+        name: d.name,
+        note: d.note ?? '',
+        sourceMessageIds: d.sourceMessageIds ?? ['m3'],
+        dismissed: d.dismissed ?? false,
+        updatedAt: now,
+      })),
       relationships: (options.relationships ?? []).map((r) => ({
         id: r.id,
         betweenIds: r.betweenIds,
