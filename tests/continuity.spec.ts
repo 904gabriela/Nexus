@@ -400,3 +400,97 @@ test('the lorebook tester still judges a character-only entry on its own rules',
   await expect(page.getByText('The tithe roll').first()).toBeVisible();
   await expect(page.getByText(/Keyword matched: ledger/).first()).toBeVisible();
 });
+
+/* --------------------------------------------- who the scene asks to reply */
+
+test('a re-cast scene answers with its own lead, not the story’s', async ({ page }) => {
+  const ollama = await mockOllama(page, ['A reply.']);
+  await setupOllamaProvider(page);
+  // The user took Sera out of the room and put Halda at the centre of it.
+  // The story still carries its original `primary` flag on Sera.
+  await seedTavern(page, {
+    storyPrimary: 'sera',
+    primaryCharacterId: 'halda',
+    presentCharacterIds: ['halda'],
+  });
+
+  const system = await turn(page, ollama, 'Who keeps the ledger?');
+
+  expect(system).toContain('Halda is the focus of this scene.');
+  expect(system).not.toContain('Sera is the focus of this scene.');
+
+  // The cast of the scene is what the user set it to. A stale story-level
+  // flag must not seat someone at the table again.
+  const present = /Present: (.*)/.exec(system)?.[1] ?? '';
+  expect(present).toContain('Halda');
+  expect(present).not.toContain('Sera');
+  expect(system).toContain('Elsewhere in this world, not in the scene: Sera');
+
+  // And with the responder goes the private material: Halda's, not Sera's.
+  expect(system).toContain('skimming coin');
+  expect(system).toContain('tithe roll in the chapel');
+  expect(system).not.toContain('false-bottomed drawer');
+  expect(system).not.toContain('every debt owed to the tavern');
+});
+
+test('a scene with no lead of its own still defers to the story’s', async ({ page }) => {
+  const ollama = await mockOllama(page, ['A reply.']);
+  await setupOllamaProvider(page);
+  // Halda is the story's lead but the second name in the room, so only the
+  // story-level flag can put her in the chair — falling back to "first
+  // present character" would answer Sera.
+  await seedTavern(page, {
+    storyPrimary: 'halda',
+    primaryCharacterId: null,
+    presentCharacterIds: ['sera', 'halda'],
+  });
+
+  const system = await turn(page, ollama, 'Who keeps the ledger?');
+
+  expect(system).toContain('Halda is the focus of this scene.');
+  expect(system).toContain('skimming coin');
+  expect(system).not.toContain('false-bottomed drawer');
+  // Both are still in the room: this is about who answers, not who is here.
+  expect(system).toMatch(/Present:.*Sera/);
+  expect(system).toMatch(/Present:.*Halda/);
+});
+
+test('asking a named character to reply outranks both leads', async ({ page }) => {
+  const ollama = await mockOllama(page, ['A reply.']);
+  await setupOllamaProvider(page);
+  await seedTavern(page, { storyPrimary: 'sera', primaryCharacterId: 'halda', withToma: true });
+
+  const system = await askToReply(page, ollama, 'Toma');
+
+  expect(system).toContain('Toma is the focus of this scene.');
+  expect(system).toContain('sold the storm-glass');
+  expect(system).not.toContain('false-bottomed drawer');
+  expect(system).not.toContain('skimming coin');
+});
+
+test('a scene lead pointing at nobody falls back to the room, not to the story', async ({
+  page,
+}) => {
+  const ollama = await mockOllama(page, ['A reply.']);
+  await setupOllamaProvider(page);
+  // The scene names a character that no longer exists. The story's lead is
+  // Halda; the first character in the room is Sera.
+  await seedTavern(page, {
+    storyPrimary: 'halda',
+    primaryCharacterId: 'a-character-that-was-deleted',
+    presentCharacterIds: ['sera', 'halda'],
+  });
+
+  const system = await turn(page, ollama, 'Who keeps the ledger?');
+
+  // resolveScene already defines this: an id it cannot resolve is discarded,
+  // and the lead becomes the first character actually in the scene. That is
+  // the scene-first answer, so it is left as it is rather than reaching back
+  // to the story-level flag.
+  expect(system).toContain('Sera is the focus of this scene.');
+  expect(system).not.toContain('Halda is the focus of this scene.');
+  // Still exactly one responder, and still only their secrets.
+  expect((system.match(/is the focus of this scene\./g) ?? []).length).toBe(1);
+  expect(system).toContain('false-bottomed drawer');
+  expect(system).not.toContain('skimming coin');
+});

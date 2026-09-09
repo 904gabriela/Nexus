@@ -464,12 +464,6 @@ export function useGeneration() {
         return;
       }
 
-      const respondingId =
-        target.characterId ??
-        story?.characters.find((c) => c.primary && c.enabled)?.characterId ??
-        characters[0]?.id ??
-        null;
-
       // Resolve the timeline at call time rather than trusting the value this
       // callback closed over. send() appends the user's message and calls
       // generate() in the same tick, so the closed-over timeline is one message
@@ -482,6 +476,28 @@ export function useGeneration() {
         live.branches,
         liveChat.activeBranchId,
       );
+
+      /*
+       * Who is being asked to reply, strongest claim first.
+       *
+       * The scene's own lead used to be skipped entirely, so a chat re-cast
+       * around Halda still generated for whoever the *story* was built around.
+       * resolveScene treats the id handed to it as an explicit request, which
+       * outranks the scene's declaration and puts that character back in the
+       * room — so a stale story-level flag quietly re-seated a character the
+       * user had removed, and, since the responder now gates secrets and
+       * character-only lore, brought their private material with them.
+       *
+       * The story-level `primary` stays exactly what it was: the default for a
+       * scene that has not named a lead of its own. It is read from the live
+       * story rather than the closed-over one for the same reason as above.
+       */
+      const respondingId =
+        target.characterId ??
+        liveChat.scene?.primaryCharacterId ??
+        liveStory?.characters.find((c) => c.primary && c.enabled)?.characterId ??
+        characters[0]?.id ??
+        null;
 
       // History excludes the message being replaced so it is not fed back in.
       const replaceIndex = target.replaceMessageId
@@ -677,7 +693,10 @@ export function useGeneration() {
     [
       activeChat,
       provider,
-      story,
+      // `story` is gone from this list because generate() now reads the live
+      // story for responder selection, exactly as it already did for the chat
+      // and the timeline. Keeping it would only re-create the callback when a
+      // value it no longer reads changes.
       characters,
       timeline,
       buildCompileInput,
