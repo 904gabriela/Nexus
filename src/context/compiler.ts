@@ -733,7 +733,9 @@ function compileContextInner(input: CompileInput): CompileResult {
   // The wider situation, and the standings inside it. Both are story-owned and
   // both are filtered by what the scene actually holds: a relationship between
   // two people who are not here is background, not context.
-  const stateBlock = macro(describeStoryState(story?.state));
+  const stateBlock = macro(
+    describeStoryState(story?.state, { sceneHasObjective: Boolean(scene.objective.trim()) }),
+  );
   if (stateBlock.trim()) {
     parts.push(
       part(

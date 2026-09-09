@@ -18,6 +18,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
   boot,
+  field,
   goto,
   mockOllama,
   resetDatabase,
@@ -570,4 +571,53 @@ test('a story that has named nobody says nothing about it', async ({ page }) => 
 
   await turn(page, ollama, 'Go on.');
   expect(systemOf(ollama)).not.toContain('People the story has named');
+});
+
+/* ------------------------------------------------- which aim governs a reply */
+
+test('with two aims in play, the model is told which one governs the reply', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    scene: { objective: 'Get Sera to say who sealed the cellar.' },
+  });
+
+  // A story-level aim, set alongside the scene's own.
+  await goto(page, '#/stories');
+  await page.getByRole('button', { name: 'Edit' }).first().click();
+  await page.getByRole('tab', { name: 'World' }).click();
+  await field(page, 'Working towards').fill('Getting through the season without opening it.');
+  await page.getByRole('button', { name: 'Save' }).first().click();
+  await expect(page.getByText(/^Saved /).first()).toBeVisible({ timeout: 15_000 });
+
+  await goto(page, '#/chat/chat-1');
+  await turn(page, ollama, 'Go on.');
+  const system = systemOf(ollama);
+
+  // Both aims reach the model, as they should.
+  expect(system).toContain('Get Sera to say who sealed the cellar.');
+  expect(system).toContain('Getting through the season without opening it.');
+  // And now it is told which one this reply is for, instead of guessing and
+  // steering for the long arc in the middle of a quiet conversation.
+  expect(system).toContain('What the scene is working on right now comes first');
+});
+
+test('a story aim on its own needs no ladder', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {});
+
+  await goto(page, '#/stories');
+  await page.getByRole('button', { name: 'Edit' }).first().click();
+  await page.getByRole('tab', { name: 'World' }).click();
+  await field(page, 'Working towards').fill('Getting through the season.');
+  await page.getByRole('button', { name: 'Save' }).first().click();
+  await expect(page.getByText(/^Saved /).first()).toBeVisible({ timeout: 15_000 });
+
+  await goto(page, '#/chat/chat-1');
+  await turn(page, ollama, 'Go on.');
+  const system = systemOf(ollama);
+  expect(system).toContain('Getting through the season.');
+  // Nothing to disambiguate, so nothing is spent saying so.
+  expect(system).not.toContain('comes first in this reply');
 });

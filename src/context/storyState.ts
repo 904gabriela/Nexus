@@ -22,7 +22,10 @@ export interface Participant {
   name: string;
 }
 
-export function describeStoryState(state: StoryState | null | undefined): string {
+export function describeStoryState(
+  state: StoryState | null | undefined,
+  options: { sceneHasObjective?: boolean } = {},
+): string {
   if (!state) return '';
   const lines: string[] = [];
   if (state.arc.trim()) lines.push(`Arc: ${state.arc.trim()}`);
@@ -36,6 +39,22 @@ export function describeStoryState(state: StoryState | null | undefined): string
   }
 
   if (!lines.length) return '';
+
+  /*
+   * A story can be aiming at three things at once — what this character wants
+   * out of life, what the story is working towards, and what this scene is
+   * driving at — and until now nothing told the model which of them governs the
+   * reply it is about to write. So it would steer for the life goal in the
+   * middle of a quiet conversation. Said only when there is actually something
+   * to disambiguate: one aim on its own needs no ladder.
+   */
+  if (options.sceneHasObjective && state.objective.trim()) {
+    lines.push(
+      '',
+      'That is the longer arc. What the scene is working on right now comes first in this reply.',
+    );
+  }
+
   return ['## Where the story stands', ...lines].join('\n');
 }
 
