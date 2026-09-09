@@ -621,6 +621,51 @@ export interface SceneState {
   updatedAt: number;
 }
 
+/**
+ * A change to the current scene that the story itself established.
+ *
+ * `chat.scene` is the canonical base: what a person wrote down. A scene also
+ * moves on its own — they leave the kitchen and step onto the rooftop — and
+ * until now nothing recorded that, so the top of every prompt went on
+ * insisting on a room the transcript had already left.
+ *
+ * A delta is that movement, kept beside the base rather than written into it.
+ * The effective scene is the base with the visible, applied deltas replayed
+ * over it, so the base stays the author's, the branch that lived the change is
+ * the only one that has it, and any of it can be taken back.
+ */
+export interface SceneDelta extends Timestamped {
+  id: ID;
+  chatId: ID;
+  /** The branch whose timeline established this. */
+  branchId: ID;
+  /** The exchange it was read from. Its visibility decides the delta's. */
+  sourceMessageIds: ID[];
+  appliedAt: number;
+  /** Only SceneState keys, and only the ones that changed. */
+  fields: Partial<SceneState>;
+  /** What those keys held before. For explaining and repairing, never replay. */
+  previous: Partial<SceneState>;
+  basis: MemoryBasis;
+  /** 0–1. Only confident observations apply without being asked. */
+  confidence: number;
+  /**
+   * `proposed` never affects the scene. `applied` does. `reversed` is one the
+   * user took back; `superseded` is one whose field the user has since written
+   * by hand. Both of the last two are excluded from replay, and they are kept
+   * apart because the difference is what the UI has to explain.
+   */
+  status: SceneDeltaStatus;
+}
+
+export type SceneEvolutionMode = 'off' | 'propose' | 'apply';
+
+export type SceneDeltaStatus = 'proposed' | 'applied' | 'reversed' | 'superseded';
+
+/** Scene fields a delta may apply on its own; the rest can only propose. */
+export const AUTO_APPLY_SCENE_FIELDS = ['location', 'situation', 'characterStates'] as const;
+export type AutoApplySceneField = (typeof AUTO_APPLY_SCENE_FIELDS)[number];
+
 export function emptyStoryState(): StoryState {
   return { arc: '', time: '', conflict: '', objective: '', threads: [], updatedAt: 0 };
 }
@@ -816,6 +861,15 @@ export interface Settings {
 
   /* long-run memory */
   useStorySummary: boolean;
+  /**
+   * How much the story may move the scene on its own.
+   *
+   * 'off' extracts nothing. 'propose' reads scene changes but never applies
+   * one without being asked. 'apply' lets a confident, observed change move
+   * location, situation and character state by itself — announced, and
+   * reversible from Quick Settings.
+   */
+  sceneEvolution: SceneEvolutionMode;
   /** Messages kept verbatim before older turns fold into the rolling summary. */
   summaryWindow: number;
   /** Auto-regenerate the summary once this many new messages accumulate. */

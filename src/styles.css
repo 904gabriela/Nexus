@@ -2585,3 +2585,17 @@ mark {
   font-weight: 600;
   color: var(--text);
 }
+
+/* A quiet inline action inside body text — "From the story. Undo". */
+.btn-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.btn-link:hover {
+  opacity: 0.8;
+}

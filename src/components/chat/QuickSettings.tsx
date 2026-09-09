@@ -13,7 +13,15 @@
  * chat's SceneState, the toggles live in Settings, and everything here reads
  * and writes those.
  */
-import type { Character, Chat, ID, NarrationPreset, SceneState, Settings } from '../../types';
+import type {
+  Character,
+  Chat,
+  ID,
+  NarrationPreset,
+  SceneDelta,
+  SceneState,
+  Settings,
+} from '../../types';
 import { useEffect, useState } from 'react';
 import { Sheet } from '../ui/Sheet';
 import { Icon } from '../ui/Icon';
@@ -35,6 +43,14 @@ export interface QuickSettingsProps {
   /** The story's cast, so presence can be set from the people who exist. */
   cast: Character[];
   scene: ResolvedScene;
+  /**
+   * The scene as it stands, base plus whatever the story moved. The fields
+   * below show this rather than `chat.scene`, so the editor and the prompt
+   * never disagree about where everyone is.
+   */
+  sceneNow: SceneState;
+  /** Fields the story moved, keyed as the field name (or `characterStates:<id>`). */
+  sceneDerived: Map<string, SceneDelta>;
   settings: Settings;
   personaName: string | null;
   /** Token usage, when the user has asked to see counts. */
@@ -42,6 +58,10 @@ export interface QuickSettingsProps {
   /** The tuning already in force, so it reads without opening the sheet. */
   responseSummary: string;
   onPatchChat: (patch: Partial<Chat>) => void | Promise<unknown>;
+  /** Writes a scene edit to the canonical base and hands back the fields it took over. */
+  onCommitScene: (partial: Partial<SceneState>) => void | Promise<unknown>;
+  onCommitCharacterState: (characterId: ID, text: string) => void | Promise<unknown>;
+  onUndoSceneChange: (deltaId: ID) => void | Promise<unknown>;
   onPatchSettings: (patch: Partial<Settings>) => void | Promise<unknown>;
   onOpenInspector: () => void;
   onOpenPersona: () => void;
@@ -57,11 +77,16 @@ export function QuickSettings({
   storyPresetIds,
   cast,
   scene,
+  sceneNow,
+  sceneDerived,
   settings,
   personaName,
   contextSummary,
   responseSummary,
   onPatchChat,
+  onCommitScene,
+  onCommitCharacterState,
+  onUndoSceneChange,
   onPatchSettings,
   onOpenInspector,
   onOpenPersona,
@@ -105,13 +130,14 @@ export function QuickSettings({
    * than suddenly emptying the room.
    */
   /**
-   * Every scene write goes through here, so changing one field cannot drop the
-   * others. `chat.scene` is always a complete SceneState — hydrateChat merges
-   * each stored chat over emptyScene() — so spreading it is safe and there is
-   * no partial shape to guard against.
+   * Every scene write goes through here.
+   *
+   * The fields show the scene as it stands — base plus whatever the story
+   * moved — and commit to the canonical base. The handler decides what
+   * actually changed, so opening the sheet and closing it again writes
+   * nothing and takes nothing back from the story.
    */
-  const patchScene = (partial: Partial<SceneState>) =>
-    onPatchChat({ scene: { ...chat.scene, ...partial } });
+  const patchScene = (partial: Partial<SceneState>) => onCommitScene(partial);
 
   const togglePresent = (character: Character) => {
     const current = scene.present.map((c) => c.id);
@@ -123,8 +149,8 @@ export function QuickSettings({
     if (!next.length) return;
     patchScene({
       presentCharacterIds: next,
-      primaryCharacterId: next.includes(chat.scene.primaryCharacterId ?? '')
-        ? chat.scene.primaryCharacterId
+      primaryCharacterId: next.includes(sceneNow.primaryCharacterId ?? '')
+        ? sceneNow.primaryCharacterId
         : next[0],
     });
   };
@@ -134,12 +160,7 @@ export function QuickSettings({
    * who they are. Clearing the text removes the key rather than storing an
    * empty string, so the compiler sees no line at all for that character.
    */
-  const setCharacterState = (id: ID, text: string) => {
-    const next = { ...chat.scene.characterStates };
-    if (text.trim()) next[id] = text.trim();
-    else delete next[id];
-    patchScene({ characterStates: next });
-  };
+  const setCharacterState = (id: ID, text: string) => onCommitCharacterState(id, text);
 
   return (
     <Sheet open={open} onClose={onClose} title="Chat settings" large>
@@ -152,20 +173,24 @@ export function QuickSettings({
 
         <SceneField
           label="Where"
-          value={chat.scene.location}
+          value={sceneNow.location}
           placeholder="The Nexus Tavern, back room"
           onCommit={(location) => patchScene({ location })}
+          derived={sceneDerived.has('location')}
+          onUndo={() => onUndoSceneChange(sceneDerived.get('location')!.id)}
         />
         <SceneField
           label="What is happening"
-          value={chat.scene.situation}
+          value={sceneNow.situation}
           placeholder="The storm has shut the roads for a third night."
           multiline
           onCommit={(situation) => patchScene({ situation })}
+          derived={sceneDerived.has('situation')}
+          onUndo={() => onUndoSceneChange(sceneDerived.get('situation')!.id)}
         />
         <SceneField
           label="Right now"
-          value={chat.scene.objective}
+          value={sceneNow.objective}
           placeholder="Get Sera to admit who sealed the cellar."
           hint="The immediate goal or open question driving this scene."
           onCommit={(objective) => patchScene({ objective })}
@@ -218,7 +243,7 @@ export function QuickSettings({
               <SceneField
                 key={character.id}
                 label={character.displayName || character.name}
-                value={chat.scene.characterStates[character.id] ?? ''}
+                value={sceneNow.characterStates[character.id] ?? ''}
                 placeholder="Injured, guarded, hiding something…"
                 onCommit={(text) => setCharacterState(character.id, text)}
               />
@@ -399,6 +424,8 @@ function SceneField({
   hint,
   multiline,
   onCommit,
+  derived,
+  onUndo,
 }: {
   label: string;
   value: string;
@@ -406,6 +433,9 @@ function SceneField({
   hint?: string;
   multiline?: boolean;
   onCommit: (value: string) => void;
+  /** True when this value came from the story rather than from the user. */
+  derived?: boolean;
+  onUndo?: () => void;
 }) {
   const [draft, setDraft] = useState(value);
 
@@ -440,6 +470,19 @@ function SceneField({
           placeholder={placeholder}
           hint={hint}
         />
+      )}
+      {derived && onUndo && (
+        <p className="small muted" style={{ margin: '4px 0 0' }}>
+          From the story.{' '}
+          <button
+            type="button"
+            className="btn-link"
+            onClick={onUndo}
+            aria-label={`Undo the story's change to ${label}`}
+          >
+            Undo
+          </button>
+        </p>
       )}
     </div>
   );

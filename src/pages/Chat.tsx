@@ -654,8 +654,11 @@ export function ChatPage({
    * unmounting the whole tree.
    */
   const scene = useMemo(
-    () => resolveScene({ scene: activeChat?.scene, cast: gen.characters }),
-    [activeChat?.scene, gen.characters],
+    // The scene as it stands, so the header and the presence chips agree with
+    // the prompt rather than with the base nobody has edited since the story
+    // moved on.
+    () => resolveScene({ scene: gen.scene, cast: gen.characters }),
+    [gen.scene, gen.characters],
   );
 
   /* ------------------------------------------------------------ render */
@@ -1010,9 +1013,14 @@ export function ChatPage({
         storyPresetIds={gen.story?.narrationPresetIds ?? []}
         cast={gen.characters}
         scene={scene}
+        sceneNow={gen.scene ?? activeChat.scene}
+        sceneDerived={gen.sceneDerived}
         settings={state.settings}
         personaName={gen.persona ? gen.persona.displayName || gen.persona.name : null}
         onPatchChat={(patch) => actions.saveChat({ ...activeChat, ...patch })}
+        onCommitScene={gen.commitScene}
+        onCommitCharacterState={gen.commitCharacterState}
+        onUndoSceneChange={gen.reverseSceneDelta}
         onPatchSettings={(patch) => actions.saveSettings(patch)}
         responseSummary={responseSummary}
         contextSummary={

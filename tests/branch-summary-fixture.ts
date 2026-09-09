@@ -28,6 +28,19 @@ export interface SummarySeed {
   currentSummary?: string;
 }
 
+export interface SceneDeltaSeed {
+  id: string;
+  branchId?: string;
+  chatId?: string;
+  sourceMessageIds: string[];
+  fields: Record<string, unknown>;
+  previous?: Record<string, unknown>;
+  status?: 'proposed' | 'applied' | 'reversed' | 'superseded';
+  basis?: string;
+  confidence?: number;
+  appliedAt?: number;
+}
+
 export interface BranchSeed {
   summaries?: SummarySeed[];
   /** Which branch of chat-1 is active. */
@@ -38,6 +51,9 @@ export interface BranchSeed {
   open?: 'chat-1' | 'chat-2';
   /** Settings to override before boot, e.g. summaryWindow. */
   settings?: Record<string, unknown>;
+  /** Canonical base scene for chat-1. */
+  scene?: Record<string, unknown>;
+  sceneDeltas?: SceneDeltaSeed[];
 }
 
 export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
@@ -175,6 +191,7 @@ export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
       objective: '',
       characterStates: {},
       updatedAt: now,
+      ...(options.scene ?? {}),
     };
 
     await put('chats', {
@@ -291,6 +308,23 @@ export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
         locked: false,
         coveredThroughOrder: s.coveredThroughOrder,
         lastGeneratedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    for (const d of options.sceneDeltas ?? []) {
+      await put('sceneDeltas', {
+        id: d.id,
+        chatId: d.chatId ?? 'chat-1',
+        branchId: d.branchId ?? 'main',
+        sourceMessageIds: d.sourceMessageIds,
+        appliedAt: d.appliedAt ?? now,
+        fields: d.fields,
+        previous: d.previous ?? {},
+        basis: d.basis ?? 'observed',
+        confidence: d.confidence ?? 0.9,
+        status: d.status ?? 'applied',
         createdAt: now,
         updatedAt: now,
       });

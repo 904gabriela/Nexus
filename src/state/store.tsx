@@ -29,10 +29,11 @@ import type {
   ModelCapabilities,
   Settings,
   Story,
+  SceneDelta,
   StorySummary,
   ToastMessage,
 } from '../types';
-import { defaultCapabilities } from '../types';
+import { defaultCapabilities, emptyScene } from '../types';
 import {
   DEFAULT_GENERATION,
   defaultSettings,
@@ -66,6 +67,7 @@ export interface AppState {
   providers: Provider[];
   imageProviders: ImageProvider[];
   storySummaries: StorySummary[];
+  sceneDeltas: SceneDelta[];
   media: MediaMeta[];
   checkpoints: Checkpoint[];
   /** Working set for the currently open chat. */
@@ -96,6 +98,7 @@ const initialState: AppState = {
   providers: [],
   imageProviders: [],
   storySummaries: [],
+  sceneDeltas: [],
   media: [],
   checkpoints: [],
   activeChatId: null,
@@ -177,6 +180,11 @@ export interface AppActions {
   deleteImageProvider: (id: ID) => Promise<void>;
 
   saveStorySummary: (summary: StorySummary) => Promise<StorySummary>;
+
+  /** Records scene changes the story established. Never touches chat.scene. */
+  saveSceneDeltas: (deltas: SceneDelta[]) => Promise<void>;
+  /** Undo, or hand a field back to the user: 'reversed' / 'superseded'. */
+  setSceneDeltaStatus: (ids: ID[], status: SceneDelta['status']) => Promise<void>;
 
   refreshMedia: () => Promise<MediaMeta[]>;
   removeMedia: (id: ID) => Promise<void>;
@@ -277,6 +285,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         providers,
         imageProviderList,
         summaries,
+        deltas,
         media,
         checkpoints,
       ] = await Promise.all([
@@ -291,6 +300,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         repo.providers.all(),
         repo.imageProviders.all(),
         repo.storySummaries.all(),
+        repo.sceneDeltas.all(),
         listMedia(),
         repo.checkpoints.all(),
       ]);
@@ -308,6 +318,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           providers,
           imageProviders: imageProviderList,
           storySummaries: summaries,
+          sceneDeltas: deltas,
           media,
           checkpoints,
           v2Scan: settings.migratedV2 ? null : scanV2(),
@@ -367,6 +378,26 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         });
         throw err;
       }
+    };
+
+    /**
+     * Forgets scene changes that were read from messages which no longer say
+     * what they said.
+     *
+     * A delta is a conclusion about a specific turn. Delete or rewrite that
+     * turn and the conclusion has nothing left holding it up, so it goes —
+     * rather than quietly continuing to move the scene on evidence that is no
+     * longer there.
+     */
+    const dropSceneDeltasFor = async (messageIds: ID[]) => {
+      const wanted = new Set(messageIds);
+      const doomed = stateRef.current.sceneDeltas.filter((delta) =>
+        delta.sourceMessageIds.some((id) => wanted.has(id)),
+      );
+      if (!doomed.length) return;
+      await repo.sceneDeltas.removeMany(doomed.map((d) => d.id));
+      const gone = new Set(doomed.map((d) => d.id));
+      set({ sceneDeltas: stateRef.current.sceneDeltas.filter((d) => !gone.has(d.id)) });
     };
 
     const loadChatWorkingSet = async (chatId: ID) => {
@@ -716,6 +747,27 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         });
       },
 
+      async saveSceneDeltas(deltas) {
+        if (!deltas.length) return;
+        return guard('Recording the scene change', async () => {
+          await repo.sceneDeltas.saveMany(deltas);
+          set({ sceneDeltas: upsertMany(stateRef.current.sceneDeltas, deltas) });
+        });
+      },
+
+      async setSceneDeltaStatus(ids, status) {
+        if (!ids.length) return;
+        return guard('Updating the scene change', async () => {
+          const wanted = new Set(ids);
+          const patched = stateRef.current.sceneDeltas
+            .filter((d) => wanted.has(d.id))
+            .map((d) => ({ ...d, status }));
+          if (!patched.length) return;
+          await repo.sceneDeltas.saveMany(patched);
+          set({ sceneDeltas: upsertMany(stateRef.current.sceneDeltas, patched) });
+        });
+      },
+
       /* --------------------------------------------------------- media */
 
       async refreshMedia() {
@@ -890,6 +942,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             chats: stateRef.current.chats.filter((c) => c.id !== id),
             checkpoints: stateRef.current.checkpoints.filter((c) => c.chatId !== id),
             storySummaries: stateRef.current.storySummaries.filter((s) => s.chatId !== id),
+            sceneDeltas: stateRef.current.sceneDeltas.filter((d) => d.chatId !== id),
             ...(wasActive
               ? { activeChatId: null, messages: [], branches: [], alternatives: [] }
               : {}),
@@ -995,8 +1048,16 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
       async updateMessage(message) {
         return guard('Updating the message', async () => {
+          const before = stateRef.current.messages.find((m) => m.id === message.id);
           const saved = await repo.messages.save(message);
           set({ messages: upsert(stateRef.current.messages, saved) });
+          // A scene change read from this turn was a conclusion about words
+          // that are no longer there. Rewriting or regenerating the turn voids
+          // it; marking every other kind of update — favouriting, switching
+          // alternative — would throw away changes nothing contradicted.
+          if (before && before.content !== saved.content) {
+            await dropSceneDeltasFor([saved.id]);
+          }
           return saved;
         });
       },
@@ -1021,6 +1082,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             await repo.branches.saveMany(patched);
             set({ branches: upsertMany(current.branches, patched) });
           }
+          await dropSceneDeltasFor([id]);
           set({
             messages: stateRef.current.messages.filter((m) => m.id !== id),
             alternatives: stateRef.current.alternatives.filter((a) => a.messageId !== id),
@@ -1179,6 +1241,11 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           const summaryIds = current.storySummaries
             .filter((s) => s.branchId && doomed.includes(s.branchId))
             .map((s) => s.id);
+          // Deltas belong to the branch that established them. Ones inherited
+          // from an ancestor are not this branch's to delete.
+          const deltaIds = current.sceneDeltas
+            .filter((d) => doomed.includes(d.branchId))
+            .map((d) => d.id);
 
           await Promise.all([
             repo.branches.removeMany(doomed),
@@ -1186,6 +1253,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             repo.alternatives.removeMany(alternativeIds),
             repo.checkpoints.removeMany(checkpointIds),
             repo.storySummaries.removeMany(summaryIds),
+            repo.sceneDeltas.removeMany(deltaIds),
           ]);
 
           const remaining = current.branches.filter((b) => !doomed.includes(b.id));
@@ -1202,6 +1270,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             alternatives: current.alternatives.filter((a) => !alternativeIds.includes(a.id)),
             checkpoints: current.checkpoints.filter((c) => !checkpointIds.includes(c.id)),
             storySummaries: current.storySummaries.filter((s) => !summaryIds.includes(s.id)),
+            sceneDeltas: current.sceneDeltas.filter((d) => !deltaIds.includes(d.id)),
             chats: upsert(current.chats, nextChat),
           });
         });
@@ -1307,6 +1376,10 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             personaId: srcChat.personaId,
             lorebookIds: srcChat.lorebookIds,
             settings: srcChat.settings,
+            // A new thread from the same messages is the same scene. Leaving it
+            // to newChat's emptyScene() dropped where everyone was standing,
+            // and the fork opened in a room nobody had described.
+            scene: { ...srcChat.scene, updatedAt: Date.now() },
           });
           const branch = newBranch(chat.id, { name: 'Main' });
           chat.activeBranchId = branch.id;
@@ -1358,6 +1431,9 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             personaId: srcChat?.personaId ?? null,
             lorebookIds: srcChat?.lorebookIds ?? [],
             settings: srcChat?.settings ?? {},
+            // The source chat may be gone; then there is no scene to carry and
+            // newChat's empty one is the honest answer.
+            scene: srcChat ? { ...srcChat.scene, updatedAt: Date.now() } : emptyScene(),
           });
           const branch = newBranch(chat.id, { name: 'Main' });
           chat.activeBranchId = branch.id;

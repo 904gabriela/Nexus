@@ -289,6 +289,7 @@ export async function buildBackup(options: BackupOptions): Promise<string> {
     providers,
     imageProviders,
     storySummaries,
+    deltas,
     settings,
   ] = await Promise.all([
     repo.characters.all(),
@@ -306,6 +307,7 @@ export async function buildBackup(options: BackupOptions): Promise<string> {
     repo.providers.all(),
     repo.imageProviders.all(),
     repo.storySummaries.all(),
+    repo.sceneDeltas.all(),
     repo.settingsRepo.load(),
   ]);
 
@@ -326,6 +328,7 @@ export async function buildBackup(options: BackupOptions): Promise<string> {
     providers: stripSecrets(providers),
     imageProviders: stripSecrets(imageProviders),
     storySummaries,
+    sceneDeltas: deltas,
     settings: { ...settings },
   };
 

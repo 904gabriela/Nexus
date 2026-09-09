@@ -15,6 +15,7 @@ import type {
   ImageProvider,
   Settings,
   Story,
+  SceneDelta,
   StorySummary,
 } from './index';
 import { defaultCapabilities, emptyScene, emptyStoryState } from './index';
@@ -417,6 +418,9 @@ export function defaultSettings(): Settings {
     activeImageProviderId: null,
 
     useStorySummary: true,
+    // Reads scene changes but asks before moving anything: the extractor has
+    // not been measured against real transcripts yet.
+    sceneEvolution: 'propose',
     summaryWindow: 30,
     autoSummaryEvery: 20,
 
@@ -476,6 +480,29 @@ export const IMAGE_PROVIDER_PRESETS: Record<
 };
 
 /* ---------------------------------------------------------- story summary */
+
+export function newSceneDelta(
+  chatId: string,
+  branchId: string,
+  partial: Partial<SceneDelta> = {},
+): SceneDelta {
+  const t = now();
+  return {
+    id: uid(),
+    chatId,
+    branchId,
+    sourceMessageIds: [],
+    appliedAt: t,
+    fields: {},
+    previous: {},
+    basis: 'observed',
+    confidence: 0,
+    status: 'proposed',
+    createdAt: t,
+    updatedAt: t,
+    ...partial,
+  };
+}
 
 export function newStorySummary(storyId: string, partial: Partial<StorySummary> = {}): StorySummary {
   const t = now();

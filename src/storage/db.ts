@@ -6,7 +6,7 @@
  */
 
 export const DB_NAME = 'nexus-tavern-pro';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 export const STORES = {
   characters: 'characters',
@@ -25,6 +25,7 @@ export const STORES = {
   providers: 'providers',
   imageProviders: 'imageProviders',
   storySummaries: 'storySummaries',
+  sceneDeltas: 'sceneDeltas',
   settings: 'settings',
 } as const;
 
@@ -72,6 +73,10 @@ const SCHEMA: Record<StoreName, IndexSpec[]> = {
   providers: [],
   imageProviders: [],
   storySummaries: [{ name: 'storyId', keyPath: 'storyId' }],
+  sceneDeltas: [
+    { name: 'chatId', keyPath: 'chatId' },
+    { name: 'branchId', keyPath: 'branchId' },
+  ],
   settings: [],
 };
 
@@ -302,5 +307,6 @@ export const ALL_DATA_STORES: StoreName[] = [
   STORES.providers,
   STORES.imageProviders,
   STORES.storySummaries,
+  STORES.sceneDeltas,
   STORES.settings,
 ];

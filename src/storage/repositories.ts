@@ -26,6 +26,7 @@ import type {
   ImageProvider,
   Settings,
   Story,
+  SceneDelta,
   StorySummary,
 } from '../types';
 import {
@@ -207,6 +208,17 @@ export const storySummaries = {
   removeMany: (ids: ID[]) => dbDeleteMany(STORES.storySummaries, ids),
 };
 
+export const sceneDeltas = {
+  all: () => dbGetAll<SceneDelta>(STORES.sceneDeltas),
+  byChat: (chatId: ID) => dbGetAllByIndex<SceneDelta>(STORES.sceneDeltas, 'chatId', chatId),
+  byBranch: (branchId: ID) =>
+    dbGetAllByIndex<SceneDelta>(STORES.sceneDeltas, 'branchId', branchId),
+  save: (value: SceneDelta) => dbPut(STORES.sceneDeltas, touch(value)),
+  saveMany: (values: SceneDelta[]) => dbPutMany(STORES.sceneDeltas, values),
+  remove: (id: ID) => dbDelete(STORES.sceneDeltas, id),
+  removeMany: (ids: ID[]) => dbDeleteMany(STORES.sceneDeltas, ids),
+};
+
 export const settingsRepo = {
   async load(): Promise<Settings> {
     const stored = await dbGet<Settings>(STORES.settings, 'settings');
@@ -235,22 +247,31 @@ export const settingsRepo = {
 
 /** Removes a chat and every row that only exists because of it. */
 export async function deleteChatCascade(chatId: ID): Promise<void> {
-  const [chatMessages, chatBranches, chatCheckpoints, chatAlternatives, chatSummaries] =
-    await Promise.all([
-      messages.byChat(chatId),
-      branches.byChat(chatId),
-      checkpoints.byChat(chatId),
-      alternatives.byChat(chatId),
-      // A summary compresses one of this chat's timelines, and its watermark is
-      // in this chat's order space, so it cannot outlive the chat.
-      storySummaries.byChat(chatId),
-    ]);
+  const [
+    chatMessages,
+    chatBranches,
+    chatCheckpoints,
+    chatAlternatives,
+    chatSummaries,
+    chatDeltas,
+  ] = await Promise.all([
+    messages.byChat(chatId),
+    branches.byChat(chatId),
+    checkpoints.byChat(chatId),
+    alternatives.byChat(chatId),
+    // A summary compresses one of this chat's timelines, and its watermark is
+    // in this chat's order space, so it cannot outlive the chat.
+    storySummaries.byChat(chatId),
+    // A scene delta is a claim about one of this chat's timelines.
+    sceneDeltas.byChat(chatId),
+  ]);
   await Promise.all([
     messages.removeMany(chatMessages.map((m) => m.id)),
     branches.removeMany(chatBranches.map((b) => b.id)),
     checkpoints.removeMany(chatCheckpoints.map((c) => c.id)),
     alternatives.removeMany(chatAlternatives.map((a) => a.id)),
     storySummaries.removeMany(chatSummaries.map((s) => s.id)),
+    sceneDeltas.removeMany(chatDeltas.map((d) => d.id)),
     chats.remove(chatId),
   ]);
 }

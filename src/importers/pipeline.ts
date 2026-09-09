@@ -24,6 +24,7 @@ import type {
   Provider,
   Settings,
   Story,
+  SceneDelta,
   StorySummary,
 } from '../types';
 import {
@@ -142,6 +143,7 @@ export interface ImportPayload {
   providers?: Provider[];
   imageProviders?: ImageProvider[];
   storySummaries?: StorySummary[];
+  sceneDeltas?: SceneDelta[];
   settings?: Settings;
   /** mediaId → data URL, restored into blob storage on commit. */
   media?: Record<ID, string>;
@@ -389,6 +391,7 @@ const COLLECTION_LABELS: Partial<Record<CollectionKey, string>> = {
   checkpoints: 'checkpoints',
   memories: 'memories',
   storySummaries: 'story summaries',
+  sceneDeltas: 'scene changes',
   providers: 'text providers (keys not included)',
   imageProviders: 'image providers (keys not included)',
 };
@@ -1130,6 +1133,7 @@ async function buildBackupImport(
     providers: (body.providers as Provider[]) ?? [],
     imageProviders: (body.imageProviders as ImageProvider[]) ?? [],
     storySummaries: (body.storySummaries as StorySummary[]) ?? [],
+    sceneDeltas: (body.sceneDeltas as SceneDelta[]) ?? [],
     settings: isPlainObject(body.settings) ? (body.settings as unknown as Settings) : undefined,
     media: isPlainObject(body.media) ? (body.media as Record<ID, string>) : undefined,
   };
@@ -1796,6 +1800,10 @@ export async function commitImport(
     counts.imageProviders = merged.length;
   }
 
+  if (parsed.payload.sceneDeltas?.length) {
+    await repo.sceneDeltas.saveMany(parsed.payload.sceneDeltas);
+    counts.sceneDeltas = parsed.payload.sceneDeltas.length;
+  }
   if (parsed.payload.storySummaries?.length) {
     await repo.storySummaries.saveMany(parsed.payload.storySummaries);
     counts.storySummaries = parsed.payload.storySummaries.length;

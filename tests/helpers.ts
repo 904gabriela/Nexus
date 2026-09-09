@@ -45,6 +45,18 @@ export interface MockProvider {
   /** Replies handed out in order; the last one repeats. */
   replies: string[];
   requests: Array<{ body: any; url: string }>;
+  /**
+   * Replies for the scene-change extractor. An OpenAI-compatible provider
+   * serves it from the same endpoint as the roleplay, so without its own queue
+   * it would both consume a reply and be mistaken for the last roleplay turn.
+   */
+  sceneReplies: string[];
+  scene: Array<{ body: any; url: string }>;
+}
+
+/** The scene extractor names itself in its instruction; nothing else does. */
+export function isSceneExtraction(body: any): boolean {
+  return String(body?.messages?.[0]?.content ?? '').includes('has ALREADY HAPPENED');
 }
 
 /**
@@ -52,8 +64,14 @@ export interface MockProvider {
  * and no network access is required.
  */
 export async function mockAI(page: Page, replies: string[] = ['A mocked reply.']): Promise<MockProvider> {
-  const state: MockProvider = { replies: [...replies], requests: [] };
+  const state: MockProvider = {
+    replies: [...replies],
+    requests: [],
+    sceneReplies: [],
+    scene: [],
+  };
   let index = 0;
+  let sceneIndex = 0;
 
   await page.route('**/v1/models', async (route: Route) => {
     await route.fulfill({
@@ -67,6 +85,19 @@ export async function mockAI(page: Page, replies: string[] = ['A mocked reply.']
 
   await page.route('**/v1/chat/completions', async (route: Route) => {
     const body = route.request().postDataJSON();
+    if (isSceneExtraction(body)) {
+      state.scene.push({ body, url: route.request().url() });
+      const sceneReply =
+        state.sceneReplies[Math.min(sceneIndex, state.sceneReplies.length - 1)] ??
+        '{"changes": []}';
+      sceneIndex += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ choices: [{ message: { role: 'assistant', content: sceneReply } }] }),
+      });
+      return;
+    }
     state.requests.push({ body, url: route.request().url() });
     const reply = state.replies[Math.min(index, state.replies.length - 1)] ?? 'A mocked reply.';
     index += 1;
@@ -565,6 +596,15 @@ export async function sendMessage(page: Page, text: string) {
 
 export interface MockOllama {
   replies: string[];
+  /**
+   * Replies for the scene-change extractor, which shares the OpenAI-compatible
+   * endpoint with summaries and memory. It runs on every turn once scene
+   * evolution is on, so without its own queue it would eat the reply the test
+   * meant for something else. Defaults to "nothing changed".
+   */
+  sceneReplies: string[];
+  /** Every scene-extraction request, in order. */
+  scene: Array<{ body: any; url: string }>;
   /** Every body posted to /api/chat, in order — the roleplay turns. */
   requests: Array<{ body: any; url: string }>;
   /**
@@ -591,8 +631,16 @@ export async function mockOllama(
   replies: string[] = ['A mocked reply.'],
   contextLength = 8192,
 ): Promise<MockOllama> {
-  const state: MockOllama = { replies: [...replies], requests: [], utility: [], contextLength };
+  const state: MockOllama = {
+    replies: [...replies],
+    sceneReplies: [],
+    requests: [],
+    utility: [],
+    scene: [],
+    contextLength,
+  };
   let index = 0;
+  let sceneIndex = 0;
 
   await page.route('**/api/tags', async (route: Route) => {
     await route.fulfill({
@@ -625,6 +673,21 @@ export async function mockOllama(
    */
   await page.route('**/v1/chat/completions', async (route: Route) => {
     const body = route.request().postDataJSON();
+    // Identified by its own instruction rather than by its endpoint, which it
+    // shares with every other background job.
+    if (isSceneExtraction(body)) {
+      state.scene.push({ body, url: route.request().url() });
+      const sceneReply =
+        state.sceneReplies[Math.min(sceneIndex, state.sceneReplies.length - 1)] ??
+        '{"changes": []}';
+      sceneIndex += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ choices: [{ message: { role: 'assistant', content: sceneReply } }] }),
+      });
+      return;
+    }
     state.utility.push({ body, url: route.request().url() });
     const reply = state.replies[Math.min(index, state.replies.length - 1)] ?? 'A mocked reply.';
     index += 1;

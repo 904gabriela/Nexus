@@ -40,6 +40,7 @@ import type {
   Provider,
   Settings,
   Story,
+  SceneDelta,
   StorySummary,
 } from '../types';
 
@@ -84,6 +85,7 @@ export interface NexusCollections {
   checkpoints?: Checkpoint[];
   memories?: Memory[];
   storySummaries?: StorySummary[];
+  sceneDeltas?: SceneDelta[];
   providers?: Provider[];
   imageProviders?: ImageProvider[];
   mediaMeta?: MediaMeta[];
@@ -124,6 +126,7 @@ export const COLLECTION_KEYS = [
   'checkpoints',
   'memories',
   'storySummaries',
+  'sceneDeltas',
   'providers',
   'imageProviders',
   'mediaMeta',
@@ -345,6 +348,7 @@ export function fromLegacyEnvelope(envelope: unknown): NexusDocument | null {
         lorebooks: d.lorebooks ?? [],
         loreEntries: d.loreEntries ?? [],
         storySummaries: d.storySummaries ?? [],
+        sceneDeltas: d.sceneDeltas ?? [],
         providers: d.providers ?? [],
         imageProviders: d.imageProviders ?? [],
         mediaMeta: d.mediaMeta ?? [],

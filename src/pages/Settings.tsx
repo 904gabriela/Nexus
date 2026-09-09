@@ -1325,6 +1325,21 @@ function MemorySection() {
 
       <hr className="divider" />
 
+      <h3 className="section-title">Scene changes</h3>
+      <SelectField
+        label="When the story moves the scene"
+        value={s.sceneEvolution}
+        onChange={(sceneEvolution) => actions.saveSettings({ sceneEvolution })}
+        options={[
+          { value: 'off', label: 'Leave the scene alone' },
+          { value: 'propose', label: 'Notice changes, ask before applying' },
+          { value: 'apply', label: 'Apply clear changes automatically' },
+        ]}
+        hint="The scene block is the top of every prompt. When the story leaves the kitchen for the rooftop, this decides whether the prompt follows. Applied changes are announced and can be undone from Chat settings."
+      />
+
+      <hr className="divider" />
+
       <h3 className="section-title">Automatic memory</h3>
       <Toggle
         label="Create memories automatically"

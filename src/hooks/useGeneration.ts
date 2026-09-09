@@ -10,6 +10,8 @@ import type {
   Message,
   Persona,
   Provider,
+  SceneDelta,
+  SceneState,
   Story,
   StorySummary,
 } from '../types';
@@ -50,6 +52,17 @@ import {
   type UsableBudget,
 } from '../ai/contextWindow';
 import { resolveTimeline } from '../services/timeline';
+import {
+  changedSceneFields,
+  derivedFields,
+  effectiveScene,
+  previousFor,
+  supersededByEdit,
+  visibleMessagesOf,
+  type VisibleMessages,
+} from '../scene/delta';
+import { extractSceneChanges, decideSceneStatus } from '../scene/extract';
+import { newSceneDelta } from '../types/factories';
 import { getMediaBlob, blobToDataUrl, saveMedia } from '../media/mediaStore';
 import { ImageError, generateImage } from '../ai/imageClient';
 
@@ -187,6 +200,115 @@ export function useGeneration() {
   );
   const summary = resolvedSummary?.summary ?? null;
 
+  /**
+   * The branch's messages, indexed once.
+   *
+   * Both scene replay and memory scoping ask the same question — is this turn
+   * on the timeline being played — so they share one traversal rather than
+   * walking the timeline twice per render.
+   */
+  const visibleMessages = useMemo(() => visibleMessagesOf(timeline), [timeline]);
+
+  /**
+   * The scene as the story left it: the canonical base with the branch's own
+   * applied changes replayed over it.
+   *
+   * `chat.scene` is never written by this — a branch switch produces a
+   * different answer without touching a thing, and a sibling's rooftop stays
+   * on the sibling. Kept as a function of the chat so generation can use the
+   * live base rather than the one this render closed over.
+   */
+  const sceneDeltasHere = useMemo(
+    () => state.sceneDeltas.filter((d) => d.chatId === activeChat?.id),
+    [state.sceneDeltas, activeChat?.id],
+  );
+  const sceneFor = useCallback(
+    (chat: Chat | null | undefined, visible: VisibleMessages = visibleMessages): SceneState | null =>
+      chat ? effectiveScene(chat.scene, sceneDeltasHere, visible) : null,
+    [sceneDeltasHere, visibleMessages],
+  );
+  /** The scene the UI should show, for the chat and branch on screen. */
+  const scene = useMemo(() => sceneFor(activeChat), [sceneFor, activeChat]);
+  /** Which fields the story moved, so the editor can say so and undo them. */
+  const sceneDerived = useMemo(
+    () => derivedFields(sceneDeltasHere, visibleMessages),
+    [sceneDeltasHere, visibleMessages],
+  );
+
+  /**
+   * A person editing the scene, which is the one authoritative write.
+   *
+   * The editor shows the effective value and commits to the base, so a field
+   * can come back unchanged simply because the sheet was opened. That is not
+   * an edit and must not supersede anything — otherwise merely looking at the
+   * scene would take it back from the story.
+   */
+  const commitScene = useCallback(
+    async (partial: Partial<SceneState>) => {
+      if (!activeChat) return;
+      const shown = sceneFor(activeChat);
+      if (!shown) return;
+      const changed = changedSceneFields(shown, partial);
+      if (!changed.fields.length) return;
+
+      const superseded = supersededByEdit(sceneDeltasHere, changed);
+      await actions.saveChat({
+        ...activeChat,
+        scene: { ...activeChat.scene, ...partial, updatedAt: Date.now() },
+      });
+      if (superseded.length) {
+        await actions.setSceneDeltaStatus(
+          superseded.map((d) => d.id),
+          'superseded',
+        );
+      }
+    },
+    [actions, activeChat, sceneFor, sceneDeltasHere],
+  );
+
+  /**
+   * One character's scene-local state.
+   *
+   * Written surgically into the base rather than through the whole map:
+   * absorbing another character's derived line into the base would survive
+   * that line being undone, and the undo would silently do nothing.
+   */
+  const commitCharacterState = useCallback(
+    async (characterId: ID, text: string) => {
+      if (!activeChat) return;
+      const shown = sceneFor(activeChat);
+      if (!shown) return;
+      const value = text.trim();
+      if ((shown.characterStates[characterId] ?? '') === value) return;
+
+      const states = { ...activeChat.scene.characterStates };
+      if (value) states[characterId] = value;
+      else delete states[characterId];
+
+      const superseded = supersededByEdit(sceneDeltasHere, {
+        fields: ['characterStates'],
+        characterKeys: [characterId],
+      });
+      await actions.saveChat({
+        ...activeChat,
+        scene: { ...activeChat.scene, characterStates: states, updatedAt: Date.now() },
+      });
+      if (superseded.length) {
+        await actions.setSceneDeltaStatus(
+          superseded.map((d) => d.id),
+          'superseded',
+        );
+      }
+    },
+    [actions, activeChat, sceneFor, sceneDeltasHere],
+  );
+
+  /** Undo: the delta stops applying and replay answers differently. */
+  const reverseSceneDelta = useCallback(
+    (deltaId: ID) => actions.setSceneDeltaStatus([deltaId], 'reversed'),
+    [actions],
+  );
+
   /** Alternative-aware content for a message. */
   const contentOf = useCallback(
     (message: Message): string => {
@@ -214,7 +336,6 @@ export function useGeneration() {
    * in, and pinning something must not resurrect it on a branch that never saw
    * it.
    */
-  const visibleMessageIds = useMemo(() => new Set(timeline.map((m) => m.id)), [timeline]);
   const onBranch = useCallback(
     (memory: Memory): boolean => {
       if (memory.origin !== 'auto') return true;
@@ -222,9 +343,9 @@ export function useGeneration() {
       if (!memory.sourceMessageIds.length) return true;
       // Another chat's branch structure says nothing about this one's.
       if (memory.sourceChatId && memory.sourceChatId !== activeChat?.id) return true;
-      return memory.sourceMessageIds.some((id) => visibleMessageIds.has(id));
+      return memory.sourceMessageIds.some((id) => visibleMessages.ids.has(id));
     },
-    [visibleMessageIds, activeChat?.id],
+    [visibleMessages, activeChat?.id],
   );
 
   const memoriesForContext = useMemo(() => {
@@ -278,7 +399,7 @@ export function useGeneration() {
       // Presence comes from the chat being generated for, not the one this
       // callback closed over — the same staleness that used to drop the newest
       // turn would otherwise compile the previous chat's scene.
-      scene: (options.chat !== undefined ? options.chat : activeChat)?.scene ?? null,
+      scene: sceneFor(options.chat !== undefined ? options.chat : activeChat),
       budgetOverride: options.budgetOverride,
       visionEnabled: capabilities.vision,
       imageResolver: options.imageMap
@@ -298,6 +419,7 @@ export function useGeneration() {
       capabilities.vision,
       summary,
       resolvedSummary?.watermarkTrusted,
+      sceneFor,
     ],
   );
 
@@ -376,6 +498,91 @@ export function useGeneration() {
         } catch {
           // A failed summary just means the next turn tries again.
         }
+      }
+    }
+
+    // 1b. Did the scene itself move?
+    if (current.settings.sceneEvolution !== 'off' && chat.activeBranchId && line.length) {
+      try {
+        const visible = visibleMessagesOf(line);
+        const deltasHere = current.sceneDeltas.filter((d) => d.chatId === chat.id);
+        const before = effectiveScene(chat.scene, deltasHere, visible);
+        const exchange = line.slice(-2);
+
+        const candidates = await extractSceneChanges({
+          scene: before,
+          exchange: exchange.map((m) => ({ role: m.role, content: contentOf(m) })),
+          characters: currentCharacters,
+          persona: currentPersona,
+          provider: currentProvider,
+        });
+
+        // One row per outcome, not per field: "they step onto the rooftop,
+        // Halda still in the doorway" is a single thing that happened, and
+        // undoing it should undo all of it. Candidates that may only be
+        // proposed are kept apart, because status belongs to the row.
+        const bundles = new Map<'applied' | 'proposed', Partial<SceneState>>();
+        for (const candidate of candidates) {
+          const status =
+            current.settings.sceneEvolution === 'apply'
+              ? decideSceneStatus(candidate.field, candidate.basis, candidate.confidence)
+              : 'proposed';
+          const bucket = status === 'applied' ? 'applied' : 'proposed';
+          const fields = bundles.get(bucket) ?? {};
+          if (candidate.field === 'characterStates') {
+            fields.characterStates = {
+              ...(fields.characterStates ?? {}),
+              [candidate.characterId!]: candidate.value,
+            };
+          } else if (candidate.field === 'presentCharacterIds') {
+            // Presence is never taken automatically; a proposal names it in
+            // words rather than rewriting the cast list.
+            continue;
+          } else if (candidate.field === 'primaryCharacterId') {
+            continue;
+          } else {
+            fields[candidate.field] = candidate.value;
+          }
+          bundles.set(bucket, fields);
+        }
+
+        const rows: SceneDelta[] = [];
+        for (const [bucket, fields] of bundles) {
+          if (!Object.keys(fields).length) continue;
+          const strongest = candidates.reduce(
+            (best, c) => (c.confidence > best ? c.confidence : best),
+            0,
+          );
+          rows.push(
+            newSceneDelta(chat.id, chat.activeBranchId, {
+              sourceMessageIds: exchange.map((m) => m.id),
+              fields,
+              previous: previousFor(before, fields),
+              basis: 'observed',
+              confidence: strongest,
+              status: bucket,
+            }),
+          );
+        }
+
+        if (rows.length) {
+          await actions.saveSceneDeltas(rows);
+          const applied = rows.find((r) => r.status === 'applied');
+          if (applied) {
+            // Said in the story's terms, not the system's: the user never has
+            // to know what a delta is to undo one.
+            const moved = applied.fields.location
+              ? `The scene moved to ${applied.fields.location}.`
+              : 'The scene changed as the story went on.';
+            actions.toast({
+              kind: 'info',
+              title: moved,
+              detail: 'Chat settings → This scene shows what changed, and can undo it.',
+            });
+          }
+        }
+      } catch {
+        // A scene that failed to update is the one we were already in.
       }
     }
 
@@ -870,6 +1077,11 @@ export function useGeneration() {
     stop,
     previewContext,
     persistSummary,
+    scene,
+    sceneDerived,
+    commitScene,
+    commitCharacterState,
+    reverseSceneDelta,
     contentOf,
     provider,
     imageProvider,
