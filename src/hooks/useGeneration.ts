@@ -11,6 +11,7 @@ import type {
   Persona,
   Provider,
   Story,
+  StorySummary,
 } from '../types';
 import {
   activeImageProvider,
@@ -20,7 +21,7 @@ import {
   effectiveGeneration,
   personaOf,
   storyOf,
-  summaryOf,
+  summariesOf,
   useActions,
   useAppState,
   useStore,
@@ -35,9 +36,10 @@ import {
 import {
   applyDraft,
   generateStorySummary,
+  ownedSummaryRow,
+  resolveSummaryForBranch,
   shouldAutoSummarize,
 } from '../memory/storySummary';
-import { newStorySummary } from '../types/factories';
 import { ProviderError, isOllama, streamComplete } from '../ai/client';
 import { compileContext, type CompileInput, type CompileResult } from '../context/compiler';
 import {
@@ -167,7 +169,23 @@ export function useGeneration() {
   const provider = useMemo(() => activeProvider(state), [state]);
   const imageProvider = useMemo(() => activeImageProvider(state), [state]);
   const capabilities = useMemo(() => capabilitiesOf(provider), [provider]);
-  const summary = useMemo(() => summaryOf(state, story), [state, story]);
+  /**
+   * The summary that describes the timeline being played — not simply the
+   * story's. See resolveSummaryForBranch: a sibling branch's compression, and
+   * a watermark from another chat's order space, are both refused here rather
+   * than at the point they would do damage.
+   */
+  const resolvedSummary = useMemo(
+    () =>
+      resolveSummaryForBranch(summariesOf(state, story), {
+        branches: state.branches,
+        branchId: activeChat?.activeBranchId ?? null,
+        chatId: activeChat?.id ?? null,
+        storyChatCount: story ? state.chats.filter((c) => c.storyId === story.id).length : 0,
+      }),
+    [state, story, activeChat?.activeBranchId, activeChat?.id],
+  );
+  const summary = resolvedSummary?.summary ?? null;
 
   /** Alternative-aware content for a message. */
   const contentOf = useCallback(
@@ -252,6 +270,7 @@ export function useGeneration() {
       loreEntries: state.loreEntries,
       history: history.map((message) => ({ ...message, content: contentOf(message) })),
       summary,
+      summaryWatermarkTrusted: resolvedSummary?.watermarkTrusted ?? true,
       pendingUserText: options.pendingUserText,
       pendingAttachments: options.pendingAttachments,
       instruction: options.instruction,
@@ -278,6 +297,7 @@ export function useGeneration() {
       contentOf,
       capabilities.vision,
       summary,
+      resolvedSummary?.watermarkTrusted,
     ],
   );
 
@@ -312,8 +332,16 @@ export function useGeneration() {
     const line = resolveTimeline(current.messages, current.branches, chat.activeBranchId);
 
     // 1. Rolling story summary.
-    if (currentStory && current.settings.useStorySummary) {
-      const existing = summaryOf(current, currentStory);
+    if (currentStory && current.settings.useStorySummary && chat.activeBranchId) {
+      // Resolved for the branch actually being played, so a summary inherited
+      // from an ancestor is reused as a seed and a sibling's is never touched.
+      const resolved = resolveSummaryForBranch(summariesOf(current, currentStory), {
+        branches: current.branches,
+        branchId: chat.activeBranchId,
+        chatId: chat.id,
+        storyChatCount: current.chats.filter((c) => c.storyId === currentStory.id).length,
+      });
+      const existing = resolved?.summary ?? null;
       if (
         shouldAutoSummarize(
           existing,
@@ -332,8 +360,18 @@ export function useGeneration() {
             window: current.settings.summaryWindow,
             provider: currentProvider,
           });
+          // The row is owned by the branch that was summarised. An ancestor's
+          // row is seeded from, never written to, so a sibling's compression
+          // survives this branch summarising.
           await actions.saveStorySummary(
-            applyDraft(existing ?? newStorySummary(currentStory.id), draft),
+            applyDraft(
+              ownedSummaryRow(resolved, {
+                storyId: currentStory.id,
+                chatId: chat.id,
+                branchId: chat.activeBranchId,
+              }),
+              draft,
+            ),
           );
         } catch {
           // A failed summary just means the next turn tries again.
@@ -794,6 +832,35 @@ export function useGeneration() {
     [imageProvider, actions, story, activeChat],
   );
 
+  /**
+   * Saves an edited or regenerated summary onto the branch being played.
+   *
+   * The sheet edits whatever summary currently applies, which may be one
+   * inherited from an ancestor. Saving it must not rewrite the ancestor's row
+   * — that summary still describes the ancestor's timeline, and every other
+   * branch descending from it still relies on it — so the edit becomes this
+   * branch's own row, seeded from what was inherited.
+   */
+  const persistSummary = useCallback(
+    async (draft: StorySummary) => {
+      if (!story || !activeChat?.activeBranchId) return;
+      const row = ownedSummaryRow(resolvedSummary, {
+        storyId: story.id,
+        chatId: activeChat.id,
+        branchId: activeChat.activeBranchId,
+      });
+      await actions.saveStorySummary({
+        ...draft,
+        id: row.id,
+        storyId: row.storyId,
+        chatId: row.chatId,
+        branchId: row.branchId,
+        createdAt: row.createdAt,
+      });
+    },
+    [actions, story, activeChat, resolvedSummary],
+  );
+
   return {
     generating,
     streamingText,
@@ -802,6 +869,7 @@ export function useGeneration() {
     generate,
     stop,
     previewContext,
+    persistSummary,
     contentOf,
     provider,
     imageProvider,

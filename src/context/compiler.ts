@@ -73,6 +73,15 @@ export interface CompileInput {
   budgetOverride?: number;
   /** Long-run memory. When present, older history folds into this. */
   summary?: StorySummary | null;
+  /**
+   * Whether `summary.coveredThroughOrder` may be applied to this history.
+   *
+   * False for a summary whose order space cannot be identified — a legacy row
+   * in a story with several chats. Its prose still applies to the story; its
+   * watermark belongs to a counter that restarts in every chat, so trusting it
+   * would delete a transcript it never described.
+   */
+  summaryWatermarkTrusted?: boolean;
   /** Resolves an attachment to a data URL for vision-capable providers. */
   imageResolver?: (attachment: Attachment) => string | undefined;
   visionEnabled?: boolean;
@@ -1077,11 +1086,20 @@ function compileContextInner(input: CompileInput): CompileResult {
   // Anything the rolling summary already covers is represented above, so only
   // the verbatim window needs to be sent. This is what keeps a 5,000-message
   // story inside a fixed token budget.
-  const summarised =
-    summary && summary.rollingSummary.trim()
-      ? input.history.filter((m) => m.order > summary.coveredThroughOrder)
-      : input.history;
-  const effectiveLimit = summary?.rollingSummary.trim()
+  //
+  // One decision, and both levers hang off it. Dropping the covered messages
+  // and shrinking the verbatim window are two ways of saying "the summary has
+  // this part", so a summary that does not describe this timeline must do
+  // neither: gating only the watermark left the window clamp as a second,
+  // quieter way for another branch's summary to delete this branch's history.
+  const usableSummary =
+    summary && summary.rollingSummary.trim() && input.summaryWatermarkTrusted !== false
+      ? summary
+      : null;
+  const summarised = usableSummary
+    ? input.history.filter((m) => m.order > usableSummary.coveredThroughOrder)
+    : input.history;
+  const effectiveLimit = usableSummary
     ? Math.min(historyLimit, Math.max(2, settings.summaryWindow || 30))
     : historyLimit;
   const consideredHistory = summarised.slice(-effectiveLimit);

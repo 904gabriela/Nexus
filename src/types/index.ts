@@ -730,9 +730,27 @@ export type SummaryScope = 'story';
  * blows the context budget or silently forgets its own history.
  */
 export interface StorySummary extends Timestamped {
-  /** One row per story; the story id doubles as the primary key. */
+  /**
+   * Row id. Rows written before summaries knew which timeline they described
+   * carry the story id here, because there was one row per story; new rows get
+   * an id of their own so a story can hold one summary per branch.
+   */
   id: ID;
   storyId: ID;
+  /**
+   * The chat whose order space `coveredThroughOrder` belongs to.
+   *
+   * Every chat counts its own messages from zero, so a watermark without this
+   * cannot be read: applying one chat's number to another silently deletes the
+   * whole transcript. Absent on legacy rows.
+   */
+  chatId?: ID | null;
+  /**
+   * The branch whose timeline this compresses. A summary is a claim about one
+   * sequence of events, so a sibling branch — which never had them — must
+   * never see it. Absent on legacy rows.
+   */
+  branchId?: ID | null;
   /** Human-facing synopsis of where the story stands right now. */
   currentSummary: string;
   /** Compacted history of everything before the recent window. */

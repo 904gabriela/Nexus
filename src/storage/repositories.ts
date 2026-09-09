@@ -191,10 +191,20 @@ export const imageProviders = {
 
 export const storySummaries = {
   all: () => dbGetAll<StorySummary>(STORES.storySummaries),
-  get: (storyId: ID) => dbGet<StorySummary>(STORES.storySummaries, storyId),
+  get: (id: ID) => dbGet<StorySummary>(STORES.storySummaries, id),
+  byStory: (storyId: ID) =>
+    dbGetAllByIndex<StorySummary>(STORES.storySummaries, 'storyId', storyId),
+  /**
+   * Summaries owned by one chat. There is no chatId index — a story holds a
+   * handful of these at most, so scanning beats a schema version bump — and
+   * legacy rows have no chatId at all, which is what makes them everyone's.
+   */
+  byChat: async (chatId: ID) =>
+    (await dbGetAll<StorySummary>(STORES.storySummaries)).filter((s) => s.chatId === chatId),
   save: (value: StorySummary) => dbPut(STORES.storySummaries, touch(value)),
   saveMany: (values: StorySummary[]) => dbPutMany(STORES.storySummaries, values),
-  remove: (storyId: ID) => dbDelete(STORES.storySummaries, storyId),
+  remove: (id: ID) => dbDelete(STORES.storySummaries, id),
+  removeMany: (ids: ID[]) => dbDeleteMany(STORES.storySummaries, ids),
 };
 
 export const settingsRepo = {
@@ -225,17 +235,22 @@ export const settingsRepo = {
 
 /** Removes a chat and every row that only exists because of it. */
 export async function deleteChatCascade(chatId: ID): Promise<void> {
-  const [chatMessages, chatBranches, chatCheckpoints, chatAlternatives] = await Promise.all([
-    messages.byChat(chatId),
-    branches.byChat(chatId),
-    checkpoints.byChat(chatId),
-    alternatives.byChat(chatId),
-  ]);
+  const [chatMessages, chatBranches, chatCheckpoints, chatAlternatives, chatSummaries] =
+    await Promise.all([
+      messages.byChat(chatId),
+      branches.byChat(chatId),
+      checkpoints.byChat(chatId),
+      alternatives.byChat(chatId),
+      // A summary compresses one of this chat's timelines, and its watermark is
+      // in this chat's order space, so it cannot outlive the chat.
+      storySummaries.byChat(chatId),
+    ]);
   await Promise.all([
     messages.removeMany(chatMessages.map((m) => m.id)),
     branches.removeMany(chatBranches.map((b) => b.id)),
     checkpoints.removeMany(chatCheckpoints.map((c) => c.id)),
     alternatives.removeMany(chatAlternatives.map((a) => a.id)),
+    storySummaries.removeMany(chatSummaries.map((s) => s.id)),
     chats.remove(chatId),
   ]);
 }
@@ -243,7 +258,10 @@ export async function deleteChatCascade(chatId: ID): Promise<void> {
 export async function deleteStoryCascade(storyId: ID): Promise<void> {
   const storyChats = await chats.byStory(storyId);
   for (const chat of storyChats) await deleteChatCascade(chat.id);
-  await storySummaries.remove(storyId);
+  // Per-chat rows went with their chats above; this also catches legacy rows,
+  // which name no chat and so belong to the story itself.
+  const remaining = await storySummaries.byStory(storyId);
+  await storySummaries.removeMany(remaining.map((s) => s.id));
   await stories.remove(storyId);
 }
 

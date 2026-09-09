@@ -11,7 +11,9 @@
  */
 
 import type {
+  Branch,
   Character,
+  ID,
   Message,
   Persona,
   Provider,
@@ -19,7 +21,9 @@ import type {
   StorySummary,
 } from '../types';
 import { complete } from '../ai/client';
+import { branchChain } from '../services/timeline';
 import { newStorySummary } from '../types/factories';
+import { uid } from '../utils/uid';
 import { truncate } from '../utils/text';
 
 export interface SummarizeStoryInput {
@@ -257,6 +261,148 @@ export function applyDraft(summary: StorySummary, draft: SummaryDraft): StorySum
     characterState: draft.characterState,
     coveredThroughOrder: draft.coveredThroughOrder,
     lastGeneratedAt: Date.now(),
+  };
+}
+
+/* ------------------------------------------------- which summary applies */
+
+export interface SummaryScope {
+  /** Every branch the app knows about; ancestry is resolved from these. */
+  branches: Branch[];
+  /** The branch being played, and the chat it belongs to. */
+  branchId: ID | null;
+  chatId: ID | null;
+  /**
+   * How many chats this story has. A legacy row carries no chat, and a
+   * watermark is only readable in the order space that produced it, so one
+   * chat means the row can be adopted and several means it cannot.
+   */
+  storyChatCount: number;
+}
+
+export interface ResolvedSummary {
+  /**
+   * The summary as it applies here.
+   *
+   * When the watermark cannot be trusted it is normalised to -1 rather than
+   * left as a number from some other chat's counter, so everything downstream
+   * that reasons about coverage — the compiler, pendingMessages,
+   * shouldAutoSummarize — is right without knowing why.
+   */
+  summary: StorySummary;
+  /** The branch this row is treated as belonging to; null when unknowable. */
+  ownerBranchId: ID | null;
+  /** Whether `coveredThroughOrder` may be applied to this chat's history. */
+  watermarkTrusted: boolean;
+}
+
+/**
+ * The one summary that describes the timeline being played.
+ *
+ * A summary is a compression of one sequence of events. Resolving it by story
+ * alone let a sibling branch read — and then overwrite — a summary of events it
+ * never had, and let one chat's watermark delete another chat's transcript,
+ * because every chat counts its messages from zero.
+ *
+ * A row is usable when its branch is the played branch or an ancestor of it,
+ * and its coverage stops at or before the point the played branch leaves that
+ * ancestor. That cutoff is the same `forkOrder` resolveTimeline uses, so a
+ * summary can never claim to cover a message the branch cannot see.
+ */
+export function resolveSummaryForBranch(
+  /** Rows belonging to this story. */
+  summaries: StorySummary[],
+  scope: SummaryScope,
+): ResolvedSummary | null {
+  if (!scope.branchId) return null;
+  const chain = branchChain(scope.branches, scope.branchId);
+  if (!chain.length) return null;
+  const rootId = chain[0].id;
+
+  // Where the played branch leaves each of its ancestors.
+  const cutoffOf = new Map<ID, number>();
+  for (let i = 0; i < chain.length; i += 1) {
+    const next = chain[i + 1];
+    cutoffOf.set(chain[i].id, next ? next.forkOrder : Number.MAX_SAFE_INTEGER);
+  }
+
+  const candidates: ResolvedSummary[] = [];
+  for (const row of summaries) {
+    if (row.branchId) {
+      // Not on this branch's ancestry: a sibling, a descendant, or another
+      // chat entirely. Branches never cross chats, so this covers both.
+      const cutoff = cutoffOf.get(row.branchId);
+      if (cutoff === undefined) continue;
+      if (row.chatId && row.chatId !== scope.chatId) continue;
+      if (row.coveredThroughOrder > cutoff) continue;
+      candidates.push({ summary: row, ownerBranchId: row.branchId, watermarkTrusted: true });
+      continue;
+    }
+
+    // Legacy row. With a single chat in the story there is only one order
+    // space it could have come from, so it is this chat's original timeline.
+    if (scope.storyChatCount <= 1 && (!row.chatId || row.chatId === scope.chatId)) {
+      if (row.coveredThroughOrder > (cutoffOf.get(rootId) ?? 0)) continue;
+      candidates.push({ summary: row, ownerBranchId: rootId, watermarkTrusted: true });
+      continue;
+    }
+
+    // Several chats share this story, so which one produced the watermark is
+    // not recoverable. The prose still describes the story — it was shown in
+    // every chat of it before — but the number is guesswork, and guessing it
+    // deletes a transcript.
+    candidates.push({
+      summary: { ...row, coveredThroughOrder: -1 },
+      ownerBranchId: null,
+      watermarkTrusted: false,
+    });
+  }
+
+  // Deepest usable compression first; a readable watermark always beats one
+  // that has been given up on.
+  candidates.sort(
+    (a, b) =>
+      Number(b.watermarkTrusted) - Number(a.watermarkTrusted) ||
+      b.summary.coveredThroughOrder - a.summary.coveredThroughOrder ||
+      b.summary.updatedAt - a.summary.updatedAt,
+  );
+  return candidates[0] ?? null;
+}
+
+/**
+ * The row a new summary for this branch must be written to.
+ *
+ * Branching never copies messages, and it does not copy summaries either: a
+ * branch reuses its ancestor's compression until it has enough new material of
+ * its own, and only then does it get a row. That row is seeded from the
+ * ancestor — which `generateStorySummary` then carries forward as
+ * `Previous summary:` — so nothing is regenerated and nothing is lost. The
+ * ancestor's own row, and any sibling's, is never written to.
+ */
+export function ownedSummaryRow(
+  resolved: ResolvedSummary | null,
+  scope: { storyId: ID; chatId: ID; branchId: ID },
+): StorySummary {
+  if (!resolved) {
+    return newStorySummary(scope.storyId, { chatId: scope.chatId, branchId: scope.branchId });
+  }
+  // Already this branch's own — including a legacy row adopted as this chat's
+  // original timeline, which is stamped in place rather than duplicated.
+  if (resolved.ownerBranchId === scope.branchId) {
+    return {
+      ...resolved.summary,
+      storyId: scope.storyId,
+      chatId: scope.chatId,
+      branchId: scope.branchId,
+    };
+  }
+  return {
+    ...resolved.summary,
+    id: uid(),
+    storyId: scope.storyId,
+    chatId: scope.chatId,
+    branchId: scope.branchId,
+    createdAt: Date.now(),
   };
 }
 

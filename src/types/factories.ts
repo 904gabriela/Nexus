@@ -480,9 +480,13 @@ export const IMAGE_PROVIDER_PRESETS: Record<
 export function newStorySummary(storyId: string, partial: Partial<StorySummary> = {}): StorySummary {
   const t = now();
   return {
-    // One summary per story, so the story id is the primary key.
-    id: storyId,
+    // A story can hold several summaries — one per branch that has crossed a
+    // summarisation boundary — so the row carries an id of its own. Callers
+    // pass `chatId`/`branchId` to say which timeline it describes.
+    id: uid(),
     storyId,
+    chatId: null,
+    branchId: null,
     currentSummary: '',
     rollingSummary: '',
     importantEvents: [],

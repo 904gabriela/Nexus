@@ -96,7 +96,9 @@ export function StorySummarySheet({
 
   const save = async () => {
     if (!draft) return;
-    await actions.saveStorySummary(draft);
+    // Routed through the hook, which decides which row this branch owns: an
+    // inherited ancestor summary is seeded from, never overwritten.
+    await gen.persistSummary(draft);
     setDirty(false);
     actions.toast({ kind: 'success', title: 'Story summary saved' });
   };

@@ -889,6 +889,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           set({
             chats: stateRef.current.chats.filter((c) => c.id !== id),
             checkpoints: stateRef.current.checkpoints.filter((c) => c.chatId !== id),
+            storySummaries: stateRef.current.storySummaries.filter((s) => s.chatId !== id),
             ...(wasActive
               ? { activeChatId: null, messages: [], branches: [], alternatives: [] }
               : {}),
@@ -1172,12 +1173,19 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           const checkpointIds = current.checkpoints
             .filter((c) => doomed.includes(c.branchId))
             .map((c) => c.id);
+          // A summary describes one branch's timeline, so it goes with the
+          // branch. Rows belonging to an ancestor are inherited, not owned,
+          // and are left alone.
+          const summaryIds = current.storySummaries
+            .filter((s) => s.branchId && doomed.includes(s.branchId))
+            .map((s) => s.id);
 
           await Promise.all([
             repo.branches.removeMany(doomed),
             repo.messages.removeMany(messageIds),
             repo.alternatives.removeMany(alternativeIds),
             repo.checkpoints.removeMany(checkpointIds),
+            repo.storySummaries.removeMany(summaryIds),
           ]);
 
           const remaining = current.branches.filter((b) => !doomed.includes(b.id));
@@ -1193,6 +1201,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             messages: current.messages.filter((m) => !messageIds.includes(m.id)),
             alternatives: current.alternatives.filter((a) => !alternativeIds.includes(a.id)),
             checkpoints: current.checkpoints.filter((c) => !checkpointIds.includes(c.id)),
+            storySummaries: current.storySummaries.filter((s) => !summaryIds.includes(s.id)),
             chats: upsert(current.chats, nextChat),
           });
         });
@@ -1499,9 +1508,16 @@ export function activeImageProvider(state: AppState): ImageProvider | null {
   );
 }
 
-export function summaryOf(state: AppState, story: Story | null): StorySummary | null {
-  if (!story) return null;
-  return state.storySummaries.find((s) => s.storyId === story.id) ?? null;
+/**
+ * Every summary belonging to a story.
+ *
+ * A story can hold one per branch that has crossed a summarisation boundary,
+ * so picking one is a question about the timeline being played rather than
+ * about the story — see resolveSummaryForBranch in memory/storySummary.ts.
+ */
+export function summariesOf(state: AppState, story: Story | null): StorySummary[] {
+  if (!story) return [];
+  return state.storySummaries.filter((s) => s.storyId === story.id);
 }
 
 /**
