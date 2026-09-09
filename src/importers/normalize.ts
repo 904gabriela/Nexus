@@ -456,6 +456,12 @@ export function normalizeLoreEntry(input: unknown, lorebookId: string, index = 0
     position: normalizePosition(data.position),
     depth: toNumber(data.depth, 4),
     scanDepth: toNumber(data.scan_depth ?? data.scanDepth, 0),
+    // SillyTavern world info carries these three, and Nexus used to drop them
+    // silently — an imported book behaved differently here for reasons nothing
+    // on screen explained.
+    delay: toNumber(data.delay, 0),
+    sticky: toNumber(data.sticky, 0),
+    cooldown: toNumber(data.cooldown, 0),
     matchMode,
     caseSensitive: toBool(data.caseSensitive ?? data.case_sensitive, false),
     activation:

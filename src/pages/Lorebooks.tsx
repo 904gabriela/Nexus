@@ -812,6 +812,37 @@ export function LoreEntryEditor({
               hint="0 = inherit."
             />
           </div>
+          {/*
+            Timing, in messages. All three are off at zero, which is how every
+            entry written before they existed behaves — nothing changes for a
+            book that does not set them.
+          */}
+          <div className="field-row field-row-3">
+            <NumberField
+              label="Delay"
+              value={draft.delay ?? 0}
+              onChange={(delay) => patch({ delay: Math.max(0, Math.round(delay)) })}
+              min={0}
+              max={500}
+              hint="Hold back until the story is this many messages long."
+            />
+            <NumberField
+              label="Sticky"
+              value={draft.sticky ?? 0}
+              onChange={(sticky) => patch({ sticky: Math.max(0, Math.round(sticky)) })}
+              min={0}
+              max={100}
+              hint="Stay active this many messages after the keyword stops."
+            />
+            <NumberField
+              label="Cooldown"
+              value={draft.cooldown ?? 0}
+              onChange={(cooldown) => patch({ cooldown: Math.max(0, Math.round(cooldown)) })}
+              min={0}
+              max={100}
+              hint="Rest this many messages after firing."
+            />
+          </div>
           <Toggle
             label="Case sensitive"
             checked={draft.caseSensitive}

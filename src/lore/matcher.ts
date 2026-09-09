@@ -55,6 +55,12 @@ export interface LoreScanInput {
    * user cannot see.
    */
   turnSeed?: string;
+  /**
+   * How many messages the timeline being played holds, for `delay`. Absent
+   * falls back to the scan window, which is all a caller without the whole
+   * timeline can honestly say.
+   */
+  messageCount?: number;
   lorebooks: Lorebook[];
   entries: LoreEntry[];
   scope: LoreScanScope;
@@ -65,6 +71,46 @@ export interface LoreScanInput {
 export interface LoreScanResult {
   hits: LoreHit[];
   misses: LoreMiss[];
+}
+
+/**
+ * Timing, read defensively.
+ *
+ * These three arrived after the first release, so an entry stored before then
+ * — or imported from a book that never had them — has none of them. Reading
+ * them as zero is the honest default: no delay, no stickiness, no cooldown is
+ * exactly how those entries have always behaved.
+ */
+function timingOf(entry: LoreEntry): { delay: number; sticky: number; cooldown: number } {
+  return {
+    delay: Math.max(0, Math.round(entry.delay ?? 0)),
+    sticky: Math.max(0, Math.round(entry.sticky ?? 0)),
+    cooldown: Math.max(0, Math.round(entry.cooldown ?? 0)),
+  };
+}
+
+/**
+ * How many messages back this entry's keywords were last said, counting the
+ * newest message as 1. Zero means "not within the span looked at".
+ *
+ * Deliberately measured from the text of the visible timeline rather than from
+ * a record of what fired before. It costs no store and no writes, it cannot
+ * drift out of step with the conversation, and it inherits branch correctness
+ * for nothing: a branch where the keyword was never said has, correctly, never
+ * triggered the entry. The trade is that this counts when the keyword was last
+ * *said* rather than when the entry was last *sent* — an entry that matched but
+ * lost its place to the token budget still counts as having fired. For deciding
+ * whether a thread is still live, what the story said is the better signal
+ * anyway.
+ */
+function messagesSinceMatch(entry: LoreEntry, texts: string[], span: number): number {
+  const terms = [...entry.primaryKeys, ...entry.aliases];
+  if (!terms.length || span <= 0) return 0;
+  const from = Math.max(0, texts.length - span);
+  for (let i = texts.length - 1; i >= from; i -= 1) {
+    if (matchTerms(terms, entry, texts[i]).length) return texts.length - i;
+  }
+  return 0;
 }
 
 interface Matcher {
@@ -253,6 +299,20 @@ export function scanLore(input: LoreScanInput): LoreScanResult {
       continue;
     }
 
+    const timing = timingOf(entry);
+    // Before anything else, including 'always': a late revelation set to hold
+    // back until the story is long enough must not fire in the opening
+    // exchange just because someone marked it constant.
+    const storyLength = input.messageCount ?? input.recentTexts.length;
+    if (timing.delay > 0 && storyLength < timing.delay) {
+      misses.push({
+        entry,
+        lorebookName: bookName,
+        reason: `Held back until the story is ${timing.delay} message(s) long; it is ${storyLength}.`,
+      });
+      continue;
+    }
+
     if (entry.activation === 'always') {
       hits.push({
         entry,
@@ -323,11 +383,48 @@ export function scanLore(input: LoreScanInput): LoreScanResult {
       }
     }
 
+    // How long since the story last said any of this entry's words. Only
+    // computed when something actually asks, so a worldbook of thousands of
+    // ordinary entries pays nothing for a feature it does not use.
+    const since =
+      timing.sticky > 0 || timing.cooldown > 0
+        ? messagesSinceMatch(
+            entry,
+            input.recentTexts,
+            Math.max(timing.sticky, timing.cooldown),
+          )
+        : 0;
+
     if (!winner) {
+      // Nothing matched now, but it did recently and was asked to stay. This is
+      // what stops a location dropping out of the prompt between mentions and
+      // the scene quietly losing its footing.
+      if (timing.sticky > 0 && since > 0 && since <= timing.sticky) {
+        hits.push({
+          entry,
+          lorebookName: bookName,
+          matched: [],
+          reason: `Still active: keyword last matched ${since} message(s) ago, sticky for ${timing.sticky}.`,
+          tier: 'recent',
+        });
+        continue;
+      }
       misses.push({
         entry,
         lorebookName: bookName,
         reason: `No keyword matched in the last ${window.length} message(s).`,
+      });
+      continue;
+    }
+
+    // It matched, but it has only just been sent. A common keyword that
+    // re-triggers every single turn is how one entry crowds a large worldbook
+    // out of its own context.
+    if (timing.cooldown > 0 && since > 0 && since <= timing.cooldown) {
+      misses.push({
+        entry,
+        lorebookName: bookName,
+        reason: `Matched, but resting: it last matched ${since} message(s) ago and its cooldown is ${timing.cooldown}.`,
       });
       continue;
     }

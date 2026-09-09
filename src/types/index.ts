@@ -200,6 +200,26 @@ export interface LoreEntry extends Timestamped {
   depth: number;
   /** How many recent messages are scanned for keywords. 0 = global default. */
   scanDepth: number;
+  /**
+   * Timing, all measured in messages on the timeline being played and all
+   * disabled at 0. Resolved from the visible history rather than from stored
+   * activation state, so a branch that never said the keyword has never
+   * triggered the entry — the same rule the rest of the app follows, and no
+   * fifth store to keep in step.
+   *
+   * `delay` holds an entry back until the story is long enough for it: a
+   * late-game revelation should not be able to fire in the opening exchange.
+   *
+   * `sticky` keeps a triggered entry alive for a few more messages once the
+   * keyword stops being said, so a location or a thread does not flicker in
+   * and out of the prompt between mentions.
+   *
+   * `cooldown` stops a common keyword re-triggering every turn and crowding
+   * out everything else — the failure mode of a large worldbook.
+   */
+  delay: number;
+  sticky: number;
+  cooldown: number;
   matchMode: LoreMatchMode;
   caseSensitive: boolean;
   activation: LoreActivation;

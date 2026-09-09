@@ -99,6 +99,17 @@ export interface DiscoveredSeed {
   dismissed?: boolean;
 }
 
+export interface LoreSeed {
+  id: string;
+  name: string;
+  keys: string[];
+  content: string;
+  scanDepth?: number;
+  delay?: number;
+  sticky?: number;
+  cooldown?: number;
+}
+
 export interface BranchSeed {
   summaries?: SummarySeed[];
   /** Which branch of chat-1 is active. */
@@ -119,6 +130,8 @@ export interface BranchSeed {
   memories?: MemorySeed[];
   /** People the story named who are not in the cast. */
   discovered?: DiscoveredSeed[];
+  /** Entries in one global lorebook, for timing tests. */
+  lore?: LoreSeed[];
 }
 
 export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
@@ -409,6 +422,49 @@ export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
         createdAt: now,
         updatedAt: now,
       });
+    }
+
+    if (options.lore?.length) {
+      await put('lorebooks', {
+        id: 'book-1',
+        name: 'The Fork book',
+        description: '',
+        enabled: true,
+        tags: [],
+        global: true,
+        scanDepth: 0,
+        createdAt: now,
+        updatedAt: now,
+      });
+      for (const l of options.lore) {
+        await put('loreEntries', {
+          id: l.id,
+          lorebookId: 'book-1',
+          name: l.name,
+          content: l.content,
+          primaryKeys: l.keys,
+          secondaryKeys: [],
+          aliases: [],
+          enabled: true,
+          priority: 100,
+          position: 'after-character',
+          depth: 4,
+          scanDepth: l.scanDepth ?? 0,
+          delay: l.delay ?? 0,
+          sticky: l.sticky ?? 0,
+          cooldown: l.cooldown ?? 0,
+          matchMode: 'word-boundary',
+          caseSensitive: false,
+          activation: 'keyword',
+          category: '',
+          scope: 'any',
+          comment: '',
+          customFields: [],
+          order: 0,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
     }
 
     for (const d of options.relationshipDeltas ?? []) {

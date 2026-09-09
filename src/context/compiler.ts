@@ -972,6 +972,10 @@ function compileContextInner(input: CompileInput): CompileResult {
       scene.situation,
     ].filter(Boolean),
     recentWindow: RECENT_WINDOW,
+    // How long this timeline actually is, which is what `delay` is measured
+    // against. The scan window is a slice of it and would let a held-back entry
+    // fire on turn three of a long story.
+    messageCount: input.history.length,
     // The turn is identified by the newest message, so a regeneration of the
     // same turn rolls the same probabilities.
     turnSeed: input.history.at(-1)?.id ?? chat?.id ?? '',
