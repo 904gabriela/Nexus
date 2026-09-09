@@ -364,7 +364,12 @@ test('automatic memory can be enabled and creates an editable memory', async ({ 
 
   await goto(page, '#/settings');
   await page.getByRole('tab', { name: 'Memory' }).click();
-  await page.getByRole('switch', { name: 'Create memories automatically' }).click();
+  // Automatic memory ships on — a story engine that remembers nothing until
+  // you find a switch is not the product — so this no longer turns it on. It
+  // checks it is on, which is the thing worth asserting either way.
+  await expect(
+    page.getByRole('switch', { name: 'Create memories automatically' }),
+  ).toBeChecked();
   await numberField(page, 'Check every N replies').fill('1');
 
   await reloadApp(page);

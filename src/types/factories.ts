@@ -424,18 +424,30 @@ export function defaultSettings(): Settings {
     activeImageProviderId: null,
 
     useStorySummary: true,
-    // Off until proposals have somewhere to be seen.
-    //
-    // 'propose' costs a second background call on every turn and writes rows
-    // nobody can currently inspect, accept or promote — the user would pay for
-    // output they cannot reach. Both other modes are complete and one setting
-    // away; this is a product default, not a limit on the feature.
-    sceneEvolution: 'off',
+    /*
+     * The engine does the engine part out of the box.
+     *
+     * These two shipped off while they were new and unproven, so nothing could
+     * quietly do the wrong thing to someone's story. The cost of that caution
+     * was a story engine that remembered nothing and followed nothing until
+     * you found two switches you had no reason to know existed — which is the
+     * opposite of the product.
+     *
+     * 'apply' is the deliberate choice and not a free one: whether the scene
+     * moves on "they step onto the rooftop" but not on "maybe they should"
+     * rests entirely on the model's reading, and a small local model will
+     * sometimes get it wrong. Every applied change is announced and can be
+     * undone from Chat settings, and 'propose' and 'off' are one setting away.
+     */
+    sceneEvolution: 'apply',
     knowledgeMode: 'off',
     summaryWindow: 30,
     autoSummaryEvery: 20,
 
-    autoMemory: false,
+    // Costs a background request every `autoMemoryEvery` replies. That is the
+    // price of a story that remembers itself, and it is worth paying by
+    // default.
+    autoMemory: true,
     autoCharacters: true,
     autoMemoryTriggers: ['plot', 'relationship', 'revelation', 'promise', 'romance'],
     autoMemoryPin: false,

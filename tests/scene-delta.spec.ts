@@ -597,8 +597,11 @@ test('the propose setting never applies anything by itself', async ({ page }) =>
   expect(systemOf(ollama)).toContain('Location: The kitchen');
 });
 
-test('a fresh install leaves the scene alone until asked', async ({ page }) => {
-  const ollama = await mockOllama(page, ['Sera nods.']);
+test('a fresh install follows the scene without being asked', async ({ page }) => {
+  // The reply is the narration the change is read from, so the quoted evidence
+  // is genuinely in the exchange — the extractor refuses a claim it cannot
+  // find, which is the point of that check.
+  const ollama = await mockOllama(page, [ROOFTOP]);
   ollama.sceneReplies = [
     sceneReply([
       {
@@ -615,12 +618,44 @@ test('a fresh install leaves the scene alone until asked', async ({ page }) => {
   // No sceneEvolution override: whatever a new install ships with.
   await seedBranchedStory(page, { scene: { location: 'The kitchen' } });
 
-  expect((await readStore<any>(page, 'settings'))[0].sceneEvolution).toBe('off');
+  /*
+   * This shipped 'off' while scene evolution was new, and the cost of that
+   * caution was an engine that followed nothing until you found a switch you
+   * had no reason to know existed. It ships on now. The assertion that 'off'
+   * genuinely means off has not gone anywhere — it is the test below.
+   */
+  expect((await readStore<any>(page, 'settings'))[0].sceneEvolution).toBe('apply');
+
+  await turn(page, ollama, 'Where are we going?');
+  await expect.poll(async () => (await deltas(page)).length, { timeout: 20_000 }).toBe(1);
+  expect((await deltas(page))[0]).toMatchObject({ status: 'applied' });
+  // And the canonical base a person wrote is still theirs.
+  expect((await chatRow(page)).scene.location).toBe('The kitchen');
+});
+
+test('turned off, nothing is asked of the model and nothing is recorded', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  ollama.sceneReplies = [
+    sceneReply([
+      {
+        field: 'location',
+        character: null,
+        value: 'the rooftop',
+        basis: 'observed',
+        confidence: 0.99,
+        evidence: ROOFTOP,
+      },
+    ]),
+  ];
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    scene: { location: 'The kitchen' },
+    settings: { sceneEvolution: 'off' },
+  });
 
   await turn(page, ollama, 'Where are we going?');
   await page.waitForTimeout(700);
-  // Nothing is asked of the model, and nothing is recorded, until a person
-  // turns it on — proposals have nowhere to be reviewed yet.
+  // Off is off: the extractor is never called, so it costs nothing at all.
   expect(ollama.scene).toHaveLength(0);
   expect(await deltas(page)).toHaveLength(0);
 });
