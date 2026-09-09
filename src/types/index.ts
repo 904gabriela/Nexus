@@ -392,6 +392,63 @@ export interface Relationship {
   updatedAt: number;
 }
 
+/**
+ * A change to where two people stand, as the story made it.
+ *
+ * `story.relationships` is what the author wrote and stays that way: an
+ * extractor folding its conclusions into that array made derived knowledge
+ * indistinguishable from authored knowledge, unbranchable, and impossible to
+ * take back. This row is the derived half instead — it names the turns that
+ * established it, so a branch that cannot see them does not see the change
+ * either, and undoing it is a status change rather than an attempt to unpick a
+ * sentence from a paragraph.
+ *
+ * Shaped like SceneDelta because it answers the same questions, not because
+ * they share machinery. There is deliberately no common "delta" abstraction:
+ * the two resolve differently, and the resemblance is not worth a layer.
+ */
+export interface RelationshipDelta extends Timestamped {
+  id: ID;
+  chatId: ID;
+  /** The branch whose timeline established this. */
+  branchId: ID;
+  /** The pair, in the order the extractor named them. Compared unordered. */
+  betweenIds: [ID, ID];
+  /** Where they stand now, in a few words: "trust broken", "grew closer". */
+  change: string;
+  /** The memory this came from, so the two can be read together. */
+  sourceMemoryId: ID | null;
+  /**
+   * The exchange it was read from. Its visibility decides the delta's.
+   *
+   * Exchange-level rather than the single grounded turn a SceneDelta names:
+   * the memory extractor reports one conclusion per exchange and does not say
+   * which half of it carried the relationship. Requiring all of them to be
+   * visible is the safe direction — a branch cut mid-exchange drops the
+   * change rather than keeping it on half its evidence.
+   */
+  sourceMessageIds: ID[];
+  appliedAt: number;
+  basis: MemoryBasis;
+  /** 0–1, from the memory that carried the impact. */
+  confidence: number;
+  /**
+   * `proposed` never affects the standing and mirrors a memory still waiting
+   * to be accepted; it becomes `applied` when that memory is. `reversed` is one
+   * the user took back.
+   *
+   * There is deliberately no `superseded`, which SceneDelta needs and this does
+   * not: a scene field is always there to be written over, whereas a
+   * relationship someone writes by hand is a row whose existence is itself the
+   * override. Resolution reads `manual` directly, so deleting that row lets the
+   * story's own version be heard again instead of leaving it stamped
+   * superseded by something no longer there.
+   */
+  status: RelationshipDeltaStatus;
+}
+
+export type RelationshipDeltaStatus = 'proposed' | 'applied' | 'reversed';
+
 export interface NarrationPreset {
   id: ID;
   name: string;

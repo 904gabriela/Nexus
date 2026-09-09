@@ -389,6 +389,8 @@ test('extraction commits what it saw and holds back what it concluded', async ({
           relationship: null,
         },
       ]),
+      'Sera says it again, quieter.',
+      '[]',
     ],
     8192,
   );
@@ -420,18 +422,43 @@ test('extraction commits what it saw and holds back what it concluded', async ({
   expect(stated.status).toBe('active');
   expect(stated.statedById).toBe('c1');
 
-  // And the beat that moved two people moved the relationship, from the
-  // committed memory only.
+  /*
+   * And the beat that moved two people is recorded beside the story rather
+   * than into it.
+   *
+   * This assertion used to read `story.relationships[0].summary`, because the
+   * extractor used to write there. It no longer does, and that is the point of
+   * the change rather than a gap in it: folding a conclusion into the author's
+   * own array made derived knowledge indistinguishable from authored
+   * knowledge, carried it onto branches that never lived through it, and left
+   * no way to take it back. The row below is the same conclusion, with the
+   * turns it was read from attached — and the effective standing it produces
+   * is asserted straight after, so the change is still checked end to end.
+   */
   await expect
-    .poll(
-      async () => (await readStore<any>(page, 'stories'))[0].relationships?.length ?? 0,
-      { timeout: 20_000 },
-    )
+    .poll(async () => (await readStore<any>(page, 'relationshipDeltas')).length, {
+      timeout: 20_000,
+    })
     .toBe(1);
+  const [impact] = await readStore<any>(page, 'relationshipDeltas');
+  expect(impact.change).toBe('A promise made and not yet tested.');
+  // Committed memory, so the change is in force rather than waiting.
+  expect(impact.status).toBe('applied');
+  expect([...impact.betweenIds].sort()).toEqual(['c1', 'p1']);
+  expect(impact.sourceMemoryId).toBe(observed.id);
+  expect(impact.sourceMessageIds.length).toBeGreaterThan(0);
+  // Carried from the memory, so how the claim was arrived at survives with it.
+  expect(impact.basis).toBe('observed');
+
+  // The author's record is untouched.
   const story = (await readStore<any>(page, 'stories'))[0];
-  expect(story.relationships[0].summary).toBe('A promise made and not yet tested.');
-  expect(story.relationships[0].manual).toBe(false);
-  expect(story.relationships[0].betweenIds.sort()).toEqual(['c1', 'p1']);
+  expect(story.relationships ?? []).toEqual([]);
+
+  // And resolution puts it back together: the next prompt says where they now
+  // stand, with the words the extractor used.
+  const next = systemOf(await sendTurn(page, ollama, 'Say it again.'));
+  expect(next).toContain('## How they stand');
+  expect(next).toContain('A promise made and not yet tested.');
 });
 
 test('extraction never overwrites a relationship someone wrote by hand', async ({ page }) => {

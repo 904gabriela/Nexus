@@ -29,12 +29,12 @@ import {
   useStore,
 } from '../state/store';
 import { maybeCreateAutoMemory } from '../memory/autoMemory';
+import { acceptMemory, applyDiscoveries, memoryStatus } from '../memory/matrix';
 import {
-  acceptMemory,
-  applyDiscoveries,
-  applyRelationshipImpacts,
-  memoryStatus,
-} from '../memory/matrix';
+  derivedRelationships,
+  effectiveRelationships,
+  relationshipDeltasFrom,
+} from '../memory/relationships';
 import {
   applyDraft,
   generateStorySummary,
@@ -309,6 +309,32 @@ export function useGeneration() {
     [actions],
   );
 
+  /**
+   * Where the cast stand, as this branch has seen it.
+   *
+   * The story's own array is the base and stays untouched; the branch's applied
+   * relationship deltas fold over it. Same shape as the scene above, and for
+   * the same reason: a falling-out that only happened on a sibling branch must
+   * not be in the prompt here.
+   */
+  const relationshipDeltasHere = useMemo(
+    () => state.relationshipDeltas.filter((d) => d.chatId === activeChat?.id),
+    [state.relationshipDeltas, activeChat?.id],
+  );
+  const relationships = useMemo(
+    () => effectiveRelationships(story?.relationships, relationshipDeltasHere, visibleMessages),
+    [story?.relationships, relationshipDeltasHere, visibleMessages],
+  );
+  /** Which standings the story moved, so the sheet can say so and undo them. */
+  const relationshipsDerived = useMemo(
+    () => derivedRelationships(story?.relationships, relationshipDeltasHere, visibleMessages),
+    [story?.relationships, relationshipDeltasHere, visibleMessages],
+  );
+  const reverseRelationshipDelta = useCallback(
+    (deltaId: ID) => actions.setRelationshipDeltaStatus([deltaId], 'reversed'),
+    [actions],
+  );
+
   /** Alternative-aware content for a message. */
   const contentOf = useCallback(
     (message: Message): string => {
@@ -400,6 +426,10 @@ export function useGeneration() {
       // callback closed over — the same staleness that used to drop the newest
       // turn would otherwise compile the previous chat's scene.
       scene: sceneFor(options.chat !== undefined ? options.chat : activeChat),
+      // Resolved for this branch rather than read off the story: the canonical
+      // array holds what the author wrote, and what the story itself did to it
+      // belongs to the timeline being played.
+      relationships,
       budgetOverride: options.budgetOverride,
       visionEnabled: capabilities.vision,
       imageResolver: options.imageMap
@@ -420,6 +450,7 @@ export function useGeneration() {
       summary,
       resolvedSummary?.watermarkTrusted,
       sceneFor,
+      relationships,
     ],
   );
 
@@ -659,22 +690,34 @@ export function useGeneration() {
             });
           }
 
-          // A beat that moved two people is also a change to where they stand,
-          // and a name the story invented is someone the cast may want. Both
-          // land on the story, so they are folded in one write.
+          // A beat that moved two people is also a change to where they stand.
+          // It is recorded beside the story rather than into it: the canonical
+          // relationships are the author's, and a conclusion drawn from one
+          // branch's turns has no business rewriting them.
+          if (currentStory && chat.activeBranchId) {
+            const visible = visibleMessagesOf(line);
+            const standing = effectiveRelationships(
+              currentStory.relationships,
+              current.relationshipDeltas.filter((d) => d.chatId === chat.id),
+              visible,
+            );
+            const rows = relationshipDeltasFrom(
+              results.map((r) => r.memory),
+              { chatId: chat.id, branchId: chat.activeBranchId },
+              standing,
+            );
+            if (rows.length) await actions.saveRelationshipDeltas(rows);
+          }
+
+          // A name the story invented is someone the cast may want, and that
+          // does land on the story.
           if (currentStory) {
-            const withRelationships =
-              applyRelationshipImpacts(
-                currentStory,
-                results.map((r) => r.memory),
-              ) ?? currentStory;
             const withDiscoveries = applyDiscoveries(
-              withRelationships,
+              currentStory,
               discovered,
               current.characters,
             );
-            const updated = withDiscoveries ?? withRelationships;
-            if (updated !== currentStory) await actions.saveStory(updated);
+            if (withDiscoveries) await actions.saveStory(withDiscoveries);
 
             const added = (withDiscoveries?.discovered?.length ?? 0) -
               (currentStory.discovered?.length ?? 0);
@@ -1089,6 +1132,9 @@ export function useGeneration() {
     commitScene,
     commitCharacterState,
     reverseSceneDelta,
+    relationships,
+    relationshipsDerived,
+    reverseRelationshipDelta,
     contentOf,
     provider,
     imageProvider,

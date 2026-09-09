@@ -41,6 +41,28 @@ export interface SceneDeltaSeed {
   appliedAt?: number;
 }
 
+export interface RelationshipSeed {
+  id: string;
+  betweenIds: [string, string];
+  label?: string;
+  summary: string;
+  manual?: boolean;
+}
+
+export interface RelationshipDeltaSeed {
+  id: string;
+  branchId?: string;
+  chatId?: string;
+  betweenIds?: [string, string];
+  change: string;
+  sourceMessageIds: string[];
+  sourceMemoryId?: string | null;
+  status?: 'proposed' | 'applied' | 'reversed';
+  basis?: string;
+  confidence?: number;
+  appliedAt?: number;
+}
+
 export interface BranchSeed {
   summaries?: SummarySeed[];
   /** Which branch of chat-1 is active. */
@@ -54,6 +76,9 @@ export interface BranchSeed {
   /** Canonical base scene for chat-1. */
   scene?: Record<string, unknown>;
   sceneDeltas?: SceneDeltaSeed[];
+  /** The story's canonical, author-owned standings. */
+  relationships?: RelationshipSeed[];
+  relationshipDeltas?: RelationshipDeltaSeed[];
 }
 
 export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
@@ -170,6 +195,14 @@ export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
       openingMessage: '',
       tags: [],
       characters: [{ characterId: 'sera', primary: true, note: '', enabled: true }],
+      relationships: (options.relationships ?? []).map((r) => ({
+        id: r.id,
+        betweenIds: r.betweenIds,
+        label: r.label ?? '',
+        summary: r.summary,
+        manual: r.manual ?? false,
+        updatedAt: now,
+      })),
       personaId: 'corin',
       lorebookIds: [],
       memoryIds: [],
@@ -322,6 +355,24 @@ export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
         appliedAt: d.appliedAt ?? now,
         fields: d.fields,
         previous: d.previous ?? {},
+        basis: d.basis ?? 'observed',
+        confidence: d.confidence ?? 0.9,
+        status: d.status ?? 'applied',
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    for (const d of options.relationshipDeltas ?? []) {
+      await put('relationshipDeltas', {
+        id: d.id,
+        chatId: d.chatId ?? 'chat-1',
+        branchId: d.branchId ?? 'main',
+        betweenIds: d.betweenIds ?? ['sera', 'corin'],
+        change: d.change,
+        sourceMemoryId: d.sourceMemoryId ?? null,
+        sourceMessageIds: d.sourceMessageIds,
+        appliedAt: d.appliedAt ?? now,
         basis: d.basis ?? 'observed',
         confidence: d.confidence ?? 0.9,
         status: d.status ?? 'applied',

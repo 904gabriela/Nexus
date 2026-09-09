@@ -29,6 +29,7 @@ import type {
   ModelCapabilities,
   Settings,
   Story,
+  RelationshipDelta,
   SceneDelta,
   StorySummary,
   ToastMessage,
@@ -68,6 +69,7 @@ export interface AppState {
   imageProviders: ImageProvider[];
   storySummaries: StorySummary[];
   sceneDeltas: SceneDelta[];
+  relationshipDeltas: RelationshipDelta[];
   media: MediaMeta[];
   checkpoints: Checkpoint[];
   /** Working set for the currently open chat. */
@@ -99,6 +101,7 @@ const initialState: AppState = {
   imageProviders: [],
   storySummaries: [],
   sceneDeltas: [],
+  relationshipDeltas: [],
   media: [],
   checkpoints: [],
   activeChatId: null,
@@ -185,6 +188,17 @@ export interface AppActions {
   saveSceneDeltas: (deltas: SceneDelta[]) => Promise<void>;
   /** Undo, or hand a field back to the user: 'reversed' / 'superseded'. */
   setSceneDeltaStatus: (ids: ID[], status: SceneDelta['status']) => Promise<void>;
+
+  /**
+   * Records relationship changes the story established. Never touches
+   * story.relationships, which is the author's.
+   */
+  saveRelationshipDeltas: (deltas: RelationshipDelta[]) => Promise<void>;
+  /** Undo one, or apply one whose memory has just been accepted. */
+  setRelationshipDeltaStatus: (
+    ids: ID[],
+    status: RelationshipDelta['status'],
+  ) => Promise<void>;
 
   refreshMedia: () => Promise<MediaMeta[]>;
   removeMedia: (id: ID) => Promise<void>;
@@ -286,6 +300,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         imageProviderList,
         summaries,
         deltas,
+        relationshipRows,
         media,
         checkpoints,
       ] = await Promise.all([
@@ -301,6 +316,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         repo.imageProviders.all(),
         repo.storySummaries.all(),
         repo.sceneDeltas.all(),
+        repo.relationshipDeltas.all(),
         listMedia(),
         repo.checkpoints.all(),
       ]);
@@ -319,6 +335,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           imageProviders: imageProviderList,
           storySummaries: summaries,
           sceneDeltas: deltas,
+          relationshipDeltas: relationshipRows,
           media,
           checkpoints,
           v2Scan: settings.migratedV2 ? null : scanV2(),
@@ -398,6 +415,33 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       await repo.sceneDeltas.removeMany(doomed.map((d) => d.id));
       const gone = new Set(doomed.map((d) => d.id));
       set({ sceneDeltas: stateRef.current.sceneDeltas.filter((d) => !gone.has(d.id)) });
+    };
+
+    /**
+     * The same rule for where two people stand.
+     *
+     * Kept beside `dropSceneDeltasFor` rather than merged with it: they read
+     * different stores and the two derived layers are deliberately not one
+     * mechanism. Both are called together wherever a message stops saying what
+     * it said.
+     */
+    const dropRelationshipDeltasFor = async (messageIds: ID[]) => {
+      const wanted = new Set(messageIds);
+      const doomed = stateRef.current.relationshipDeltas.filter((delta) =>
+        delta.sourceMessageIds.some((id) => wanted.has(id)),
+      );
+      if (!doomed.length) return;
+      await repo.relationshipDeltas.removeMany(doomed.map((d) => d.id));
+      const gone = new Set(doomed.map((d) => d.id));
+      set({
+        relationshipDeltas: stateRef.current.relationshipDeltas.filter((d) => !gone.has(d.id)),
+      });
+    };
+
+    /** Everything derived from these turns, dropped in one call. */
+    const dropDerivedFor = async (messageIds: ID[]) => {
+      await dropSceneDeltasFor(messageIds);
+      await dropRelationshipDeltasFor(messageIds);
     };
 
     const loadChatWorkingSet = async (chatId: ID) => {
@@ -685,13 +729,43 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         return guard('Saving the memory', async () => {
           const saved = await repo.memories.save(memory);
           set({ memories: upsert(stateRef.current.memories, saved) });
+          // A relationship change is only as believed as the memory it came
+          // from, so accepting that memory is what lets the change apply.
+          if ((saved.status ?? 'active') === 'active') {
+            const waiting = stateRef.current.relationshipDeltas.filter(
+              (d) => d.sourceMemoryId === saved.id && d.status === 'proposed',
+            );
+            if (waiting.length) {
+              await this.setRelationshipDeltaStatus(
+                waiting.map((d) => d.id),
+                'applied',
+              );
+            }
+          }
           return saved;
         });
       },
       async deleteMemory(id) {
         return guard('Deleting the memory', async () => {
           await repo.memories.remove(id);
-          set({ memories: stateRef.current.memories.filter((m) => m.id !== id) });
+          // Rejecting the memory rejects what was concluded from it.
+          const doomed = stateRef.current.relationshipDeltas.filter(
+            (d) => d.sourceMemoryId === id,
+          );
+          if (doomed.length) {
+            await repo.relationshipDeltas.removeMany(doomed.map((d) => d.id));
+          }
+          const gone = new Set(doomed.map((d) => d.id));
+          set({
+            memories: stateRef.current.memories.filter((m) => m.id !== id),
+            ...(gone.size
+              ? {
+                  relationshipDeltas: stateRef.current.relationshipDeltas.filter(
+                    (d) => !gone.has(d.id),
+                  ),
+                }
+              : {}),
+          });
         });
       },
 
@@ -765,6 +839,31 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           if (!patched.length) return;
           await repo.sceneDeltas.saveMany(patched);
           set({ sceneDeltas: upsertMany(stateRef.current.sceneDeltas, patched) });
+        });
+      },
+
+      async saveRelationshipDeltas(deltas) {
+        if (!deltas.length) return;
+        return guard('Recording the relationship change', async () => {
+          await repo.relationshipDeltas.saveMany(deltas);
+          set({
+            relationshipDeltas: upsertMany(stateRef.current.relationshipDeltas, deltas),
+          });
+        });
+      },
+
+      async setRelationshipDeltaStatus(ids, status) {
+        if (!ids.length) return;
+        return guard('Updating the relationship change', async () => {
+          const wanted = new Set(ids);
+          const patched = stateRef.current.relationshipDeltas
+            .filter((d) => wanted.has(d.id))
+            .map((d) => ({ ...d, status }));
+          if (!patched.length) return;
+          await repo.relationshipDeltas.saveMany(patched);
+          set({
+            relationshipDeltas: upsertMany(stateRef.current.relationshipDeltas, patched),
+          });
         });
       },
 
@@ -943,6 +1042,9 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             checkpoints: stateRef.current.checkpoints.filter((c) => c.chatId !== id),
             storySummaries: stateRef.current.storySummaries.filter((s) => s.chatId !== id),
             sceneDeltas: stateRef.current.sceneDeltas.filter((d) => d.chatId !== id),
+            relationshipDeltas: stateRef.current.relationshipDeltas.filter(
+              (d) => d.chatId !== id,
+            ),
             ...(wasActive
               ? { activeChatId: null, messages: [], branches: [], alternatives: [] }
               : {}),
@@ -1056,7 +1158,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           // it; marking every other kind of update — favouriting, switching
           // alternative — would throw away changes nothing contradicted.
           if (before && before.content !== saved.content) {
-            await dropSceneDeltasFor([saved.id]);
+            await dropDerivedFor([saved.id]);
           }
           return saved;
         });
@@ -1082,7 +1184,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             await repo.branches.saveMany(patched);
             set({ branches: upsertMany(current.branches, patched) });
           }
-          await dropSceneDeltasFor([id]);
+          await dropDerivedFor([id]);
           set({
             messages: stateRef.current.messages.filter((m) => m.id !== id),
             alternatives: stateRef.current.alternatives.filter((a) => a.messageId !== id),
@@ -1246,6 +1348,11 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           const deltaIds = current.sceneDeltas
             .filter((d) => doomed.includes(d.branchId))
             .map((d) => d.id);
+          // Same rule for the standings: a change this branch established goes
+          // with it, and one inherited from an ancestor stays where it is.
+          const relationshipDeltaIds = current.relationshipDeltas
+            .filter((d) => doomed.includes(d.branchId))
+            .map((d) => d.id);
 
           await Promise.all([
             repo.branches.removeMany(doomed),
@@ -1254,6 +1361,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             repo.checkpoints.removeMany(checkpointIds),
             repo.storySummaries.removeMany(summaryIds),
             repo.sceneDeltas.removeMany(deltaIds),
+            repo.relationshipDeltas.removeMany(relationshipDeltaIds),
           ]);
 
           const remaining = current.branches.filter((b) => !doomed.includes(b.id));
@@ -1271,6 +1379,9 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             checkpoints: current.checkpoints.filter((c) => !checkpointIds.includes(c.id)),
             storySummaries: current.storySummaries.filter((s) => !summaryIds.includes(s.id)),
             sceneDeltas: current.sceneDeltas.filter((d) => !deltaIds.includes(d.id)),
+            relationshipDeltas: current.relationshipDeltas.filter(
+              (d) => !relationshipDeltaIds.includes(d.id),
+            ),
             chats: upsert(current.chats, nextChat),
           });
         });

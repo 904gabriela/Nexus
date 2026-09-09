@@ -22,6 +22,7 @@ import type {
   Message,
   MessagePipelineRow,
   Persona,
+  Relationship,
   SceneState,
   Settings,
   Story,
@@ -66,6 +67,16 @@ export interface CompileInput {
    * resolves to the focal character alone rather than the whole cast.
    */
   scene?: SceneState | null;
+  /**
+   * How the cast stand, resolved for the branch being played.
+   *
+   * Absent falls back to the story's own array, which is what the author wrote
+   * and all a caller without a timeline can know. A caller that has one passes
+   * the effective set: `story.relationships` holds no record of what the story
+   * itself did, and reading it directly put a sibling branch's falling-out into
+   * this branch's prompt.
+   */
+  relationships?: Relationship[] | null;
   /**
    * The real usable prompt window, negotiated with the provider. Overrides the
    * configured context size, which is an aspiration rather than a capability.
@@ -719,7 +730,7 @@ function compileContextInner(input: CompileInput): CompileResult {
       ...(persona ? [{ id: persona.id, name: persona.displayName || persona.name }] : []),
     ];
     const presentIds = new Set(participants.map((p) => p.id));
-    const active = relevantRelationships(story.relationships, presentIds);
+    const active = relevantRelationships(input.relationships ?? story.relationships, presentIds);
     const relationshipBlock = macro(describeRelationships(active, participants));
     if (relationshipBlock.trim()) {
       parts.push(

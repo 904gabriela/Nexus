@@ -601,66 +601,15 @@ function toRelationshipImpact(
   return { betweenIds: [ids[0], ids[1]], change };
 }
 
-/* ------------------------------------------------------------- accepting */
-
-/**
- * Folds relationship changes from committed memories into the story.
- *
- * Only memories that actually committed count: a proposal is not yet something
- * the story believes, so it must not move where two people stand. A
- * relationship a person wrote by hand is never touched — `manual` means they
- * settled it, and an extractor guessing over the top of that is exactly the
- * behaviour that makes automatic systems untrustworthy.
- *
- * Returns null when nothing changed, so the caller can skip the write.
+/*
+ * Relationship impacts used to be folded into `story.relationships` from here.
+ * That made a conclusion the extractor drew indistinguishable from what the
+ * author wrote, carried it onto branches that never lived through it, and left
+ * no way back. They are read by `relationshipDeltasFrom` in ./relationships
+ * now, and recorded as rows the branch can resolve and the user can undo.
  */
-export function applyRelationshipImpacts(story: Story, memories: Memory[]): Story | null {
-  const impacts = memories
-    .filter((memory) => memoryStatus(memory) === 'active')
-    .map((memory) => memory.relationshipImpact)
-    .filter((impact): impact is RelationshipImpact => Boolean(impact));
-  if (!impacts.length) return null;
 
-  const at = Date.now();
-  const next = [...(story.relationships ?? [])];
-  let changed = false;
-
-  for (const impact of impacts) {
-    const index = next.findIndex((r) => samePair(r.betweenIds, impact.betweenIds));
-    if (index === -1) {
-      next.push({
-        id: uid('rel_'),
-        betweenIds: impact.betweenIds,
-        label: '',
-        summary: impact.change,
-        manual: false,
-        updatedAt: at,
-      });
-      changed = true;
-      continue;
-    }
-
-    const existing = next[index];
-    if (existing.manual) continue;
-    if (existing.summary.trim() === impact.change.trim()) continue;
-    // The summary is where they stand *now*, so the newest change leads and
-    // what was there is kept behind it rather than thrown away.
-    next[index] = {
-      ...existing,
-      summary: existing.summary.trim()
-        ? `${impact.change} (previously: ${existing.summary.trim()})`
-        : impact.change,
-      updatedAt: at,
-    };
-    changed = true;
-  }
-
-  return changed ? { ...story, relationships: next, updatedAt: at } : null;
-}
-
-function samePair(a: [ID, ID], b: [ID, ID]): boolean {
-  return (a[0] === b[0] && a[1] === b[1]) || (a[0] === b[1] && a[1] === b[0]);
-}
+/* ------------------------------------------------------------- accepting */
 
 /**
  * Accepting a proposed memory is what makes its supersessions real.

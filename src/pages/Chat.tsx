@@ -1015,12 +1015,16 @@ export function ChatPage({
         scene={scene}
         sceneNow={gen.scene ?? activeChat.scene}
         sceneDerived={gen.sceneDerived}
+        relationships={gen.relationships}
+        relationshipsDerived={gen.relationshipsDerived}
         settings={state.settings}
+        persona={gen.persona}
         personaName={gen.persona ? gen.persona.displayName || gen.persona.name : null}
         onPatchChat={(patch) => actions.saveChat({ ...activeChat, ...patch })}
         onCommitScene={gen.commitScene}
         onCommitCharacterState={gen.commitCharacterState}
         onUndoSceneChange={gen.reverseSceneDelta}
+        onUndoRelationshipChange={gen.reverseRelationshipDelta}
         onPatchSettings={(patch) => actions.saveSettings(patch)}
         responseSummary={responseSummary}
         contextSummary={

@@ -13,6 +13,7 @@ import type {
   Persona,
   Provider,
   ImageProvider,
+  RelationshipDelta,
   Settings,
   Story,
   SceneDelta,
@@ -499,6 +500,31 @@ export function newSceneDelta(
     appliedAt: t,
     fields: {},
     previous: {},
+    basis: 'observed',
+    confidence: 0,
+    status: 'proposed',
+    createdAt: t,
+    updatedAt: t,
+    ...partial,
+  };
+}
+
+export function newRelationshipDelta(
+  chatId: string,
+  branchId: string,
+  betweenIds: [string, string],
+  partial: Partial<RelationshipDelta> = {},
+): RelationshipDelta {
+  const t = now();
+  return {
+    id: uid(),
+    chatId,
+    branchId,
+    betweenIds,
+    change: '',
+    sourceMemoryId: null,
+    sourceMessageIds: [],
+    appliedAt: t,
     basis: 'observed',
     confidence: 0,
     status: 'proposed',

@@ -18,6 +18,9 @@ import type {
   Chat,
   ID,
   NarrationPreset,
+  Persona,
+  Relationship,
+  RelationshipDelta,
   SceneDelta,
   SceneState,
   Settings,
@@ -51,7 +54,15 @@ export interface QuickSettingsProps {
   sceneNow: SceneState;
   /** Fields the story moved, keyed as the field name (or `characterStates:<id>`). */
   sceneDerived: Map<string, SceneDelta>;
+  /**
+   * How the cast stand, resolved for this branch — the author's own record with
+   * whatever the story did to it on this timeline folded over the top.
+   */
+  relationships: Relationship[];
+  /** Standings the story moved, keyed by the relationship they belong to. */
+  relationshipsDerived: Map<ID, RelationshipDelta>;
   settings: Settings;
+  persona: Persona | null;
   personaName: string | null;
   /** Token usage, when the user has asked to see counts. */
   contextSummary: string | null;
@@ -62,6 +73,7 @@ export interface QuickSettingsProps {
   onCommitScene: (partial: Partial<SceneState>) => void | Promise<unknown>;
   onCommitCharacterState: (characterId: ID, text: string) => void | Promise<unknown>;
   onUndoSceneChange: (deltaId: ID) => void | Promise<unknown>;
+  onUndoRelationshipChange: (deltaId: ID) => void | Promise<unknown>;
   onPatchSettings: (patch: Partial<Settings>) => void | Promise<unknown>;
   onOpenInspector: () => void;
   onOpenPersona: () => void;
@@ -79,7 +91,10 @@ export function QuickSettings({
   scene,
   sceneNow,
   sceneDerived,
+  relationships,
+  relationshipsDerived,
   settings,
+  persona,
   personaName,
   contextSummary,
   responseSummary,
@@ -87,6 +102,7 @@ export function QuickSettings({
   onCommitScene,
   onCommitCharacterState,
   onUndoSceneChange,
+  onUndoRelationshipChange,
   onPatchSettings,
   onOpenInspector,
   onOpenPersona,
@@ -161,6 +177,32 @@ export function QuickSettings({
    * empty string, so the compiler sees no line at all for that character.
    */
   const setCharacterState = (id: ID, text: string) => onCommitCharacterState(id, text);
+
+  /*
+   * The same filter the compiler applies: a standing between two people who are
+   * not both in the room is background, and showing it here while the prompt
+   * leaves it out would be the panel disagreeing with what was actually sent.
+   */
+  const participants = [
+    ...scene.present.map((c) => ({ id: c.id, name: c.displayName || c.name })),
+    ...(persona ? [{ id: persona.id, name: personaName ?? persona.name }] : []),
+  ];
+  const standings = relationships
+    .filter(
+      (row) =>
+        Array.isArray(row.betweenIds) &&
+        row.betweenIds.length === 2 &&
+        participants.some((p) => p.id === row.betweenIds[0]) &&
+        participants.some((p) => p.id === row.betweenIds[1]) &&
+        (row.label.trim() || row.summary.trim()),
+    )
+    .map((row) => ({
+      row,
+      names: row.betweenIds.map(
+        (id) => participants.find((p) => p.id === id)?.name ?? 'Someone',
+      ) as [string, string],
+      delta: relationshipsDerived.get(row.id) ?? null,
+    }));
 
   return (
     <Sheet open={open} onClose={onClose} title="Chat settings" large>
@@ -251,6 +293,45 @@ export function QuickSettings({
             <p className="small muted">
               Temporary, and only for this scene — injuries, mood, what they are concealing. Who
               they are belongs on the character.
+            </p>
+          </>
+        )}
+
+        {/*
+          Where the people in the room stand with each other, as this branch has
+          seen it. Read-only here on purpose: the standings themselves are the
+          story's, edited under the story's Cast tab, and the only thing this
+          sheet can usefully offer mid-scene is taking one back.
+        */}
+        {!!standings.length && (
+          <>
+            <h4 className="qs-subheading">How they stand</h4>
+            {standings.map(({ row, names, delta }) => (
+              <p key={row.id} className="small" style={{ margin: '0 0 6px' }}>
+                <strong>
+                  {names[0]} and {names[1]}
+                  {row.label.trim() ? ` — ${row.label.trim()}` : ''}
+                </strong>
+                {row.summary.trim() ? `: ${row.summary.trim()}` : ''}
+                {delta && (
+                  <>
+                    {' '}
+                    <span className="muted">From the story.</span>{' '}
+                    <button
+                      type="button"
+                      className="btn-link"
+                      onClick={() => onUndoRelationshipChange(delta.id)}
+                      aria-label={`Undo the story's change to ${names[0]} and ${names[1]}`}
+                    >
+                      Undo
+                    </button>
+                  </>
+                )}
+              </p>
+            ))}
+            <p className="small muted">
+              Only the pairs in the room are sent. What the story worked out is kept apart from
+              what you wrote, so undoing it leaves your own version alone.
             </p>
           </>
         )}

@@ -26,6 +26,7 @@ import type {
   ImageProvider,
   Settings,
   Story,
+  RelationshipDelta,
   SceneDelta,
   StorySummary,
 } from '../types';
@@ -219,6 +220,18 @@ export const sceneDeltas = {
   removeMany: (ids: ID[]) => dbDeleteMany(STORES.sceneDeltas, ids),
 };
 
+export const relationshipDeltas = {
+  all: () => dbGetAll<RelationshipDelta>(STORES.relationshipDeltas),
+  byChat: (chatId: ID) =>
+    dbGetAllByIndex<RelationshipDelta>(STORES.relationshipDeltas, 'chatId', chatId),
+  byBranch: (branchId: ID) =>
+    dbGetAllByIndex<RelationshipDelta>(STORES.relationshipDeltas, 'branchId', branchId),
+  save: (value: RelationshipDelta) => dbPut(STORES.relationshipDeltas, touch(value)),
+  saveMany: (values: RelationshipDelta[]) => dbPutMany(STORES.relationshipDeltas, values),
+  remove: (id: ID) => dbDelete(STORES.relationshipDeltas, id),
+  removeMany: (ids: ID[]) => dbDeleteMany(STORES.relationshipDeltas, ids),
+};
+
 export const settingsRepo = {
   async load(): Promise<Settings> {
     const stored = await dbGet<Settings>(STORES.settings, 'settings');
@@ -254,6 +267,7 @@ export async function deleteChatCascade(chatId: ID): Promise<void> {
     chatAlternatives,
     chatSummaries,
     chatDeltas,
+    chatRelationshipDeltas,
   ] = await Promise.all([
     messages.byChat(chatId),
     branches.byChat(chatId),
@@ -264,6 +278,8 @@ export async function deleteChatCascade(chatId: ID): Promise<void> {
     storySummaries.byChat(chatId),
     // A scene delta is a claim about one of this chat's timelines.
     sceneDeltas.byChat(chatId),
+    // And so is a relationship delta: it names this chat's messages.
+    relationshipDeltas.byChat(chatId),
   ]);
   await Promise.all([
     messages.removeMany(chatMessages.map((m) => m.id)),
@@ -272,6 +288,7 @@ export async function deleteChatCascade(chatId: ID): Promise<void> {
     alternatives.removeMany(chatAlternatives.map((a) => a.id)),
     storySummaries.removeMany(chatSummaries.map((s) => s.id)),
     sceneDeltas.removeMany(chatDeltas.map((d) => d.id)),
+    relationshipDeltas.removeMany(chatRelationshipDeltas.map((d) => d.id)),
     chats.remove(chatId),
   ]);
 }
