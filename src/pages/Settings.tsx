@@ -1349,7 +1349,7 @@ function MemorySection() {
           { value: 'off', label: 'Do not track it' },
           { value: 'annotate', label: 'Track and show it, change nothing' },
         ]}
-        hint="Records that a character has heard something — not that they believe it, and not that it is true. Nothing here is sent to the model or costs any context; it appears in the Context Inspector. Nothing recorded means nothing is being tracked, never that a character does not know."
+        hint="Records that a character has heard something — not that they believe it, and not that it is true. After each reply, anything it notices is offered under Context Inspector → Knowledge → Waiting for you, and counts for nothing until you accept it. Nothing here is sent to the model or costs any context. Nothing recorded means nothing is being tracked, never that a character does not know."
       />
 
       <hr className="divider" />
