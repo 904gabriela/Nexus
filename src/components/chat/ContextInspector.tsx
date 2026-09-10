@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import type { ID } from '../../types';
 import type { CompileResult } from '../../context/compiler';
 import { contextToText } from '../../context/compiler';
 import { formatTokens } from '../../context/tokens';
@@ -28,14 +29,36 @@ const KIND_LABEL: Record<string, string> = {
  * Shows exactly what the compiler produced — the same structure that is sent to
  * the model, part by part, with the reason each part was included or dropped.
  */
+/** A knowledge attribution waiting for a person to accept or dismiss it. */
+export interface PendingKnowledge {
+  id: ID;
+  subjectLabel: string;
+  knowerName: string;
+  basis: string;
+  toldByName: string | null;
+  confidence: number;
+}
+
 export function ContextInspector({
   compiled,
   open,
   onClose,
+  pendingKnowledge = [],
+  onAcceptKnowledge,
+  onDismissKnowledge,
 }: {
   compiled: CompileResult;
   open: boolean;
   onClose: () => void;
+  /**
+   * Proposals, not prompt. The inspector is otherwise a verbatim view of one
+   * compile and these are deliberately outside it: nothing here has been
+   * counted, sent, or resolved. They live in this sheet because it is where
+   * knowledge is looked at, not because they are part of what was compiled.
+   */
+  pendingKnowledge?: PendingKnowledge[];
+  onAcceptKnowledge?: (id: ID) => void | Promise<unknown>;
+  onDismissKnowledge?: (id: ID) => void | Promise<unknown>;
 }) {
   const [tab, setTab] = useState<
     'included' | 'excluded' | 'lore' | 'knowledge' | 'raw' | 'request'
@@ -266,6 +289,53 @@ export function ContextInspector({
           <p className="small muted">
             None of this is sent to the model. It costs no context.
           </p>
+
+          {!!pendingKnowledge.length && (
+            <>
+              <h3 className="section-title">
+                Waiting for you
+                <span className="chip chip-warn">{pendingKnowledge.length}</span>
+              </h3>
+              <p className="small muted" style={{ marginTop: 0 }}>
+                The story seemed to show these. Nothing counts until you say so — and a small
+                model can read "he never knew" as "he knew", so read the sentence before you agree.
+              </p>
+              {pendingKnowledge.map((item) => (
+                <div className="card" key={item.id} style={{ marginBottom: 8 }}>
+                  <div className="small">
+                    <strong>{item.knowerName}</strong>
+                    {' now knows of '}
+                    <strong>{item.subjectLabel}</strong>
+                    <span className="muted">
+                      {' — '}
+                      {item.basis === 'told' && item.toldByName
+                        ? `told by ${item.toldByName}`
+                        : item.basis}
+                      {` · ${Math.round(item.confidence * 100)}% sure`}
+                    </span>
+                  </div>
+                  <div className="row" style={{ gap: 8, marginTop: 6 }}>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => onAcceptKnowledge?.(item.id)}
+                      aria-label={`Accept: ${item.knowerName} knows of ${item.subjectLabel}`}
+                    >
+                      Accept
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost"
+                      onClick={() => onDismissKnowledge?.(item.id)}
+                      aria-label={`Dismiss: ${item.knowerName} knows of ${item.subjectLabel}`}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
 
           {!compiled.knowledge.length ? (
             <p className="small muted">

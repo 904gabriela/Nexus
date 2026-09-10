@@ -534,7 +534,15 @@ test('the chat menu keeps the long tail and drops what quick settings now owns',
   }
 
   // And everything removed is still reachable where it moved to.
+  //
+  // The sheet takes focus on a short timer after opening, and Escape is
+  // handled by the panel, not the page — so pressing it before focus has
+  // landed sends the key to <body>, the sheet stays up, and its backdrop
+  // swallows the next click. Wait for focus first, then Escape still gets to
+  // prove it closes the sheet.
+  await expect(sheet.getByRole('button', { name: 'Close' })).toBeFocused({ timeout: 5_000 });
   await page.keyboard.press('Escape');
+  await expect(sheet).toHaveCount(0);
   await page.getByRole('button', { name: 'Quick settings' }).click();
   for (const moved of ['Persona', 'Response settings', 'Context Inspector']) {
     await expect(sheet.getByRole('button', { name: new RegExp(`^${moved}`) })).toBeVisible();

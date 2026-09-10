@@ -51,12 +51,21 @@ export interface MockProvider {
    * it would both consume a reply and be mistaken for the last roleplay turn.
    */
   sceneReplies: string[];
+  /** Replies for the knowledge extractor, on its own queue like the scene's. */
+  knowledgeReplies: string[];
   scene: Array<{ body: any; url: string }>;
+  /** Every request the knowledge extractor made. */
+  knowledge: Array<{ body: any; url: string }>;
 }
 
 /** The scene extractor names itself in its instruction; nothing else does. */
 export function isSceneExtraction(body: any): boolean {
   return String(body?.messages?.[0]?.content ?? '').includes('has ALREADY HAPPENED');
+}
+
+/** Identified by its own instruction, like the scene extractor. */
+export function isKnowledgeExtraction(body: any): boolean {
+  return String(body?.messages?.[0]?.content ?? '').includes('CAME TO KNOW OF');
 }
 
 /**
@@ -68,10 +77,13 @@ export async function mockAI(page: Page, replies: string[] = ['A mocked reply.']
     replies: [...replies],
     requests: [],
     sceneReplies: [],
+    knowledgeReplies: [],
     scene: [],
+    knowledge: [],
   };
   let index = 0;
   let sceneIndex = 0;
+  let knowledgeIndex = 0;
 
   await page.route('**/v1/models', async (route: Route) => {
     await route.fulfill({
@@ -85,6 +97,19 @@ export async function mockAI(page: Page, replies: string[] = ['A mocked reply.']
 
   await page.route('**/v1/chat/completions', async (route: Route) => {
     const body = route.request().postDataJSON();
+    if (isKnowledgeExtraction(body)) {
+      state.knowledge.push({ body, url: route.request().url() });
+      const reply =
+        state.knowledgeReplies[Math.min(knowledgeIndex, state.knowledgeReplies.length - 1)] ??
+        '{"attributions": []}';
+      knowledgeIndex += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ choices: [{ message: { role: 'assistant', content: reply } }] }),
+      });
+      return;
+    }
     if (isSceneExtraction(body)) {
       state.scene.push({ body, url: route.request().url() });
       const sceneReply =
@@ -603,8 +628,12 @@ export interface MockOllama {
    * meant for something else. Defaults to "nothing changed".
    */
   sceneReplies: string[];
+  /** Replies for the knowledge extractor, on its own queue like the scene's. */
+  knowledgeReplies: string[];
   /** Every scene-extraction request, in order. */
   scene: Array<{ body: any; url: string }>;
+  /** Every request the knowledge extractor made. */
+  knowledge: Array<{ body: any; url: string }>;
   /** Every body posted to /api/chat, in order — the roleplay turns. */
   requests: Array<{ body: any; url: string }>;
   /**
@@ -634,13 +663,16 @@ export async function mockOllama(
   const state: MockOllama = {
     replies: [...replies],
     sceneReplies: [],
+    knowledgeReplies: [],
     requests: [],
     utility: [],
     scene: [],
+    knowledge: [],
     contextLength,
   };
   let index = 0;
   let sceneIndex = 0;
+  let knowledgeIndex = 0;
 
   await page.route('**/api/tags', async (route: Route) => {
     await route.fulfill({
@@ -675,6 +707,19 @@ export async function mockOllama(
     const body = route.request().postDataJSON();
     // Identified by its own instruction rather than by its endpoint, which it
     // shares with every other background job.
+    if (isKnowledgeExtraction(body)) {
+      state.knowledge.push({ body, url: route.request().url() });
+      const reply =
+        state.knowledgeReplies[Math.min(knowledgeIndex, state.knowledgeReplies.length - 1)] ??
+        '{"attributions": []}';
+      knowledgeIndex += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ choices: [{ message: { role: 'assistant', content: reply } }] }),
+      });
+      return;
+    }
     if (isSceneExtraction(body)) {
       state.scene.push({ body, url: route.request().url() });
       const sceneReply =

@@ -307,6 +307,26 @@ export function ChatPage({
     setShowContext(true);
   }, []);
 
+  /*
+   * The one thing that changes what the open inspector should show without a
+   * turn being sent: accepting or dismissing a knowledge proposal. The compile
+   * above is a snapshot, and the idle pass deliberately leaves it alone while
+   * the sheet is open, so without this a person clicks Accept and watches
+   * nothing happen. Recompiled with the same draft-inclusive inputs, so the
+   * sheet keeps showing what it promised to show.
+   */
+  useEffect(() => {
+    if (!showContext) return;
+    setCompiled(
+      previewRef.current({
+        pendingUserText: getDraft(),
+        pendingAttachments: pendingRef.current,
+      }),
+    );
+    // Only knowledge changes should retrigger this; the draft is read fresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gen.knowledge]);
+
 
   /*
    * Only a recent window of the conversation is mounted.
@@ -993,6 +1013,9 @@ export function ChatPage({
           compiled={compiled}
           open={showContext}
           onClose={() => setShowContext(false)}
+          pendingKnowledge={gen.pendingKnowledge}
+          onAcceptKnowledge={gen.acceptKnowledge}
+          onDismissKnowledge={gen.dismissKnowledge}
         />
       )}
 

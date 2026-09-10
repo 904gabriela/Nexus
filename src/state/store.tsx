@@ -209,6 +209,11 @@ export interface AppActions {
    */
   saveKnowledgeEdges: (edges: KnowledgeEdge[]) => Promise<void>;
   setKnowledgeEdgeStatus: (ids: ID[], status: KnowledgeEdge['status']) => Promise<void>;
+  /**
+   * Dismisses proposals. A proposal was never in force, so there is nothing
+   * to mark reversed; it simply goes.
+   */
+  deleteKnowledgeEdges: (ids: ID[]) => Promise<void>;
 
   refreshMedia: () => Promise<MediaMeta[]>;
   removeMedia: (id: ID) => Promise<void>;
@@ -932,6 +937,15 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           if (!patched.length) return;
           await repo.knowledgeEdges.saveMany(patched);
           set({ knowledgeEdges: upsertMany(stateRef.current.knowledgeEdges, patched) });
+        });
+      },
+
+      async deleteKnowledgeEdges(ids) {
+        if (!ids.length) return;
+        return guard('Dismissing the suggestion', async () => {
+          await repo.knowledgeEdges.removeMany(ids);
+          const gone = new Set(ids);
+          set({ knowledgeEdges: stateRef.current.knowledgeEdges.filter((e) => !gone.has(e.id)) });
         });
       },
 

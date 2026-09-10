@@ -36,6 +36,8 @@ import {
   relationshipDeltasFrom,
 } from '../memory/relationships';
 import { resolveKnowledge } from '../memory/knowledge';
+import { extractKnowledge, knowledgeSubjects } from '../memory/knowledgeExtract';
+import { newKnowledgeEdge } from '../types/factories';
 import {
   applyDraft,
   generateStorySummary,
@@ -333,6 +335,52 @@ export function useGeneration() {
   );
   const reverseRelationshipDelta = useCallback(
     (deltaId: ID) => actions.setRelationshipDeltaStatus([deltaId], 'reversed'),
+    [actions],
+  );
+
+  /**
+   * Attributions the story seemed to show, not yet accepted by anyone.
+   *
+   * Scoped to this chat and branch and named here, so the inspector can show
+   * them as sentences rather than ids. They are not resolved, not counted and
+   * not in the compile: a proposal is a question, not knowledge.
+   */
+  const pendingKnowledge = useMemo(() => {
+    if (!activeChat) return [];
+    const nameOf = (id: ID) => {
+      const c = characters.find((x) => x.id === id);
+      if (c) return c.displayName || c.name;
+      return persona && persona.id === id ? persona.displayName || persona.name : 'Someone';
+    };
+    return state.knowledgeEdges
+      .filter(
+        (e) =>
+          e.status === 'proposed' &&
+          e.chatId === activeChat.id &&
+          e.branchId === activeChat.activeBranchId,
+      )
+      .map((e) => {
+        const subject = e.subject;
+        const subjectLabel =
+          subject.kind === 'memory'
+            ? state.memories.find((m) => m.id === subject.id)?.title || 'a memory'
+            : `how ${nameOf(subject.betweenIds[0])} and ${nameOf(subject.betweenIds[1])} stand`;
+        return {
+        id: e.id,
+        subjectLabel,
+        knowerName: nameOf(e.knowerId),
+        basis: e.basis,
+        toldByName: e.basis === 'told' && e.toldById ? nameOf(e.toldById) : null,
+        confidence: e.confidence,
+        };
+      });
+  }, [state.knowledgeEdges, state.memories, activeChat, characters, persona]);
+  const acceptKnowledge = useCallback(
+    (id: ID) => actions.setKnowledgeEdgeStatus([id], 'applied'),
+    [actions],
+  );
+  const dismissKnowledge = useCallback(
+    (id: ID) => actions.deleteKnowledgeEdges([id]),
     [actions],
   );
 
@@ -759,6 +807,76 @@ export function useGeneration() {
         }
       }
     }
+
+    // 3. Did anyone come to know of something?
+    //
+    // Read after the memory step so a memory made from this very exchange can
+    // be what someone came to know of — "Sera told Ryu the secret" attributes
+    // against the secret the same turn established. Everything found is a
+    // proposal: it sits in the inspector until a person accepts it, and until
+    // then it counts for nothing.
+    if (current.settings.knowledgeMode === 'annotate' && chat.activeBranchId && line.length >= 2) {
+      try {
+        const after = getState();
+        const story = storyOf(after, chat);
+        if (story) {
+          const visible = visibleMessagesOf(line);
+          const inScope = after.memories.filter(
+            (m) =>
+              (m.sourceStoryId === story.id || story.memoryIds.includes(m.id)) &&
+              memoryStatus(m) !== 'superseded' &&
+              (m.origin !== 'auto' ||
+                !m.sourceMessageIds.length ||
+                m.sourceMessageIds.some((id) => visible.ids.has(id))),
+          );
+          const nameOf = (id: ID) => {
+            const c = currentCharacters.find((x) => x.id === id);
+            if (c) return c.displayName || c.name;
+            return currentPersona && currentPersona.id === id
+              ? currentPersona.displayName || currentPersona.name
+              : 'Someone';
+          };
+          const standing = effectiveRelationships(
+            story.relationships,
+            after.relationshipDeltas.filter((d) => d.chatId === chat.id),
+            visible,
+          );
+          const subjects = knowledgeSubjects(inScope.slice(-20), standing, nameOf);
+          const exchange = line.slice(-2);
+
+          const candidates = await extractKnowledge({
+            exchange: exchange.map((m) => ({ id: m.id, role: m.role, content: contentOf(m) })),
+            subjects,
+            characters: currentCharacters,
+            persona: currentPersona,
+            provider: currentProvider,
+          });
+
+          const rows = candidates.map((c) =>
+            newKnowledgeEdge(chat.id, chat.activeBranchId, c.knowerId, c.subject, {
+              basis: c.basis,
+              toldById: c.toldById,
+              sourceMessageIds: c.sourceMessageIds,
+              confidence: c.confidence,
+              status: 'proposed',
+            }),
+          );
+          if (rows.length) {
+            await actions.saveKnowledgeEdges(rows);
+            actions.toast({
+              kind: 'info',
+              title:
+                rows.length === 1
+                  ? 'Someone may have learned something'
+                  : `${rows.length} things may have been learned`,
+              detail: 'Nothing counts until you say so. Review it under Context Inspector → Knowledge.',
+            });
+          }
+        }
+      } catch {
+        // Nothing noticed is the situation we were already in.
+      }
+    }
   }, [actions, contentOf, getState]);
 
   const generate = useCallback(
@@ -1160,6 +1278,9 @@ export function useGeneration() {
     relationshipsDerived,
     reverseRelationshipDelta,
     knowledge,
+    pendingKnowledge,
+    acceptKnowledge,
+    dismissKnowledge,
     contentOf,
     provider,
     imageProvider,
