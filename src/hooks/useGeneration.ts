@@ -1036,11 +1036,30 @@ export function useGeneration() {
                 `every message. A story that begins with a long pasted transcript is the ` +
                 `exception — raise "Prompt budget" in Settings for it.`,
           });
-        } else if (compiled.overBudget) {
+        }
+        // Its own warning, not an alternative to the one above: a prompt built
+        // to fit and a prompt that still did not fit are two different things
+        // to know, and the second used to be hidden behind the first. It says
+        // what went, because "over budget" with two numbers told nobody that
+        // the character they were talking to had been left out.
+        if (compiled.overBudget) {
+          const dropped = compiled.excluded.filter((p) =>
+            p.reason.endsWith('dropped: context budget exceeded.'),
+          );
+          const named = dropped.filter((p) => p.kind !== 'lore').map((p) => p.label);
+          const loreCount = dropped.length - named.length;
+          const what = [
+            ...named.slice(0, 4),
+            ...(named.length > 4 ? [`${named.length - 4} more`] : []),
+            ...(loreCount ? [`${loreCount} lore ${loreCount === 1 ? 'entry' : 'entries'}`] : []),
+          ].join(', ');
           actions.toast({
             kind: 'warn',
-            title: 'Context is over budget',
-            detail: `${compiled.totalTokens} estimated tokens vs a ${compiled.budget} budget. Older messages and low-priority items were trimmed.`,
+            title: 'Part of the prompt did not fit',
+            detail:
+              `Left out to stay inside ${compiled.budget.toLocaleString()} tokens: ${what || 'older history'}. ` +
+              `Raise Context size or Prompt budget in Settings, or shorten what is there. ` +
+              `The Context Inspector shows exactly what stayed and what went.`,
           });
         }
 

@@ -1151,7 +1151,15 @@ export interface ContextPart {
   tokens: number;
   reason: string;
   included: boolean;
+  /** Where it lands in the system block: higher is earlier. */
   priority: number;
+  /**
+   * Where it stands when the budget runs out: lower goes first. Defaults to
+   * `priority`. Kept separate because placement and survival are different
+   * questions — a lore entry an author placed before the character description
+   * belongs there in the block, and still has to go before the character does.
+   */
+  survival?: number;
 }
 
 /**

@@ -106,6 +106,9 @@ export interface LoreSeed {
   keys: string[];
   secondaryKeys?: string[];
   content: string;
+  position?: 'before-character' | 'after-character' | 'at-depth';
+  depth?: number;
+  activation?: 'keyword' | 'always';
   scanDepth?: number;
   delay?: number;
   sticky?: number;
@@ -134,6 +137,8 @@ export interface BranchSeed {
   discovered?: DiscoveredSeed[];
   /** Entries in one global lorebook, for timing tests. */
   lore?: LoreSeed[];
+  /** The story's scenario text, when a test needs a particular one. */
+  storyScenario?: string;
 }
 
 export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
@@ -245,7 +250,7 @@ export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
       id: 'forked-story',
       title: 'The Fork',
       description: '',
-      scenario: 'A storm, an inn, and a decision taken two ways.',
+      scenario: options.storyScenario ?? 'A storm, an inn, and a decision taken two ways.',
       authorNote: '',
       openingMessage: '',
       tags: [],
@@ -449,15 +454,15 @@ export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
           aliases: [],
           enabled: true,
           priority: 100,
-          position: 'after-character',
-          depth: 4,
+          position: l.position ?? 'after-character',
+          depth: l.depth ?? 4,
           scanDepth: l.scanDepth ?? 0,
           delay: l.delay ?? 0,
           sticky: l.sticky ?? 0,
           cooldown: l.cooldown ?? 0,
           matchMode: 'word-boundary',
           caseSensitive: false,
-          activation: 'keyword',
+          activation: l.activation ?? 'keyword',
           category: '',
           scope: 'any',
           comment: '',

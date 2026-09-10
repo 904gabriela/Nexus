@@ -130,6 +130,125 @@ async function seedLongOpening(page: Page, options: { answered: boolean }) {
 const CUT = 'Only the end of this message fitted the context budget.';
 const OMITTED = 'earlier part of this message omitted';
 
+/* ---------------------------------------------------- what goes first */
+
+/** About seven thousand tokens of lore: more than a default budget can spare. */
+const WALL = 'Honorifics are chosen by standing, and standing is read from a hundred small signals. '.repeat(320);
+const payloadOf = (ai: Awaited<ReturnType<typeof mockAI>>) =>
+  JSON.stringify(ai.requests.at(-1)?.body?.messages ?? []);
+const count = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+
+test('lore placed before the character goes before the character does', async ({ page }) => {
+  const ai = await mockAI(page, ['A reply.']);
+  await setupProvider(page);
+  await seedBranchedStory(page, {
+    lore: [
+      {
+        id: 'l-wall',
+        name: 'Etiquette',
+        keys: ['zzz'],
+        activation: 'always',
+        position: 'before-character',
+        content: WALL,
+      },
+    ],
+  });
+
+  // Placement is where an entry sits in the block. It used to double as
+  // survival, so an entry placed before the character description outlived
+  // the character description — and the model was sent five thousand tokens
+  // of etiquette and nothing about who it was playing.
+  await openContextInspector(page);
+  const included = (await page.locator('.ctx-part-head').allInnerTexts()).join('\n');
+  expect(included).toContain('Character — Sera');
+  expect(included).not.toContain('Etiquette');
+  await page.getByRole('tab', { name: /Excluded/ }).click();
+  await expect(page.getByText(/Lore — Etiquette.*dropped: context budget exceeded/)).toBeVisible();
+  await page.getByRole('button', { name: 'Close context inspector' }).click();
+
+  // And the warning says what went, not two numbers.
+  await send(page, 'Go on.');
+  await expect(page.getByText('Part of the prompt did not fit')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText(/Left out to stay inside .*: 1 lore entry/)).toBeVisible();
+  await expect.poll(() => ai.requests.length, { timeout: 25_000 }).toBeGreaterThan(0);
+  expect(payloadOf(ai)).toContain('Sera');
+  expect(payloadOf(ai)).not.toContain('Honorifics are chosen by standing');
+});
+
+test('room freed by dropping lore goes to the conversation', async ({ page }) => {
+  const ai = await mockAI(page, ['A reply.']);
+  await setupProvider(page);
+  await seedBranchedStory(page, {
+    lore: [
+      { id: 'l-wall', name: 'Etiquette', keys: ['zzz'], activation: 'always', content: WALL },
+    ],
+  });
+
+  // The wall is dropped; what it made room for is the conversation. History
+  // used to be budgeted against the block *before* the drop, so it was trimmed
+  // to nothing and the freed room was never used: a chat with hundreds of
+  // tokens to spare went out without a single earlier turn.
+  await send(page, 'Go on.');
+  await expect.poll(() => ai.requests.length, { timeout: 25_000 }).toBeGreaterThan(0);
+  const payload = payloadOf(ai);
+  expect(payload).toContain('MAIN-THREE the storm eased.');
+  expect(payload).toContain('MAIN-ZERO the door blew open.');
+});
+
+test('lore placed in the conversation is costed, and stays out once dropped', async ({ page }) => {
+  const ai = await mockAI(page, ['A reply.']);
+  await setupProvider(page);
+  await seedBranchedStory(page, {
+    lore: [
+      {
+        id: 'l-deep',
+        name: 'Etiquette',
+        keys: ['zzz'],
+        activation: 'always',
+        position: 'at-depth',
+        depth: 2,
+        content: WALL,
+      },
+    ],
+  });
+
+  // Counted at zero and injected regardless, this used to sail past the
+  // budget entirely: the inspector said dropped, the payload said otherwise.
+  await send(page, 'Go on.');
+  await expect.poll(() => ai.requests.length, { timeout: 25_000 }).toBeGreaterThan(0);
+  expect(payloadOf(ai)).not.toContain('Honorifics are chosen by standing');
+});
+
+test('the same lore text in two entries is sent once', async ({ page }) => {
+  const ai = await mockAI(page, ['A reply.']);
+  await setupProvider(page);
+  await seedBranchedStory(page, {
+    lore: [
+      { id: 'l-a', name: 'The cellar', keys: ['zzz'], activation: 'always', content: 'The cellar was sealed from the inside.' },
+      { id: 'l-b', name: 'The cellar', keys: ['zzz'], activation: 'always', content: 'The cellar was sealed from the inside.' },
+    ],
+  });
+
+  // Imported books arrive with entries several times over. Each copy used to
+  // match and be sent.
+  await send(page, 'Go on.');
+  await expect.poll(() => ai.requests.length, { timeout: 25_000 }).toBeGreaterThan(0);
+  expect(count(payloadOf(ai), 'The cellar was sealed from the inside.')).toBe(1);
+});
+
+test('a scenario that is also the opening message is sent once', async ({ page }) => {
+  const ai = await mockAI(page, ['A reply.']);
+  await setupProvider(page);
+  // The fixture's first message, word for word, as the story's scenario.
+  await seedBranchedStory(page, { storyScenario: 'MAIN-ZERO the door blew open.' });
+
+  await send(page, 'Go on.');
+  await expect.poll(() => ai.requests.length, { timeout: 25_000 }).toBeGreaterThan(0);
+  const payload = payloadOf(ai);
+  expect(count(payload, 'MAIN-ZERO the door blew open.')).toBe(1);
+  expect(payload).not.toContain('## Scenario');
+});
+
 test('the global Context size governs the turn itself, not only the preview', async ({ page }) => {
   const ai = await mockAI(page, ['A reply.']);
   await setupProvider(page);

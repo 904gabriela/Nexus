@@ -499,6 +499,12 @@ function compileContextInner(input: CompileInput): CompileResult {
   /* ------------------------------------------------------- gather parts */
 
   const parts: ContextPart[] = [];
+  /**
+   * Parts decided against before the budget is consulted — a scenario the chat
+   * already carries as a message, a lore entry that is another entry's text
+   * again. Listed with the exclusions so the inspector can say why.
+   */
+  const preExcluded: ContextPart[] = [];
 
   if (settings.globalSystemPrompt.trim()) {
     parts.push(
@@ -825,16 +831,29 @@ function compileContextInner(input: CompileInput): CompileResult {
     }
     const scenario = story.scenario.trim() || responding?.scenario?.trim() || '';
     if (scenario) {
-      parts.push(
-        part(
-          'scenario',
-          'Scenario',
-          'scenario',
-          macro(`## Scenario\n${scenario}`),
-          story.scenario.trim() ? 'Story scenario.' : 'Falls back to the character scenario.',
-          PRIORITY.scenario,
-        ),
+      const scenarioPart = part(
+        'scenario',
+        'Scenario',
+        'scenario',
+        macro(`## Scenario\n${scenario}`),
+        story.scenario.trim() ? 'Story scenario.' : 'Falls back to the character scenario.',
+        PRIORITY.scenario,
       );
+      // A story continued from elsewhere often arrives with the whole previous
+      // transcript pasted into the scenario *and* standing as the opening
+      // message. Seventeen thousand tokens twice is not twice the continuity;
+      // it is the same text at the top of the block and again in the history.
+      // The history carries it, so the block does not.
+      const repeatsMessage = input.history.some((m) => m.content.trim() === scenario);
+      if (repeatsMessage) {
+        preExcluded.push({
+          ...scenarioPart,
+          included: false,
+          reason: `${scenarioPart.reason} — identical to a message in this chat; sent there, not twice.`,
+        });
+      } else {
+        parts.push(scenarioPart);
+      }
     }
     // What holds for the whole campaign, as opposed to the situation the
     // scenario describes. Rules rank with the scenario because breaking them
@@ -1014,31 +1033,60 @@ function compileContextInner(input: CompileInput): CompileResult {
    * `at-depth` means "N turns from the end", which is a position in the
    * conversation and cannot be expressed by sorting the system block.
    */
-  const atDepthLore: Array<{ depth: number; content: string }> = [];
+  const atDepthLore: Array<{ id: string; depth: number; content: string }> = [];
+  /**
+   * The text of every entry already taken. Imported books arrive with the
+   * same entry several times over — a character sheet once per position it
+   * was tried in — and each copy matched and was sent, so a card that cost
+   * 176 tokens cost 880. The first copy, in relevance order, is the one kept.
+   */
+  const loreTextSeen = new Set<string>();
 
   for (const hit of loreScan.hits) {
     const heading = hit.entry.name ? `## ${hit.entry.name}` : '';
     const content = macro([heading, hit.entry.content].filter(Boolean).join('\n'));
+    const id = `lore:${hit.entry.id}`;
+    const label = `Lore — ${hit.entry.name || 'Untitled entry'} (${hit.lorebookName})`;
+
+    const text = hit.entry.content.trim();
+    if (loreTextSeen.has(text)) {
+      preExcluded.push({
+        ...part(id, label, 'lore', content, hit.reason, lorePriority(hit)),
+        included: false,
+        reason: `${hit.reason} — the same text as an entry already included; sent once.`,
+      });
+      continue;
+    }
+    loreTextSeen.add(text);
 
     if (hit.entry.position === 'at-depth') {
-      atDepthLore.push({ depth: Math.max(0, hit.entry.depth || 0), content });
-      // Still recorded as a part so the inspector accounts for its tokens.
-      parts.push(
-        part(
-          `lore:${hit.entry.id}`,
-          `Lore — ${hit.entry.name || 'Untitled entry'} (${hit.lorebookName})`,
+      atDepthLore.push({ id, depth: Math.max(0, hit.entry.depth || 0), content });
+      // Recorded as a part with no block content, so it is placed by the
+      // payload rather than the block — but with its real cost, so the budget
+      // sees it. It used to be counted at zero, and injected whether or not
+      // the budget had dropped it.
+      parts.push({
+        ...part(
+          id,
+          label,
           'lore',
           '',
           `${hit.reason} — injected ${hit.entry.depth} message(s) from the end.`,
           lorePriority(hit),
         ),
-      );
+        tokens: estimateTokens(content),
+      });
       continue;
     }
 
     // Position decides where in the system block an entry lands. It was stored
     // and shown in the editor but never read, so an author who placed a rule
     // before the character description got it after, every time.
+    //
+    // Placement only. An entry placed before the character description used
+    // to outlive the character description when the budget ran out, which is
+    // how a story was once sent five thousand tokens on Japanese etiquette and
+    // not a word about the character replying. Survival stays lore's own.
     const positional =
       hit.entry.position === 'before-character'
         ? PRIORITY.character + 30
@@ -1046,16 +1094,10 @@ function compileContextInner(input: CompileInput): CompileResult {
           ? PRIORITY.authorNote - 1
           : lorePriority(hit);
 
-    parts.push(
-      part(
-        `lore:${hit.entry.id}`,
-        `Lore — ${hit.entry.name || 'Untitled entry'} (${hit.lorebookName})`,
-        'lore',
-        content,
-        hit.reason,
-        positional,
-      ),
-    );
+    parts.push({
+      ...part(id, label, 'lore', content, hit.reason, positional),
+      survival: lorePriority(hit),
+    });
   }
 
   /* ------------------------------------------------------------ memories */
@@ -1208,8 +1250,51 @@ function compileContextInner(input: CompileInput): CompileResult {
       (input.pendingAttachments?.length ?? 0) * IMAGE_TOKEN_COST
     : 0;
 
-  const excluded: ContextPart[] = [];
-  let historyBudget = budget - fixedTokens - pendingTokens;
+  const excluded: ContextPart[] = [...preExcluded];
+
+  // If the fixed parts alone blow the budget, drop the lowest-standing ones —
+  // and do it *before* the conversation is budgeted. This used to run after,
+  // so history was measured against a block that was about to lose a third
+  // of its size, trimmed to nothing, and the room the drop then freed was
+  // never given back: a chat with seven hundred tokens to spare was sent
+  // without a single earlier turn.
+  //
+  // The turn being answered is part of what has to fit. Dropping until the
+  // block alone fits would leave it nothing, so the newest message's cost is
+  // held against the block too — up to half the budget, past which the
+  // message is the problem and is excerpted below like any other.
+  const newestHistory = historyParts.at(-1);
+  const historyReserve = Math.min(newestHistory?.tokens ?? 0, Math.floor(budget / 2));
+  let finalParts = parts;
+  let overBudget = false;
+  let totalFixed = fixedTokens;
+  if (totalFixed + pendingTokens + historyReserve > budget) {
+    overBudget = true;
+    // Dropped in survival order, which is placement order except where a part
+    // says otherwise.
+    const standing = (p: ContextPart) => p.survival ?? p.priority;
+    const sorted = [...parts].sort((a, b) => standing(a) - standing(b));
+    const dropped = new Set<string>();
+    for (const candidate of sorted) {
+      if (totalFixed + pendingTokens + historyReserve <= budget) break;
+      // Never drop what the roleplay cannot run without. This is a rule about
+      // what a part *is*, not where it happened to land in the ordering: a
+      // numeric cliff silently reclassifies things whenever a priority moves,
+      // and the parts that must survive are exactly the ones that say who the
+      // user is, who is in the room, and what the model must not do.
+      if (UNDROPPABLE.has(candidate.kind)) continue;
+      dropped.add(candidate.id);
+      totalFixed -= candidate.tokens;
+      excluded.push({
+        ...candidate,
+        included: false,
+        reason: `${candidate.reason} — dropped: context budget exceeded.`,
+      });
+    }
+    finalParts = parts.filter((p) => !dropped.has(p.id));
+  }
+
+  let historyBudget = budget - totalFixed - pendingTokens;
 
   const keptHistory: ContextPart[] = [];
   /** Part ids that were shortened, and what they originally cost. */
@@ -1271,33 +1356,6 @@ function compileContextInner(input: CompileInput): CompileResult {
     }
     historyBudget -= hp.tokens;
     keptHistory.unshift(hp);
-  }
-
-  // If fixed parts alone blow the budget, drop the lowest-priority ones.
-  let finalParts = parts;
-  let overBudget = false;
-  let totalFixed = fixedTokens;
-  if (totalFixed + pendingTokens > budget) {
-    overBudget = true;
-    const sorted = [...parts].sort((a, b) => a.priority - b.priority);
-    const dropped = new Set<string>();
-    for (const candidate of sorted) {
-      if (totalFixed + pendingTokens <= budget) break;
-      // Never drop what the roleplay cannot run without. This is a rule about
-      // what a part *is*, not where it happened to land in the ordering: a
-      // numeric cliff silently reclassifies things whenever a priority moves,
-      // and the parts that must survive are exactly the ones that say who the
-      // user is, who is in the room, and what the model must not do.
-      if (UNDROPPABLE.has(candidate.kind)) continue;
-      dropped.add(candidate.id);
-      totalFixed -= candidate.tokens;
-      excluded.push({
-        ...candidate,
-        included: false,
-        reason: `${candidate.reason} — dropped: context budget exceeded.`,
-      });
-    }
-    finalParts = parts.filter((p) => !dropped.has(p.id));
   }
 
   const allParts = [...finalParts, ...keptHistory];
@@ -1397,7 +1455,12 @@ function compileContextInner(input: CompileInput): CompileResult {
   // `at-depth` lore is spliced into the conversation, counting back from the
   // newest message. Deepest first so that inserting one does not shift the
   // index the next was measured against.
-  for (const item of [...atDepthLore].sort((a, b) => b.depth - a.depth)) {
+  // Only what survived the budget: an entry the inspector lists as dropped
+  // must not turn up in the conversation anyway.
+  const surviving = new Set(finalParts.map((p) => p.id));
+  for (const item of [...atDepthLore]
+    .filter((item) => surviving.has(item.id))
+    .sort((a, b) => b.depth - a.depth)) {
     const index = Math.max(
       systemPrompt.trim() ? 1 : 0,
       payload.length - Math.max(0, item.depth),
