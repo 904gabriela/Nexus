@@ -32,6 +32,7 @@ import type {
 } from '../types';
 import { LORE_TIER_RANK } from '../types';
 import type { LoreTier } from '../types';
+import { DEFAULT_PRACTICAL_INPUT } from '../ai/contextWindow';
 import { scanLore } from '../lore/matcher';
 import { describeControl, describeScene, resolveScene, type ResolvedScene } from './scene';
 import { describeNarration, describeTurnDirective } from './narration';
@@ -482,10 +483,17 @@ function compileContextInner(input: CompileInput): CompileResult {
     chat?.settings.contextSize ?? story?.settings.contextSize ?? settings.contextBudget ?? 8192;
   // The override has already had the reply's share taken out of it, so the
   // reserve is only applied to the configured figure — subtracting it from both
-  // would charge for the reply twice.
+  // would charge for the reply twice. The practical ceiling applies either
+  // way: without it a preview in the inspector was built to the configured
+  // size while the turn itself was built to the ceiling, and the tool for
+  // seeing what was sent showed something that was not.
+  const ceiling = settings.maxPromptTokens || DEFAULT_PRACTICAL_INPUT;
   const budget = Math.max(
     512,
-    input.budgetOverride ?? configured - (settings.reserveForResponse ?? 0),
+    Math.min(
+      ceiling,
+      input.budgetOverride ?? configured - (settings.reserveForResponse ?? 0),
+    ),
   );
 
   /* ------------------------------------------------------- gather parts */
@@ -1208,13 +1216,18 @@ function compileContextInner(input: CompileInput): CompileResult {
   const excerpted = new Map<string, number>();
   for (let i = historyParts.length - 1; i >= 0; i -= 1) {
     const hp = historyParts[i];
-    if (historyBudget - hp.tokens < 0 && keptHistory.length > 0) {
+    if (historyBudget - hp.tokens < 0) {
       // A message too large to fit used to be dropped whole. For a roleplay
       // continued by pasting a transcript, that single message *is* the entire
       // previous story — so the turn the user is actually replying to went
       // missing, and the model was left with a scene heading and one line of
       // input. Keep the end of it instead: the tail is the part the current
       // turn refers to.
+      //
+      // The newest message gets the same treatment. It used to be kept whole
+      // whatever it cost, which for a pasted transcript with nothing after it
+      // yet meant a prompt built past the budget — the one thing the budget
+      // exists to prevent.
       const excerpt = tailExcerpt(hp.content, historyBudget);
       if (excerpt) {
         const tokens = estimateTokens(excerpt);
@@ -1231,6 +1244,14 @@ function compileContextInner(input: CompileInput): CompileResult {
           included: false,
           reason: 'Only the end of this message fitted the context budget.',
         });
+        continue;
+      }
+      // Too little room even for an excerpt. The newest message is still the
+      // turn being answered, so it goes in whole and the budget is reported
+      // as exceeded rather than the turn silently vanishing.
+      if (keptHistory.length === 0) {
+        historyBudget -= hp.tokens;
+        keptHistory.unshift(hp);
         continue;
       }
       // Everything older stops here. Skipping this message and carrying on to

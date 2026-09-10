@@ -591,6 +591,17 @@ function ContextSection() {
         hint="Match this to your model's context window. Stories and chats can override it."
       />
       <NumberField
+        label="Prompt budget (tokens)"
+        value={s.maxPromptTokens}
+        onChange={(maxPromptTokens) =>
+          actions.saveSettings({ maxPromptTokens: Math.max(2048, Math.round(maxPromptTokens)) })
+        }
+        min={2048}
+        max={1000000}
+        step={1024}
+        hint="The most Nexus will spend on a prompt, whatever the context size allows. A roleplay turn rarely needs more than the default, and a larger prompt costs latency on every message. Raise it for a story that begins with a long pasted transcript, so the opening fits whole instead of being cut to its end."
+      />
+      <NumberField
         label="Reserve for the reply (tokens)"
         value={s.reserveForResponse}
         onChange={(reserveForResponse) =>

@@ -99,10 +99,12 @@ async function resolveGenerationBudget(
   generation: { contextSize?: number; maxTokens?: number },
   settings: { contextBudget?: number; maxPromptTokens?: number },
 ): Promise<UsableBudget> {
-  // The per-chat override wins, then the global Context size, then the default.
-  // The client used to fall back to its own constant here while the compiler
-  // read the global setting, so the two could disagree about how big the prompt
-  // was allowed to be.
+  // The per-chat override wins, then the story's, then the global Context
+  // size, then the default. `contextSize` here must be the override alone —
+  // the merged generation settings carry a default of their own, and reading
+  // that meant the global Context size was never consulted for a turn, only
+  // for the preview. The Settings field said "match this to your model's
+  // window" and changing it changed nothing.
   const requested = generation.contextSize ?? settings.contextBudget ?? ASSUMED_CONTEXT;
   const reserve = generation.maxTokens ?? 0;
   const practicalMax = settings.maxPromptTokens || DEFAULT_PRACTICAL_INPUT;
@@ -977,7 +979,16 @@ export function useGeneration() {
         // Compiling to the configured number and letting the server sort it out
         // is what silently deleted the system prompt — Ollama truncates from the
         // head, so the persona and the scene were the first things to go.
-        const usable = await resolveGenerationBudget(provider, generation, state.settings);
+        const usable = await resolveGenerationBudget(
+          provider,
+          {
+            maxTokens: generation.maxTokens,
+            // Only an override set on this chat or its story, never the
+            // merged default — see resolveGenerationBudget.
+            contextSize: liveChat?.settings.contextSize ?? liveStory?.settings.contextSize,
+          },
+          state.settings,
+        );
 
         const compiled = compileContext(
           buildCompileInput(history, {
@@ -1002,18 +1013,28 @@ export function useGeneration() {
           });
         }
         if (usable.clamped || usable.capped) {
+          // Say only what is known. A model's window is a fact when Ollama
+          // reported it, an assumption when it did not, and for a remote
+          // provider it is simply the configured number handed back — none
+          // of which is "the model can hold N".
+          const window = usable.reported
+            ? `${provider.model} reports it can hold ${usable.modelLimit.toLocaleString()} in ` +
+              `total, shared with the reply`
+            : `Nexus could not find out what ${provider.model} holds and assumed ` +
+              `${usable.modelLimit.toLocaleString()}`;
           actions.toast({
             kind: 'warn',
             title: `Prompt built to ${usable.promptBudget.toLocaleString()} tokens`,
             detail: usable.clamped
               ? `This chat is configured for ${usable.requested.toLocaleString()} tokens of ` +
-                `prompt; ${provider.model} can hold ${usable.modelLimit.toLocaleString()} in ` +
-                `total, shared with the reply. The prompt is built to fit rather than being ` +
-                `truncated by the server.`
-              : `${provider.model} could hold ${usable.modelLimit.toLocaleString()}, but a ` +
-                `roleplay turn does not need it: the scene, the cast and recent turns fit in ` +
-                `${usable.promptBudget.toLocaleString()}. A larger prompt costs latency on every ` +
-                `message. Change "Prompt budget" in Settings to raise it.`,
+                `prompt; ${window}. The prompt is built to fit rather than being truncated ` +
+                `by the server.` +
+                (usable.reported ? '' : ' If the model holds more, set Context size in Settings to match it.')
+              : `This chat allows ${usable.requested.toLocaleString()}, but a roleplay turn ` +
+                `rarely needs it: the scene, the cast and recent turns fit in ` +
+                `${usable.promptBudget.toLocaleString()}, and a larger prompt costs latency on ` +
+                `every message. A story that begins with a long pasted transcript is the ` +
+                `exception — raise "Prompt budget" in Settings for it.`,
           });
         } else if (compiled.overBudget) {
           actions.toast({

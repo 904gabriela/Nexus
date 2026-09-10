@@ -210,7 +210,13 @@ export function resolveUsableBudget(input: {
     reserved,
     modelLimit,
     requested,
-    clamped: fromRequest > fromModel,
+    // Clamped means the configuration asked for more than the window holds.
+    // It used to be "the budget came out below what was asked", which the
+    // safety margin makes true on every turn even when the two numbers are
+    // equal — so every remote provider, whose window is the request itself,
+    // was warned on every message that the model "can hold" a figure Nexus
+    // had simply been told.
+    clamped: requested > modelLimit,
     capped: promptBudget === practicalMax && practicalMax < Math.min(fromRequest, fromModel),
     reported: input.reported ?? false,
   };
