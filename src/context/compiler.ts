@@ -978,6 +978,9 @@ function compileContextInner(input: CompileInput): CompileResult {
     // against. The scan window is a slice of it and would let a held-back entry
     // fire on turn three of a long story.
     messageCount: input.history.length,
+    // And the timeline itself, for entries that need to know when they last
+    // fired. Read only by those, so the ordinary case pays for one array.
+    timelineTexts: input.history.map((m) => m.content),
     // The turn is identified by the newest message, so a regeneration of the
     // same turn rolls the same probabilities.
     turnSeed: input.history.at(-1)?.id ?? chat?.id ?? '',

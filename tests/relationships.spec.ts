@@ -441,6 +441,50 @@ test('undoing a change puts the standing back without touching the record', asyn
   expect(await canonical(page)).toBe(before);
 });
 
+/*
+ * Nothing stops an author writing the same pair twice. The prompt folds the
+ * story's change into the first row and leaves the second alone, and Undo
+ * has to agree with that: it belongs on the row that shows the change, and
+ * nowhere if the first row was written by hand.
+ */
+test('undo sits on the row the change was folded into', async ({ page }) => {
+  await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    relationships: [
+      { id: 'rel-1', betweenIds: ['sera', 'corin'], summary: AUTHORED },
+      { id: 'rel-2', betweenIds: ['corin', 'sera'], summary: 'Written twice.', manual: true },
+    ],
+    relationshipDeltas: [{ id: 'rd-1', branchId: 'main', sourceMessageIds: ['m3'], change: TRUST }],
+  });
+
+  await page.getByRole('button', { name: 'Quick settings' }).click();
+  await expect(page.getByText(TRUST).first()).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: "Undo the story's change to Sera and Corin" }),
+  ).toHaveCount(1);
+});
+
+test('and is nowhere when that first row was written by hand', async ({ page }) => {
+  await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    relationships: [
+      { id: 'rel-1', betweenIds: ['sera', 'corin'], summary: AUTHORED, manual: true },
+      { id: 'rel-2', betweenIds: ['corin', 'sera'], summary: 'Written twice.' },
+    ],
+    relationshipDeltas: [{ id: 'rd-1', branchId: 'main', sourceMessageIds: ['m3'], change: TRUST }],
+  });
+
+  await page.getByRole('button', { name: 'Quick settings' }).click();
+  await expect(page.getByText(AUTHORED).first()).toBeVisible();
+  // The hand-written row stands as written and nothing was folded anywhere,
+  // so there is no change to undo — an Undo here would have offered to
+  // reverse something the sheet does not show.
+  await expect(page.getByText(TRUST)).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Undo the story's change/ })).toHaveCount(0);
+});
+
 /* ------------------------------------------------------ source lifecycle */
 
 test('deleting the turn a change was read from takes the change with it', async ({ page }) => {

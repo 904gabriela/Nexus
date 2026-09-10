@@ -899,6 +899,8 @@ export function LorebookTester({ lorebookId }: { lorebookId?: string }) {
       <Banner kind="info" title="Lorebook tester">
         Paste any text — a message you might send, or a scene description — to see exactly which
         entries would be injected. This uses the same retrieval code as the live AI context.
+        Delay is not applied here, since pasted text has no story length; sticky and cooldown
+        are judged on the pasted text alone.
       </Banner>
 
       <TextArea

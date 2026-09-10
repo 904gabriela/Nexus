@@ -131,9 +131,11 @@ export function relevantDiscovered(
   people: DiscoveredPerson[] | null | undefined,
   visibleMessageIds: Set<string>,
 ): DiscoveredPerson[] {
+  // Read defensively: a row from an edited or foreign Nexus JSON file may be
+  // missing a field, and a missing note must not take the whole prompt down.
   return (people ?? [])
     .filter((person) => {
-      if (person.dismissed || !person.name.trim()) return false;
+      if (person.dismissed || !(person.name ?? '').trim()) return false;
       const sources = person.sourceMessageIds ?? [];
       if (!sources.length) return true;
       return sources.some((id) => visibleMessageIds.has(id));
@@ -152,7 +154,7 @@ export function relevantDiscovered(
 export function describeDiscovered(people: DiscoveredPerson[]): string {
   if (!people.length) return '';
   const lines = people.map((person) => {
-    const note = person.note.trim();
+    const note = (person.note ?? '').trim();
     return note ? `- ${person.name.trim()}: ${note}` : `- ${person.name.trim()}`;
   });
 

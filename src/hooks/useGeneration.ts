@@ -29,7 +29,7 @@ import {
   useStore,
 } from '../state/store';
 import { maybeCreateAutoMemory } from '../memory/autoMemory';
-import { acceptMemory, applyDiscoveries, memoryStatus } from '../memory/matrix';
+import { acceptMemory, applyDiscoveries, isUsable, memoryStatus } from '../memory/matrix';
 import {
   derivedRelationships,
   effectiveRelationships,
@@ -821,10 +821,14 @@ export function useGeneration() {
         const story = storyOf(after, chat);
         if (story) {
           const visible = visibleMessagesOf(line);
+          // Only what the story holds is offered as a subject. A memory still
+          // waiting for review is not yet a thing anyone can know of, and
+          // offering it would let an accepted attribution outlive a memory
+          // that was then turned down.
           const inScope = after.memories.filter(
             (m) =>
               (m.sourceStoryId === story.id || story.memoryIds.includes(m.id)) &&
-              memoryStatus(m) !== 'superseded' &&
+              isUsable(m) &&
               (m.origin !== 'auto' ||
                 !m.sourceMessageIds.length ||
                 m.sourceMessageIds.some((id) => visible.ids.has(id))),

@@ -564,6 +564,22 @@ test('someone the author turned down is not mentioned', async ({ page }) => {
   expect(system).not.toContain('Halda');
 });
 
+test('a named person with no note at all still compiles', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    // A row as an edited or foreign Nexus JSON file might write it: no note
+    // field. This used to throw inside the compiler and take every reply for
+    // the story down with it.
+    discovered: [{ id: 'p-halda', name: 'Halda', note: null }],
+  });
+
+  await turn(page, ollama, 'Go on.');
+  const system = systemOf(ollama);
+  expect(system).toContain('## People the story has named');
+  expect(system).toContain('- Halda');
+});
+
 test('a story that has named nobody says nothing about it', async ({ page }) => {
   const ollama = await mockOllama(page, ['Sera nods.']);
   await setupOllamaProvider(page);

@@ -40,7 +40,7 @@ import type {
   ResolvedKnowledge,
 } from '../types';
 import type { VisibleMessages } from '../scene/delta';
-import { memoryBasis, memoryConfidence } from './matrix';
+import { isUsable, memoryBasis, memoryConfidence } from './matrix';
 import { samePair } from './relationships';
 
 /**
@@ -125,6 +125,11 @@ export function applicableEdges(
  *
  * `stated` is emphatically not belief. Ryu asserting that Kenta betrayed Sera
  * is Ryu holding that claim; it is not Nexus agreeing.
+ *
+ * Only a memory the story actually holds derives anything. A proposal is a
+ * memory nobody has accepted yet — the compiler does not send it, and it would
+ * be odd for the inspector to say someone knows of a claim the person reviewing
+ * it has not decided is a claim at all.
  */
 export function derivedStatementEdges(
   memories: Memory[],
@@ -132,6 +137,7 @@ export function derivedStatementEdges(
 ): ResolvedKnowledge[] {
   const out: ResolvedKnowledge[] = [];
   for (const memory of memories) {
+    if (!isUsable(memory)) continue;
     if (memoryBasis(memory) !== 'stated') continue;
     const knowerId = memory.statedById;
     if (!knowerId) continue;

@@ -314,7 +314,20 @@ export function ChatPage({
    * the sheet is open, so without this a person clicks Accept and watches
    * nothing happen. Recompiled with the same draft-inclusive inputs, so the
    * sheet keeps showing what it promised to show.
+   *
+   * Keyed on the recorded rows themselves — which exist and what state each is
+   * in — rather than on the resolved list, whose identity changes with every
+   * message and memory write. Keyed on that, a reply streaming in behind the
+   * open sheet would recompile the whole context on every chunk it landed.
    */
+  const knowledgeSignature = useMemo(
+    () =>
+      state.knowledgeEdges
+        .filter((e) => e.chatId === activeChat?.id)
+        .map((e) => `${e.id}:${e.status}`)
+        .join('|'),
+    [state.knowledgeEdges, activeChat?.id],
+  );
   useEffect(() => {
     if (!showContext) return;
     setCompiled(
@@ -323,9 +336,10 @@ export function ChatPage({
         pendingAttachments: pendingRef.current,
       }),
     );
-    // Only knowledge changes should retrigger this; the draft is read fresh.
+    // Only a decision about knowledge should retrigger this; the draft is
+    // read fresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gen.knowledge]);
+  }, [knowledgeSignature]);
 
 
   /*

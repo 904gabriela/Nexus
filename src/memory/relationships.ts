@@ -247,22 +247,24 @@ export function derivedRelationships(
   deltas: RelationshipDelta[],
   visible: VisibleMessages,
 ): Map<ID, RelationshipDelta> {
-  const manual = new Set(
-    (base ?? [])
-      .filter((row) => row.manual && Array.isArray(row.betweenIds) && row.betweenIds.length === 2)
-      .map((row) => pairKey(row.betweenIds)),
-  );
-  const idOf = new Map(
-    (base ?? [])
-      .filter((row) => Array.isArray(row.betweenIds) && row.betweenIds.length === 2)
-      .map((row) => [pairKey(row.betweenIds), row.id]),
-  );
+  // The same rule `effectiveRelationships` folds by: when the author wrote a
+  // pair twice, the first row is the one the story's changes land on, and its
+  // own `manual` flag is the one that decides whether they land at all. Read
+  // any other way, Undo would attach to a row that shows no change, or be
+  // missing from the row that does.
+  const first = new Map<string, Relationship>();
+  for (const row of base ?? []) {
+    if (!Array.isArray(row.betweenIds) || row.betweenIds.length !== 2) continue;
+    const key = pairKey(row.betweenIds);
+    if (!first.has(key)) first.set(key, row);
+  }
 
   const out = new Map<ID, RelationshipDelta>();
   for (const delta of applicableRelationshipDeltas(deltas, visible)) {
     const key = pairKey(delta.betweenIds);
-    if (manual.has(key)) continue;
-    out.set(idOf.get(key) ?? derivedId(delta.betweenIds), delta);
+    const row = first.get(key);
+    if (row?.manual) continue;
+    out.set(row?.id ?? derivedId(delta.betweenIds), delta);
   }
   return out;
 }

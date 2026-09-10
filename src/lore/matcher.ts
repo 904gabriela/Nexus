@@ -61,6 +61,13 @@ export interface LoreScanInput {
    * timeline can honestly say.
    */
   messageCount?: number;
+  /**
+   * Every message on the timeline being played, oldest first, when the caller
+   * has them. Read only by entries with `sticky` or `cooldown`, which have to
+   * know when the entry last fired — and that is decided by the whole history,
+   * not by the scan window. Absent falls back to the scan window.
+   */
+  timelineTexts?: string[];
   lorebooks: Lorebook[];
   entries: LoreEntry[];
   scope: LoreScanScope;
@@ -89,28 +96,102 @@ function timingOf(entry: LoreEntry): { delay: number; sticky: number; cooldown: 
   };
 }
 
+/** What sticky and cooldown say about this entry on the newest message. */
+interface TimingVerdict {
+  /**
+   * `fires`: matched now and allowed to speak. `sticky`: not matched now but
+   * still held open by an earlier firing. `resting`: matched now, but it fired
+   * too recently. `silent`: nothing to say either way — the ordinary verdict
+   * stands.
+   */
+  kind: 'fires' | 'sticky' | 'resting' | 'silent';
+  /** Messages since the firing that decides this. */
+  ago: number;
+  /** For `resting`: how many more messages it has to sit out. */
+  left: number;
+}
+
 /**
- * How many messages back this entry's keywords were last said, counting the
- * newest message as 1. Zero means "not within the span looked at".
+ * Replays the entry's firings over the timeline to find out whether it may
+ * speak now.
  *
- * Deliberately measured from the text of the visible timeline rather than from
- * a record of what fired before. It costs no store and no writes, it cannot
- * drift out of step with the conversation, and it inherits branch correctness
- * for nothing: a branch where the keyword was never said has, correctly, never
- * triggered the entry. The trade is that this counts when the keyword was last
- * *said* rather than when the entry was last *sent* — an entry that matched but
- * lost its place to the token budget still counts as having fired. For deciding
- * whether a thread is still live, what the story said is the better signal
- * anyway.
+ * Sticky and cooldown are both measured from when the entry last *fired*, and
+ * an entry fires when its keywords are in the scan window and it is not
+ * already resting. So the answer depends on the whole history: a keyword said
+ * on every message fires once, holds for `sticky`, rests for `cooldown`, and
+ * fires again — the rhythm cooldown exists to impose. Reading only the last
+ * few messages cannot see that rhythm; it sees the same shape every turn and
+ * gives the same answer every turn, which for a common keyword is "resting",
+ * forever.
+ *
+ * Deliberately derived from the text rather than from a record of what fired
+ * before. It costs no store and no writes, cannot drift out of step with the
+ * conversation, and inherits branch correctness for nothing: a branch where
+ * the keyword was never said has, correctly, never triggered the entry. The
+ * approximation is that a mention counts as firing on the message that
+ * carries it, whether or not that turn's prompt actually had room for it.
+ *
+ * A firing has to pass the entry's own secondary keys as well. Without that,
+ * stickiness would revive an entry on the strength of a mention that never
+ * qualified it in the first place.
  */
-function messagesSinceMatch(entry: LoreEntry, texts: string[], span: number): number {
-  const terms = [...entry.primaryKeys, ...entry.aliases];
-  if (!terms.length || span <= 0) return 0;
-  const from = Math.max(0, texts.length - span);
-  for (let i = texts.length - 1; i >= from; i -= 1) {
-    if (matchTerms(terms, entry, texts[i]).length) return texts.length - i;
+function timingVerdict(
+  entry: LoreEntry,
+  timeline: string[],
+  ambient: string,
+  depth: number,
+  matchedNow: boolean,
+  timing: { sticky: number; cooldown: number },
+): TimingVerdict {
+  const now = timeline.length - 1;
+  if (now < 0) return { kind: matchedNow ? 'fires' : 'silent', ago: 0, left: 0 };
+
+  // Matchers are built once for the whole replay rather than once per message.
+  const primary = [...entry.primaryKeys, ...entry.aliases]
+    .map((term) => buildMatcher(term, entry))
+    .filter((m): m is Matcher => m !== null);
+  const secondary = entry.secondaryKeys
+    .map((term) => buildMatcher(term, entry))
+    .filter((m): m is Matcher => m !== null);
+  const any = (matchers: Matcher[], text: string) => matchers.some((m) => m.test(text));
+
+  const ambientPrimary = !!ambient && any(primary, ambient);
+  const ambientSecondary = !!ambient && !!secondary.length && any(secondary, ambient);
+  const span = depth > 0 ? depth : Number.POSITIVE_INFINITY;
+
+  let lastPrimary = Number.NEGATIVE_INFINITY;
+  let lastSecondary = Number.NEGATIVE_INFINITY;
+  let lastFire = -1;
+  let stickyUntil = -1;
+  let coolUntil = -1;
+
+  for (let i = 0; i <= now; i += 1) {
+    if (any(primary, timeline[i])) lastPrimary = i;
+    if (secondary.length && any(secondary, timeline[i])) lastSecondary = i;
+
+    let matched: boolean;
+    if (i === now) {
+      // The newest message is judged by the live scan, which also sees the
+      // text being typed and the names in the scene.
+      matched = matchedNow;
+    } else {
+      const primaryOk = ambientPrimary || i - lastPrimary < span;
+      const secondaryOk = !secondary.length || ambientSecondary || i - lastSecondary < span;
+      matched = primaryOk && secondaryOk;
+    }
+
+    if (matched && i > coolUntil) {
+      lastFire = i;
+      stickyUntil = i + timing.sticky;
+      coolUntil = stickyUntil + timing.cooldown;
+    }
   }
-  return 0;
+
+  const ago = lastFire < 0 ? 0 : now - lastFire;
+  if (lastFire === now) return { kind: 'fires', ago: 0, left: 0 };
+  if (now <= stickyUntil) return { kind: matchedNow ? 'fires' : 'sticky', ago, left: 0 };
+  if (matchedNow && now <= coolUntil) return { kind: 'resting', ago, left: coolUntil - now };
+  return { kind: 'silent', ago, left: 0 };
 }
 
 interface Matcher {
@@ -303,8 +384,12 @@ export function scanLore(input: LoreScanInput): LoreScanResult {
     // Before anything else, including 'always': a late revelation set to hold
     // back until the story is long enough must not fire in the opening
     // exchange just because someone marked it constant.
+    //
+    // The tester pastes one piece of text and has no story behind it, so it
+    // has no length to measure; it judges the entry as though the story were
+    // already long enough, and says so on its panel.
     const storyLength = input.messageCount ?? input.recentTexts.length;
-    if (timing.delay > 0 && storyLength < timing.delay) {
+    if (timing.delay > 0 && scope.source !== 'test' && storyLength < timing.delay) {
       misses.push({
         entry,
         lorebookName: bookName,
@@ -383,32 +468,59 @@ export function scanLore(input: LoreScanInput): LoreScanResult {
       }
     }
 
-    // How long since the story last said any of this entry's words. Only
-    // computed when something actually asks, so a worldbook of thousands of
-    // ordinary entries pays nothing for a feature it does not use.
-    const since =
-      timing.sticky > 0 || timing.cooldown > 0
-        ? messagesSinceMatch(
+    // Secondary keys gate on the whole window: they qualify the match rather
+    // than locating it. The window is only joined for an entry that has them
+    // and has something to qualify — a large book is mostly entries with
+    // neither, and they must not pay for it.
+    const matchedSecondary =
+      winner && entry.secondaryKeys.length
+        ? matchTerms(
+            entry.secondaryKeys,
             entry,
-            input.recentTexts,
-            Math.max(timing.sticky, timing.cooldown),
+            [...window, ambient, input.currentText ?? ''].filter(Boolean).join('\n'),
           )
-        : 0;
+        : [];
+    const qualified = !!winner && (!entry.secondaryKeys.length || matchedSecondary.length > 0);
 
-    if (!winner) {
-      // Nothing matched now, but it did recently and was asked to stay. This is
-      // what stops a location dropping out of the prompt between mentions and
-      // the scene quietly losing its footing.
-      if (timing.sticky > 0 && since > 0 && since <= timing.sticky) {
+    // Only replayed when the entry asks for it, so a worldbook of thousands
+    // of ordinary entries pays nothing for a feature it does not use.
+    if (timing.sticky > 0 || timing.cooldown > 0) {
+      const verdict = timingVerdict(
+        entry,
+        input.timelineTexts ?? input.recentTexts,
+        ambient,
+        depth,
+        qualified,
+        timing,
+      );
+      // Nothing matched now, but it fired recently and was asked to stay. This
+      // is what stops a location dropping out of the prompt between mentions
+      // and the scene quietly losing its footing.
+      if (verdict.kind === 'sticky') {
         hits.push({
           entry,
           lorebookName: bookName,
           matched: [],
-          reason: `Still active: keyword last matched ${since} message(s) ago, sticky for ${timing.sticky}.`,
+          reason: `Still active: it fired ${verdict.ago} message(s) ago and stays for ${timing.sticky}.`,
           tier: 'recent',
         });
         continue;
       }
+      // It matched, but it has only just been sent. A common keyword that
+      // re-triggers every single turn is how one entry crowds a large worldbook
+      // out of its own context.
+      if (verdict.kind === 'resting') {
+        misses.push({
+          entry,
+          lorebookName: bookName,
+          reason: `Matched, but resting: it fired ${verdict.ago} message(s) ago and sits out ${verdict.left} more.`,
+        });
+        continue;
+      }
+      // `fires` and `silent` are the ordinary verdict, reached below.
+    }
+
+    if (!winner) {
       misses.push({
         entry,
         lorebookName: bookName,
@@ -417,46 +529,21 @@ export function scanLore(input: LoreScanInput): LoreScanResult {
       continue;
     }
 
-    // It matched, but it has only just been sent. A common keyword that
-    // re-triggers every single turn is how one entry crowds a large worldbook
-    // out of its own context.
-    if (timing.cooldown > 0 && since > 0 && since <= timing.cooldown) {
+    if (!qualified) {
       misses.push({
         entry,
         lorebookName: bookName,
-        reason: `Matched, but resting: it last matched ${since} message(s) ago and its cooldown is ${timing.cooldown}.`,
+        reason: `Primary keyword "${winner.matched[0]}" matched, but no secondary keyword did.`,
       });
       continue;
     }
 
-    if (entry.secondaryKeys.length) {
-      // Secondary keys gate on the whole window: they qualify the match rather
-      // than locating it.
-      const whole = [...window, ambient, input.currentText ?? ''].filter(Boolean).join('\n');
-      const matchedSecondary = matchTerms(entry.secondaryKeys, entry, whole);
-      if (!matchedSecondary.length) {
-        misses.push({
-          entry,
-          lorebookName: bookName,
-          reason: `Primary keyword "${winner.matched[0]}" matched, but no secondary keyword did.`,
-        });
-        continue;
-      }
-      hits.push({
-        entry,
-        lorebookName: bookName,
-        matched: [...winner.matched, ...matchedSecondary],
-        reason: winner.band.describe([...winner.matched, ...matchedSecondary]),
-        tier: winner.band.tier,
-      });
-      continue;
-    }
-
+    const matched = [...winner.matched, ...matchedSecondary];
     hits.push({
       entry,
       lorebookName: bookName,
-      matched: winner.matched,
-      reason: winner.band.describe(winner.matched),
+      matched,
+      reason: winner.band.describe(matched),
       tier: winner.band.tier,
     });
   }

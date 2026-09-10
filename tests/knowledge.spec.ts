@@ -424,6 +424,32 @@ test('a claim someone made is knowledge they hold, without a row for it', async 
   expect(await edges(page)).toHaveLength(0);
 });
 
+test('a claim still waiting for review derives nothing', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    settings: ANNOTATE,
+    memories: [
+      {
+        id: 'mem-proposed',
+        title: 'Sera on the cellar',
+        content: SECRET,
+        basis: 'stated',
+        statedById: 'sera',
+        status: 'proposed',
+        sourceMessageIds: ['m2', 'm3'],
+      },
+    ],
+  });
+
+  await turn(page, ollama, 'Go on.');
+  await openKnowledgeTab(page);
+  // The compiler does not send a proposal; the inspector must not say someone
+  // knows of one either. Until it is accepted it is not yet a claim.
+  await expect(page.getByText(/Not tracked/).first()).toBeVisible();
+  await expect(page.getByText('Sera on the cellar')).toHaveCount(0);
+});
+
 test('a memory nobody claimed derives nothing', async ({ page }) => {
   const ollama = await mockOllama(page, ['Sera nods.']);
   await setupOllamaProvider(page);
@@ -617,12 +643,22 @@ test('the library counts contexts, and never claims one story-wide answer', asyn
         subject: { kind: 'memory', id: 'mem-1' },
         sourceMessageIds: ['c11'],
       },
+      // Still waiting in the inspector: not tracked, so not counted.
+      {
+        id: 'k-d',
+        branchId: 'd',
+        knowerId: 'sera',
+        subject: { kind: 'memory', id: 'mem-1' },
+        sourceMessageIds: ['d21'],
+        status: 'proposed',
+      },
     ],
   });
 
   await goto(page, '#/memories');
   // Two branches recorded different people. That is two contexts, not one
   // settled fact about who knows — the page has no timeline to decide with.
+  // The proposal on the third branch is nobody's knowledge yet.
   await expect(page.getByText('Knowledge tracked · 2 contexts')).toBeVisible();
   await expect(page.getByText(/Known-of by/)).toHaveCount(0);
 });

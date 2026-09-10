@@ -102,11 +102,14 @@ export function MemoriesPage({
    * settled fact about the story when the two could be on branches that
    * contradict each other. A context count claims only what it can back up;
    * who knows what, where, is the Context Inspector's job.
+   *
+   * Only accepted attributions count. A proposal is waiting in the inspector
+   * and an undone one is history; neither is knowledge anyone tracked.
    */
   const knowledgeContexts = useMemo(() => {
     const byMemory = new Map<string, Set<string>>();
     for (const edge of state.knowledgeEdges) {
-      if (edge.subject.kind !== 'memory') continue;
+      if (edge.status !== 'applied' || edge.subject.kind !== 'memory') continue;
       const seen = byMemory.get(edge.subject.id) ?? new Set<string>();
       seen.add(`${edge.chatId}/${edge.branchId}`);
       byMemory.set(edge.subject.id, seen);
@@ -477,13 +480,18 @@ export function MemoryEditor({
     return 'Someone';
   };
 
-  /** Stored edges about this memory, grouped by the context that recorded them. */
+  /**
+   * Accepted edges about this memory, grouped by the context that recorded
+   * them. Proposals wait in the inspector and are not listed as having been
+   * heard.
+   */
   const knowledgeHere = useMemo(() => {
     const groups = new Map<
       string,
       { key: string; chatTitle: string; branchName: string; edges: typeof state.knowledgeEdges }
     >();
     for (const edge of state.knowledgeEdges) {
+      if (edge.status !== 'applied') continue;
       if (edge.subject.kind !== 'memory' || edge.subject.id !== memory.id) continue;
       const key = `${edge.chatId}/${edge.branchId}`;
       const existing = groups.get(key);

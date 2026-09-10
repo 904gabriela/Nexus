@@ -137,7 +137,56 @@ test('a keyword that just fired rests instead of firing again', async ({ page })
   });
 
   await turn(page, ollama, 'Go on.');
-  // It matches — the word is in the last message — and is held back anyway.
+  // "eased" arrived one message ago, so the entry fired then; it still matches
+  // now, and is held back for the two messages it was asked to sit out.
+  expect(systemOf(ollama)).not.toContain(SECRET);
+});
+
+test('a first mention fires, cooldown or not', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    lore: [{ id: 'l-1', name: 'The lantern', keys: ['lantern'], content: SECRET, cooldown: 2 }],
+  });
+
+  // Nobody has said "lantern" before. A cooldown is a rest *after* firing;
+  // an entry that has never fired has nothing to rest from. (This used to
+  // count the mention that triggers it as the one to rest from, so any entry
+  // with a cooldown could never fire on a fresh mention at all.)
+  await turn(page, ollama, 'I lift the lantern.');
+  expect(systemOf(ollama)).toContain(SECRET);
+});
+
+/*
+ * A keyword said on most messages is the case cooldown exists for. The
+ * fixture says "the" on m0, m2 and m3 and not on m1 or the new message, so
+ * with a scan window that covers them all the entry is matched on every
+ * step and the only question is the rhythm:
+ *
+ *   cooldown 1: fires m0 · rests m1 · fires m2 · rests m3 · fires now
+ *   cooldown 2: fires m0 · rests m1, m2 · fires m3 · rests now
+ */
+test('a keyword said every message fires again once its cooldown has passed', async ({
+  page,
+}) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    lore: [{ id: 'l-1', name: 'The article', keys: ['the'], content: SECRET, cooldown: 1 }],
+  });
+
+  await turn(page, ollama, 'Go on.');
+  expect(systemOf(ollama)).toContain(SECRET);
+});
+
+test('and stays out while it has not', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    lore: [{ id: 'l-1', name: 'The article', keys: ['the'], content: SECRET, cooldown: 2 }],
+  });
+
+  await turn(page, ollama, 'Go on.');
   expect(systemOf(ollama)).not.toContain(SECRET);
 });
 
@@ -150,6 +199,75 @@ test('and with no cooldown the same entry arrives', async ({ page }) => {
 
   await turn(page, ollama, 'Go on.');
   expect(systemOf(ollama)).toContain(SECRET);
+});
+
+/* ------------------------------------------------- sticky and secondary */
+
+test('stickiness never revives an entry that never qualified', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    lore: [
+      {
+        id: 'l-1',
+        name: 'The lamps',
+        keys: ['lamps'],
+        // Nobody in the fixture is called Halda, so the primary keyword two
+        // messages back was never enough on its own.
+        secondaryKeys: ['Halda'],
+        content: SECRET,
+        scanDepth: 1,
+        sticky: 3,
+      },
+    ],
+  });
+
+  await turn(page, ollama, 'Go on.');
+  // An entry that never fired has nothing to stay open from.
+  expect(systemOf(ollama)).not.toContain(SECRET);
+});
+
+test('and does hold an entry whose secondary keyword was there', async ({ page }) => {
+  const ollama = await mockOllama(page, ['Sera nods.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    lore: [
+      {
+        id: 'l-1',
+        name: 'The lamps',
+        keys: ['lamps'],
+        // Same message: "the lamps guttered".
+        secondaryKeys: ['guttered'],
+        content: SECRET,
+        scanDepth: 1,
+        sticky: 3,
+      },
+    ],
+  });
+
+  await turn(page, ollama, 'Go on.');
+  expect(systemOf(ollama)).toContain(SECRET);
+});
+
+/* ---------------------------------------------------------------- tester */
+
+test('the tester judges a delayed entry on its words, and says so', async ({ page }) => {
+  await mockOllama(page, ['Unused.']);
+  await setupOllamaProvider(page);
+  await seedBranchedStory(page, {
+    lore: [{ id: 'l-1', name: 'The cellar', keys: ['eased'], content: SECRET, delay: 5 }],
+  });
+
+  await goto(page, '#/settings');
+  await page.getByRole('tab', { name: 'Tools' }).click();
+  await page.getByRole('textbox', { name: 'Test text', exact: true }).fill('the storm eased');
+
+  // Pasted text has no story length, so the tester cannot honestly say the
+  // story is too young. It used to: one line of text counted as a story one
+  // message long, and every entry with a delay was "held back" forever.
+  await expect(page.getByText(/Keyword matched: eased/).first()).toBeVisible();
+  await expect(page.getByText(/Held back/)).toHaveCount(0);
+  await expect(page.getByText(/Delay is not applied here/)).toBeVisible();
 });
 
 /* ---------------------------------------------------------- branches */

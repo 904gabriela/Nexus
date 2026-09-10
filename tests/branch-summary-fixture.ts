@@ -94,7 +94,8 @@ export interface MemorySeed {
 export interface DiscoveredSeed {
   id: string;
   name: string;
-  note?: string;
+  /** `null` writes a row with no note at all, as an edited file might. */
+  note?: string | null;
   sourceMessageIds?: string[];
   dismissed?: boolean;
 }
@@ -103,6 +104,7 @@ export interface LoreSeed {
   id: string;
   name: string;
   keys: string[];
+  secondaryKeys?: string[];
   content: string;
   scanDepth?: number;
   delay?: number;
@@ -251,7 +253,7 @@ export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
       discovered: (options.discovered ?? []).map((d) => ({
         id: d.id,
         name: d.name,
-        note: d.note ?? '',
+        ...(d.note === null ? {} : { note: d.note ?? '' }),
         sourceMessageIds: d.sourceMessageIds ?? ['m3'],
         dismissed: d.dismissed ?? false,
         updatedAt: now,
@@ -443,7 +445,7 @@ export async function seedBranchedStory(page: Page, seed: BranchSeed = {}) {
           name: l.name,
           content: l.content,
           primaryKeys: l.keys,
-          secondaryKeys: [],
+          secondaryKeys: l.secondaryKeys ?? [],
           aliases: [],
           enabled: true,
           priority: 100,

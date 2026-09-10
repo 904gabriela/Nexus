@@ -68,7 +68,14 @@ test('the extractor is handed only what is in scope, and told what is not knowle
 }) => {
   const ollama = await mockOllama(page, [TELLING]);
   await setupOllamaProvider(page);
-  await seedBranchedStory(page, seed);
+  await seedBranchedStory(page, {
+    ...seed,
+    memories: [
+      ...seed.memories,
+      // Waiting for review. Not yet a thing anyone can be said to know of.
+      { id: 'mem-2', title: 'A rumour about the well', content: 'Unreviewed.', status: 'proposed' },
+    ],
+  });
 
   await turn(page, ollama, 'Tell me.');
   await expect.poll(() => ollama.knowledge.length, { timeout: 20_000 }).toBe(1);
@@ -80,6 +87,8 @@ test('the extractor is handed only what is in scope, and told what is not knowle
   // Subjects are numbered and offered — the model may point, never invent.
   expect(user).toContain('[M1] The cellar');
   expect(user).toContain('[R1] how Sera and Corin stand with each other');
+  // And only what the story actually holds is offered.
+  expect(user).not.toContain('A rumour about the well');
 
   // And it is told, in so many words, which sentences are not attributions.
   // A model that ignores this is a model problem; a prompt that never said it

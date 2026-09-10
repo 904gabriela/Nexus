@@ -344,7 +344,17 @@ export function ContextInspector({
             </p>
           ) : (
             compiled.knowledge.map((entry) => (
-              <div className="card" key={entry.label + entry.subject.kind} style={{ marginBottom: 8 }}>
+              <div
+                className="card"
+                // Keyed by what it is about, not what it is called: two
+                // memories can share a title, and two deleted ones share a label.
+                key={
+                  entry.subject.kind === 'memory'
+                    ? `memory:${entry.subject.id}`
+                    : `relationship:${[...entry.subject.betweenIds].sort().join(':')}`
+                }
+                style={{ marginBottom: 8 }}
+              >
                 <div className="row row-between row-wrap">
                   <strong className="truncate">{entry.label}</strong>
                   <span className="chip">
