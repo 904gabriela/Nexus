@@ -1012,7 +1012,7 @@ export function useGeneration() {
               `raise the cap.`,
           });
         }
-        if (usable.clamped || usable.capped) {
+        if (usable.clamped) {
           // Say only what is known. A model's window is a fact when Ollama
           // reported it, an assumption when it did not, and for a remote
           // provider it is simply the configured number handed back — none
@@ -1025,18 +1025,18 @@ export function useGeneration() {
           actions.toast({
             kind: 'warn',
             title: `Prompt built to ${usable.promptBudget.toLocaleString()} tokens`,
-            detail: usable.clamped
-              ? `This chat is configured for ${usable.requested.toLocaleString()} tokens of ` +
-                `prompt; ${window}. The prompt is built to fit rather than being truncated ` +
-                `by the server.` +
-                (usable.reported ? '' : ' If the model holds more, set Context size in Settings to match it.')
-              : `This chat allows ${usable.requested.toLocaleString()}, but a roleplay turn ` +
-                `rarely needs it: the scene, the cast and recent turns fit in ` +
-                `${usable.promptBudget.toLocaleString()}, and a larger prompt costs latency on ` +
-                `every message. A story that begins with a long pasted transcript is the ` +
-                `exception — raise "Prompt budget" in Settings for it.`,
+            detail:
+              `This chat is configured for ${usable.requested.toLocaleString()} tokens of ` +
+              `prompt; ${window}. The prompt is built to fit rather than being truncated ` +
+              `by the server.` +
+              (usable.reported ? '' : ' If the model holds more, set Context size in Settings to match it.'),
           });
         }
+        // The practical ceiling is not announced on its own. It is a setting
+        // the person chose, or a default that only matters when something did
+        // not fit — and when something did not fit, the warning below says so
+        // and names the ceiling as the reason. Announcing it on every turn
+        // told people about a limit that was costing them nothing.
         // Its own warning, not an alternative to the one above: a prompt built
         // to fit and a prompt that still did not fit are two different things
         // to know, and the second used to be hidden behind the first. It says
@@ -1053,13 +1053,17 @@ export function useGeneration() {
             ...(named.length > 4 ? [`${named.length - 4} more`] : []),
             ...(loreCount ? [`${loreCount} lore ${loreCount === 1 ? 'entry' : 'entries'}`] : []),
           ].join(', ');
+          const lever = usable.capped
+            ? `The Prompt budget setting (${usable.promptBudget.toLocaleString()}) is what limited it; ` +
+              `Context size allows ${usable.requested.toLocaleString()}. Raise Prompt budget in Settings, ` +
+              `or shorten what is there.`
+            : `Raise Context size in Settings, or shorten what is there.`;
           actions.toast({
             kind: 'warn',
             title: 'Part of the prompt did not fit',
             detail:
               `Left out to stay inside ${compiled.budget.toLocaleString()} tokens: ${what || 'older history'}. ` +
-              `Raise Context size or Prompt budget in Settings, or shorten what is there. ` +
-              `The Context Inspector shows exactly what stayed and what went.`,
+              `${lever} The Context Inspector shows exactly what stayed and what went.`,
           });
         }
 
