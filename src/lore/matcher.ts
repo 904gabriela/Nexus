@@ -617,18 +617,44 @@ export function scanLore(input: LoreScanInput): LoreScanResult {
       b.entry.priority - a.entry.priority ||
       a.entry.order - b.entry.order,
   );
+  // The same text twice is one entry. Imported books arrive with an entry
+  // once per position it was tried in, and every copy matched, was counted
+  // against the entry limit, and was sent. The first copy in relevance order
+  // is the one kept; the rest stand down here, before the limit is applied,
+  // so they cannot crowd out an entry that says something different.
+  const seenText = new Set<string>();
+  const unique: LoreHit[] = [];
+  for (const hit of kept) {
+    const text = hit.entry.content.trim();
+    if (seenText.has(text)) {
+      misses.push({
+        entry: hit.entry,
+        lorebookName: hit.lorebookName,
+        reason: 'The same text as an entry already included; sent once.',
+      });
+      continue;
+    }
+    seenText.add(text);
+    unique.push(hit);
+  }
   hits.length = 0;
-  hits.push(...kept);
+  hits.push(...unique);
 
-  if (input.maxEntries > 0 && hits.length > input.maxEntries) {
-    for (const dropped of hits.slice(input.maxEntries)) {
+  // The entry limit is a limit on keyword matches. An always-on entry is the
+  // author saying "this is the world", and it used to be the first thing the
+  // limit cut — it sorts as least relevant, having matched nothing — so a
+  // book with twenty keyword hits sent none of its rules, ever.
+  const constant = hits.filter((h) => h.entry.activation === 'always');
+  const matched = hits.filter((h) => h.entry.activation !== 'always');
+  if (input.maxEntries > 0 && matched.length > input.maxEntries) {
+    for (const dropped of matched.slice(input.maxEntries)) {
       misses.push({
         entry: dropped.entry,
         lorebookName: dropped.lorebookName,
         reason: `Matched at ${dropped.tier} relevance, but exceeded the ${input.maxEntries}-entry lore limit (priority ${dropped.entry.priority}).`,
       });
     }
-    return { hits: hits.slice(0, input.maxEntries), misses };
+    return { hits: [...matched.slice(0, input.maxEntries), ...constant], misses };
   }
 
   return { hits, misses };

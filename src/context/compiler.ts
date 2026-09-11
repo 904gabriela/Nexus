@@ -363,8 +363,15 @@ const UNDROPPABLE = new Set<ContextPart['kind']>(['system', 'scene', 'persona', 
  * Lore is world knowledge; it must never outrank who is in the room, and it
  * must always remain droppable when the budget runs out.
  */
-function lorePriority(hit: { tier: LoreTier; entry: { priority: number } }): number {
-  return 620 + LORE_TIER_RANK[hit.tier] * 25 + Math.min(Math.max(hit.entry.priority, 0), 99) / 5;
+function lorePriority(hit: { tier: LoreTier; entry: { priority: number; activation: string } }): number {
+  // An always-on entry matched nothing and so carries the lowest tier, which
+  // is right for placement but wrong for survival: the author asked for it on
+  // every turn. When the budget runs out it stands with what the last few
+  // messages matched, ranked by the author's own priority, rather than going
+  // first.
+  const rank =
+    hit.entry.activation === 'always' ? LORE_TIER_RANK.recent : LORE_TIER_RANK[hit.tier];
+  return 620 + rank * 25 + Math.min(Math.max(hit.entry.priority, 0), 99) / 5;
 }
 
 /** Priority tiers, higher survives trimming (spec §44). */
@@ -1034,30 +1041,14 @@ function compileContextInner(input: CompileInput): CompileResult {
    * conversation and cannot be expressed by sorting the system block.
    */
   const atDepthLore: Array<{ id: string; depth: number; content: string }> = [];
-  /**
-   * The text of every entry already taken. Imported books arrive with the
-   * same entry several times over — a character sheet once per position it
-   * was tried in — and each copy matched and was sent, so a card that cost
-   * 176 tokens cost 880. The first copy, in relevance order, is the one kept.
-   */
-  const loreTextSeen = new Set<string>();
 
+  // Identical entries have already been reduced to one by the scan, before
+  // the entry limit, so nothing here needs to look for them.
   for (const hit of loreScan.hits) {
     const heading = hit.entry.name ? `## ${hit.entry.name}` : '';
     const content = macro([heading, hit.entry.content].filter(Boolean).join('\n'));
     const id = `lore:${hit.entry.id}`;
     const label = `Lore — ${hit.entry.name || 'Untitled entry'} (${hit.lorebookName})`;
-
-    const text = hit.entry.content.trim();
-    if (loreTextSeen.has(text)) {
-      preExcluded.push({
-        ...part(id, label, 'lore', content, hit.reason, lorePriority(hit)),
-        included: false,
-        reason: `${hit.reason} — the same text as an entry already included; sent once.`,
-      });
-      continue;
-    }
-    loreTextSeen.add(text);
 
     if (hit.entry.position === 'at-depth') {
       atDepthLore.push({ id, depth: Math.max(0, hit.entry.depth || 0), content });

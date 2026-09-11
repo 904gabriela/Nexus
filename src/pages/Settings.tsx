@@ -638,7 +638,7 @@ function ContextSection() {
         onChange={(maxLoreEntries) => actions.saveSettings({ maxLoreEntries: Math.max(0, Math.round(maxLoreEntries)) })}
         min={0}
         max={200}
-        hint="When more entries match, the highest-priority ones win."
+        hint="When more entries match, the most relevant and highest-priority ones win. Always-on entries do not count against this limit."
       />
       <NumberField
         label="Maximum memories per reply"
