@@ -24,12 +24,13 @@ import type {
   SceneDelta,
   SceneState,
   Settings,
+  StyleCombination,
 } from '../../types';
 import { useEffect, useState } from 'react';
 import { Sheet } from '../ui/Sheet';
 import { Icon } from '../ui/Icon';
 import { TextArea, TextField, Toggle } from '../ui/Field';
-import { availablePresets } from '../../narration/presets';
+import { availablePresets, combinationMatches } from '../../narration/presets';
 import type { ResolvedScene } from '../../context/scene';
 
 export interface QuickSettingsProps {
@@ -80,6 +81,11 @@ export interface QuickSettingsProps {
   onOpenResponseSettings: () => void;
   onOpenMemories: () => void;
   onOpenAdvanced: () => void;
+  /** Applies a saved combination to this chat: its styles, and its reply settings if it has any. */
+  onApplyCombination: (combination: StyleCombination) => void | Promise<unknown>;
+  /** Keeps the styles currently in force under a name. */
+  onSaveCombination: (name: string, presetIds: ID[]) => void | Promise<unknown>;
+  onOpenStyles: () => void;
 }
 
 export function QuickSettings({
@@ -109,8 +115,14 @@ export function QuickSettings({
   onOpenResponseSettings,
   onOpenMemories,
   onOpenAdvanced,
+  onApplyCombination,
+  onSaveCombination,
+  onOpenStyles,
 }: QuickSettingsProps) {
   const presets = availablePresets(settings.narrationPresets ?? []);
+  const combinations = settings.styleCombinations ?? [];
+  /** The inline "name this combination" form; null while closed. */
+  const [savingAs, setSavingAs] = useState<string | null>(null);
 
   /*
    * Mirror the compiler exactly: `chat ?? story ?? none`. `null` on the chat
@@ -343,6 +355,37 @@ export function QuickSettings({
           Styles combine — Slow Burn and Detailed together is a normal choice. They shape the
           telling, never what a character knows or what has happened.
         </p>
+        {/*
+          Saved combinations first: one tap sets the whole feel of a story.
+          The one that matches the current selection reads as active, so the
+          row also answers "which of my combinations is this?".
+        */}
+        {!!combinations.length && (
+          <div className="chip-row" style={{ marginBottom: 8 }} aria-label="Saved combinations">
+            {[...combinations]
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map((combination) => {
+                const on = combinationMatches(combination, selected);
+                return (
+                  <button
+                    key={combination.id}
+                    type="button"
+                    className={`chip chip-tap ${on ? 'chip-accent' : ''}`}
+                    aria-pressed={on}
+                    title={
+                      combination.temperature != null || combination.maxTokens != null
+                        ? 'Sets these styles and the reply settings saved with them.'
+                        : 'Sets these styles.'
+                    }
+                    onClick={() => onApplyCombination(combination)}
+                  >
+                    <Icon name="bookmark" />
+                    {combination.name}
+                  </button>
+                );
+              })}
+          </div>
+        )}
         <div className="chip-row">
           {presets.map((preset) => {
             const on = selected.includes(preset.id);
@@ -389,6 +432,58 @@ export function QuickSettings({
             'No style selected, here or on the story. The scene decides.'
           )}
         </p>
+        {/*
+          Keeping the selection under a name, from where the selection was
+          made. The form is inline so the sheet does not have to hand off to a
+          page and back for a single word.
+        */}
+        <div className="row row-wrap" style={{ gap: 10, marginTop: 10 }}>
+          {savingAs === null ? (
+            <>
+              {!!selected.length &&
+                !combinations.some((c) => combinationMatches(c, selected)) && (
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={() => setSavingAs('')}
+                  >
+                    Save this combination…
+                  </button>
+                )}
+              <button type="button" className="link-button" onClick={onOpenStyles}>
+                Edit styles
+              </button>
+            </>
+          ) : (
+            <form
+              className="row row-wrap"
+              style={{ gap: 6, width: '100%' }}
+              onSubmit={(e) => {
+                e.preventDefault();
+                const name = savingAs.trim();
+                if (!name) return;
+                void onSaveCombination(name, selected);
+                setSavingAs(null);
+              }}
+            >
+              <input
+                className="input"
+                style={{ flex: 1, minWidth: 160 }}
+                aria-label="Combination name"
+                placeholder="Name this combination"
+                value={savingAs}
+                autoFocus
+                onChange={(e) => setSavingAs(e.target.value)}
+              />
+              <button type="submit" className="btn btn-primary btn-sm" disabled={!savingAs.trim()}>
+                Save
+              </button>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={() => setSavingAs(null)}>
+                Cancel
+              </button>
+            </form>
+          )}
+        </div>
       </section>
 
       <section className="qs-section">

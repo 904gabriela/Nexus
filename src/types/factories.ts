@@ -408,6 +408,7 @@ export function defaultSettings(): Settings {
     maxPromptTokens: 12288,
     maxResponseTokens: 2048,
     narrationPresets: [],
+    styleCombinations: [],
     reserveForResponse: 1024,
     loreScanDepth: 8,
     maxLoreEntries: 20,

@@ -57,6 +57,13 @@ export function LibraryPage({
       create: { label: 'New memory', route: 'memories' },
     },
     {
+      route: 'styles',
+      label: 'Writing styles',
+      icon: 'edit',
+      blurb: 'How the narrator writes, and the combinations you keep.',
+      count: state.settings.styleCombinations?.length ?? 0,
+    },
+    {
       route: 'media',
       label: 'Images',
       icon: 'image',

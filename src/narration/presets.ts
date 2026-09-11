@@ -16,7 +16,8 @@
  * text stays available underneath, so "reset" is just deleting the override.
  */
 
-import type { ID } from '../types';
+import type { ID, StyleCombination } from '../types';
+import { uid } from '../utils/uid';
 
 export interface NarrationPreset {
   id: ID;
@@ -148,6 +149,75 @@ export function availablePresets(stored: NarrationPreset[]): NarrationPreset[] {
   });
   const custom = stored.filter((p) => !BUILT_IN_PRESETS.some((b) => b.id === p.id));
   return [...merged, ...custom];
+}
+
+export function isBuiltInPreset(id: ID): boolean {
+  return BUILT_IN_PRESETS.some((p) => p.id === id);
+}
+
+/** The shipped text of a built-in, for "reset" and for showing what an edit changed. */
+export function builtInPreset(id: ID): NarrationPreset | null {
+  return BUILT_IN_PRESETS.find((p) => p.id === id) ?? null;
+}
+
+/** A fresh preset of the user's own. */
+export function newPreset(partial: Partial<NarrationPreset> = {}): NarrationPreset {
+  return {
+    id: uid('preset_'),
+    name: 'New style',
+    description: '',
+    instruction: '',
+    builtIn: false,
+    ...partial,
+  };
+}
+
+/**
+ * A copy the user owns, whatever the original was. A duplicated built-in is
+ * an ordinary custom preset from then on: it can be renamed, rewritten and
+ * deleted, and it never resets to anything.
+ */
+export function duplicatePreset(source: NarrationPreset): NarrationPreset {
+  return newPreset({
+    name: `${source.name} (copy)`,
+    description: source.description,
+    instruction: source.instruction,
+  });
+}
+
+export function newCombination(partial: Partial<StyleCombination> = {}): StyleCombination {
+  return {
+    id: uid('style_'),
+    name: 'New combination',
+    presetIds: [],
+    temperature: null,
+    maxTokens: null,
+    ...partial,
+  };
+}
+
+/** True when the combination is exactly the styles currently selected, in any order. */
+export function combinationMatches(combination: StyleCombination, selected: ID[]): boolean {
+  const a = new Set(combination.presetIds);
+  const b = new Set(selected);
+  return a.size === b.size && [...a].every((id) => b.has(id));
+}
+
+/**
+ * What the composer says about how the story is being written: a saved
+ * combination by its name when the selection is exactly one, otherwise the
+ * style names joined, otherwise the default.
+ */
+export function describeSelection(
+  selected: ID[],
+  stored: NarrationPreset[],
+  combinations: StyleCombination[],
+): string {
+  const active = selectedPresets(selected, stored);
+  if (!active.length) return 'Default style';
+  const saved = combinations.find((c) => combinationMatches(c, selected));
+  if (saved) return saved.name;
+  return active.map((p) => p.name).join(' + ');
 }
 
 /** Resolves a selection to the presets that actually contribute text. */

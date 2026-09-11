@@ -68,6 +68,12 @@ or manage it, and you can always look at what it has done and take it back.
   memories, scene changes and relationships that only happened on the other
   path stay there.
 
+- **It writes the way you ask.** Styles such as *Slow Burn*, *Detailed* and
+  *Cinematic* combine, and every one of them is a sentence or two you can read
+  and rewrite under Library → Writing styles. Name a combination you like and
+  it is one tap away in any chat. The line above the message box always says
+  which style is on and who you are playing.
+
 **If you want less of this:** Settings → Memory. Scene changes can be set to
 *notice and ask* instead of applying automatically, and memory can be turned
 off entirely. A small local model will sometimes read a scene wrong — "maybe

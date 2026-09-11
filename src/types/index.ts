@@ -609,6 +609,23 @@ export interface NarrationPreset {
 }
 
 /**
+ * A named set of styles — "My MHA RP" = Slow Burn + Detailed + Cinematic —
+ * applied to a chat in one tap.
+ *
+ * The styles themselves never carry numbers: "Detailed" must not quietly make
+ * replies longer or more random. A combination may, because it is a person's
+ * own description of how one story should feel, reply settings included. Null
+ * means "leave that setting alone".
+ */
+export interface StyleCombination {
+  id: ID;
+  name: string;
+  presetIds: ID[];
+  temperature: number | null;
+  maxTokens: number | null;
+}
+
+/**
  * Someone the story named who has no character record.
  *
  * The story invents people constantly — a courier, a name dropped in an
@@ -1050,6 +1067,8 @@ export interface Settings {
    * database needs no version bump to gain the feature.
    */
   narrationPresets: NarrationPreset[];
+  /** Saved sets of styles. Same home as the presets, for the same reason. */
+  styleCombinations: StyleCombination[];
   reserveForResponse: number;
   loreScanDepth: number;
   maxLoreEntries: number;

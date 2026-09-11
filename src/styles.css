@@ -1369,6 +1369,42 @@ textarea {
   margin: 0 auto;
 }
 
+/*
+ * How the story is being written and who is writing it, above the input so
+ * it is read before a line is typed. A button rather than a label: tapping it
+ * opens the sheet where both are changed.
+ */
+.composer-style {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0 6px;
+  /* A thumb target, like every other button in the composer. */
+  min-height: var(--tap);
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: calc(12px * var(--font-scale));
+  text-align: left;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.composer-style:hover,
+.composer-style:focus-visible {
+  color: var(--text);
+  background: var(--bg-panel);
+}
+
+.composer-style strong {
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
 .composer-input {
   flex: 1;
   min-height: var(--tap);

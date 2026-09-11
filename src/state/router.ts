@@ -12,6 +12,7 @@ export type RouteName =
   | 'lorebooks'
   | 'lorebook'
   | 'memories'
+  | 'styles'
   | 'transfer'
   | 'media'
   | 'settings'
@@ -36,6 +37,7 @@ const VALID: RouteName[] = [
   'lorebooks',
   'lorebook',
   'memories',
+  'styles',
   'transfer',
   'media',
   'settings',

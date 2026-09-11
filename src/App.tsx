@@ -14,6 +14,7 @@ import { CharacterEditor } from './pages/CharacterEditor';
 import { PersonasPage, PersonaEditor } from './pages/Personas';
 import { LorebooksPage, LorebookEditor } from './pages/Lorebooks';
 import { MemoriesPage } from './pages/Memories';
+import { WritingStylesPage } from './pages/WritingStyles';
 import { LibraryPage } from './pages/Library';
 import { TransferPage } from './pages/Transfer';
 import { MediaPage } from './pages/Media';
@@ -37,6 +38,7 @@ const NAV: Array<{ route: RouteName; label: string; icon: string; primary: boole
   { route: 'personas', label: 'Personas', icon: 'user', primary: false },
   { route: 'lorebooks', label: 'Lorebooks', icon: 'scroll', primary: false },
   { route: 'memories', label: 'Memories', icon: 'brain', primary: false },
+  { route: 'styles', label: 'Writing styles', icon: 'edit', primary: false },
   { route: 'transfer', label: 'Import / Export', icon: 'transfer', primary: false },
   { route: 'media', label: 'Media', icon: 'image', primary: false },
   { route: 'search', label: 'Search', icon: 'search', primary: false },
@@ -245,6 +247,8 @@ function Router({
       );
     case 'memories':
       return <MemoriesPage navigate={navigate} />;
+    case 'styles':
+      return <WritingStylesPage />;
     case 'transfer':
       return <TransferPage />;
     case 'media':

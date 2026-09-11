@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Attachment, Chat, ID, Memory, Message, MessageAlternative } from '../types';
 import { newMemory } from '../types/factories';
+import { describeSelection, newCombination } from '../narration/presets';
 import { effectiveGeneration, useActions, useAppState, useStore } from '../state/store';
 import { useGeneration, chatDisplayTitle, speakerFor } from '../hooks/useGeneration';
 import { MessageItem, type QuickAction } from '../components/chat/MessageItem';
@@ -725,6 +726,16 @@ export function ChatPage({
     ? `${directionLines} direction${directionLines === 1 ? '' : 's'} · temperature ${generation.temperature}`
     : `Temperature ${generation.temperature} · no direction set`;
 
+  // The composer's one line about the writing: the compiler's own precedence
+  // (chat, then story, then none), named by the combination it matches when
+  // it matches one, and the persona in play.
+  const styleLabel = describeSelection(
+    activeChat.narrationPresetIds ?? gen.story?.narrationPresetIds ?? [],
+    state.settings.narrationPresets ?? [],
+    state.settings.styleCombinations ?? [],
+  );
+  const personaLabel = gen.persona ? gen.persona.displayName || gen.persona.name : 'you';
+
   const sceneArtMediaId =
     gen.story?.backgroundMediaId ??
     gen.story?.coverMediaId ??
@@ -957,6 +968,21 @@ export function ChatPage({
           </div>
         )}
 
+        {/*
+          How the story is being written and who you are in it, read before a
+          line is typed. Both are changed in the sheet this opens.
+        */}
+        <button
+          type="button"
+          className="composer-style"
+          onClick={() => setQuickSettings(true)}
+          aria-label={`Writing as ${personaLabel}. Style: ${styleLabel}. Open chat settings.`}
+        >
+          <Icon name="edit" width={14} height={14} />
+          <strong>{styleLabel}</strong>
+          <span>· as {personaLabel}</span>
+        </button>
+
         <div className="composer-row">
           <button
             type="button"
@@ -1074,6 +1100,33 @@ export function ChatPage({
         onOpenResponseSettings={() => setResponseSettings(true)}
         onOpenMemories={() => navigate('memories')}
         onOpenAdvanced={() => navigate('settings')}
+        onApplyCombination={(combination) =>
+          actions.saveChat({
+            ...activeChat,
+            narrationPresetIds: combination.presetIds,
+            settings: {
+              ...activeChat.settings,
+              ...(combination.temperature != null ? { temperature: combination.temperature } : {}),
+              ...(combination.maxTokens != null ? { maxTokens: combination.maxTokens } : {}),
+            },
+          })
+        }
+        onSaveCombination={(name, presetIds) =>
+          actions.saveSettings({
+            styleCombinations: [
+              ...(state.settings.styleCombinations ?? []),
+              newCombination({
+                name,
+                presetIds,
+                // The chat's own tuning goes with it when it has any; the
+                // combination is "how this story feels", and that is part of it.
+                temperature: activeChat.settings.temperature ?? null,
+                maxTokens: activeChat.settings.maxTokens ?? null,
+              }),
+            ],
+          })
+        }
+        onOpenStyles={() => navigate('styles')}
       />
 
       <ResponseSettingsSheet
